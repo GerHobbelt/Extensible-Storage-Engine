@@ -3276,7 +3276,7 @@ ERR VTAPI ErrIsamAddColumn(
     ULONG               cbUserDataAdd               = 0;
     LONG                cbRecordMost                = REC::CbRecordMost( pfucb );
 
-    //  check paramaters
+    //  check parameters
     //
     CallR( ErrPIBCheck( ppib ) );
     Assert( pfucb != pfucbNil );
