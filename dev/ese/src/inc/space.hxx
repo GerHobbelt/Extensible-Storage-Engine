@@ -220,6 +220,15 @@ ERR ErrSPFreeFDP(
     const PGNO  pgnoFDPParent,
     const BOOL  fPreservePrimaryExtent = fFalse );
 
+ERR ErrSPGetDatabaseInfo(
+    PIB         *ppib,
+    const IFMP  ifmp,
+    __out_bcount(cbMax) BYTE        *pbResult,
+    const ULONG cbMax,
+    const ULONG fSPExtents,
+    bool fUseCachedResult,
+    CPRINTF * const pcprintf = NULL );
+
 typedef enum class GET_CACHED_INFO {
     Allow,
     Require,
@@ -232,7 +241,7 @@ ERR ErrSPGetInfo(
     FUCB                      *pfucb,
     __out_bcount(cbMax) BYTE  *pbResult,
     const ULONG               cbMax,
-    const ULONG               fSPExtents,
+    const ULONG               fSPExtentsRequested,
     const GET_CACHED_INFO     gciType,
     CPRINTF * const           pcprintf = NULL );
 
@@ -448,9 +457,3 @@ const CPG   cpgTableMin             = cpgSingleExtentMin * 2;
 //  largest extent of growth ESE will allow.
 const ULONG cbSecondaryExtentMost = ( 100 * 1024 * 1024 );  // 100 MB ... we could go up to 1 GB.
 
-// space Manager global variables
-
-extern BOOL g_fSPExtentPageCountCacheTrackOnCreate; // Controls whether or not to add a value to ExtentPageCountCache on every space tree creation.
-#ifdef DEBUG
-extern BOOL g_fSPExtentPageCountCacheValidation;    // Controls whether or not we do validation of ExtentPageCountCache values.
-#endif

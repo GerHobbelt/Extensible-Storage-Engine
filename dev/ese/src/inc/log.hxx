@@ -1260,7 +1260,7 @@ public:
 
     ERR ErrLGUpdateWaypointIFMP( IFileSystemAPI *const pfsapi, _In_ const IFMP ifmpTarget = ifmpNil );
     ERR ErrLGQuiesceWaypointLatencyIFMP( _In_ const IFMP ifmpTarget );
-    LONG LLGElasticWaypointLatency() const;
+    VOID LGElasticWaypointLatency( LONG *plWaypointLatency, LONG *plElasticWaypointLatency ) const;
     BOOL FWaypointLatencyEnabled() const;
 
     //  ================================================================
@@ -1703,6 +1703,8 @@ private:
     BOOL            m_fNewCheckpointFile;
 
     LGEN_LOGTIME_MAP m_MaxRequiredMap;
+
+    CArray<PageRef> m_arrayPagerefSupercold;
 
     // ****************** members for restore ******************
 
@@ -2172,8 +2174,8 @@ ERR ErrLGDbDetachingCallback_( INST *pinst, FMP *pfmp, const CHAR *szFile, const
 #define ErrLGDbDetachingCallback( pinst, pfmp ) \
             ErrLGDbDetachingCallback_( pinst, pfmp, __FILE__, __LINE__ )
 
-#define ErrLGCommitCtxCallback( pinst, pbCommitCtx, cbCommitCtx ) \
-            ErrLGRecoveryControlCallback( pinst, NULL, (WCHAR *)pbCommitCtx, JET_sntCommitCtx, JET_errSuccess, cbCommitCtx, fFalse, 0, __FILE__, __LINE__ )
+#define ErrLGCommitCtxCallback( pinst, pbCommitCtx, cbCommitCtx, fCallbackType ) \
+            ErrLGRecoveryControlCallback( pinst, NULL, (WCHAR *)pbCommitCtx, JET_sntCommitCtx, JET_errSuccess, cbCommitCtx, fCallbackType, 0, __FILE__, __LINE__ )
 
 
 #if defined( USE_HAPUBLISH_API )

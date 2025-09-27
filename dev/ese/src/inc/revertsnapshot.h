@@ -11,6 +11,7 @@
 #define cRBSSegmentMax                  0x7fff0000
 #define cbRBSSegmentsInBuffer           (cbRBSBufferSize/cbRBSSegmentSize)
 #define csecSpaceUsagePeriodicLog       3600
+#define cbMaxRBSSizeAllowed             100LL*1024*1024*1024
 
 C_ASSERT( cbRBSSegmentSizeMask == cbRBSSegmentSize - 1 );
 
@@ -78,7 +79,11 @@ struct RBSFILEHDR_FIXED
     BYTE                        bLogsCopied;
     // 81 bytes
 
-    BYTE                        rgbReserved[586];
+    SIGNATURE                   signPrevRBSHdrFlush;    // Signature from the last flush of previous RBS. Used to stamp on database header after we revert to a particular snapshot.
+                                                        // This way, even after a revert, we can further revert back since the snapshots will be considered valid.
+    // 109 bytes
+
+    BYTE                        rgbReserved[558];
     //  667 bytes
 
     //  WARNING: MUST be placed at this offset
@@ -178,6 +183,14 @@ C_ASSERT( offsetof( RBSSEGHDR, fFlags ) == offsetof( CPAGE::PGHDR, fFlags ) );
 
 #include <poppack.h>
 
+struct RBSVersion
+{
+    ULONG   ulMajor;           //  major version number - used to breaking changes
+    ULONG   ulMinor;           //  minor version number - used for backward compat changes (no need for forward compat changes as data is not shipped between servers)
+};
+
+#define JET_rbsfvSignPrevRbsHdrFlush RBSVersion { 1, 4 }  // RBSFormatVersion supporting SignPrevRbsHdrFlush.
+
 INLINE QWORD IbRBSFileOffsetOfSegment( ULONG segment )      { return QWORD( segment + 1 ) << shfRBSSegmentSize; }
 INLINE ULONG IsegRBSSegmentOfFileOffset( QWORD ib )         { return ULONG( ( ib >> shfRBSSegmentSize ) - 1 ); }
 INLINE ULONG CsegRBSCountSegmentOfOffset( DWORD ib )        { return ib >> shfRBSSegmentSize; }
@@ -186,7 +199,7 @@ INLINE ULONG IbRBSSegmentOffsetFromFullOffset( DWORD ib )   { return ib & cbRBSS
 #include "revertsnapshotrecords.h"
 
 const ULONG ulRBSVersionMajor         = 1;
-const ULONG ulRBSVersionMinor         = 3;
+const ULONG ulRBSVersionMinor         = 4;
 
 class CRevertSnapshot;
 
@@ -201,7 +214,6 @@ struct CSnapshotBuffer
     void* operator new( size_t cbAlloc, CResource *pcresRBSBuf )
     {
         Assert( cbAlloc == sizeof(CSnapshotBuffer) );
-        // Consider capping usage of this resource, and add retry.
         return pcresRBSBuf->PvRESAlloc_( SzNewFile(), UlNewLine() );
     }
     void operator delete( void* pv )
@@ -228,6 +240,7 @@ struct CSnapshotBuffer
                 OSMemoryPageFree( m_pBuffer );
             }
             m_pBuffer = NULL;
+            AtomicDecrement( &s_cAllocatedBuffers );
         }
     }
 
@@ -248,6 +261,7 @@ struct CSnapshotBuffer
         {
             AllocR( m_pBuffer = (BYTE *)PvOSMemoryPageAlloc( cbRBSBufferSize, NULL ) );
         }
+        AtomicIncrement( &s_cAllocatedBuffers );
         return JET_errSuccess;
     }
 
@@ -281,6 +295,7 @@ struct CSnapshotBuffer
     }
 
     static VOID *s_pReserveBuffer;
+    static LONG s_cAllocatedBuffers;
 };
 
 struct CSnapshotReadBuffer : public CSnapshotBuffer
@@ -338,6 +353,7 @@ INLINE VOID RBSFILEHDR::Dump( CPRINTF* pcprintf, DWORD_PTR dwOffset ) const
     (*pcprintf)( FORMAT_UINT( RBSFILEHDR, this, rbsfilehdr.le_ulMinor, dwOffset ) );
     (*pcprintf)( FORMAT_UINT( RBSFILEHDR, this, rbsfilehdr.le_cbLogicalFileSize, dwOffset ) ); 
     (*pcprintf)( FORMAT_VOID( RBSFILEHDR, this, rbsfilehdr.signRBSHdrFlush, dwOffset ) );
+    (*pcprintf)( FORMAT_VOID( RBSFILEHDR, this, rbsfilehdr.signPrevRBSHdrFlush, dwOffset ) );
     (*pcprintf)( FORMAT_INT( RBSFILEHDR, this, rbsfilehdr.le_lGenMinLogCopied, dwOffset ) );
     (*pcprintf)( FORMAT_INT( RBSFILEHDR, this, rbsfilehdr.le_lGenMaxLogCopied, dwOffset ) );
     (*pcprintf)( FORMAT_BOOL( RBSFILEHDR, this, rbsfilehdr.bLogsCopied, dwOffset ) );
@@ -376,10 +392,16 @@ public:
     virtual ERR ErrGetDirSize( PCWSTR wszDirPath, _Out_ QWORD* pcbSize ) = 0;
 
     // calculates the lowest and highest revert snapshot generation in the given path.
-    virtual ERR ErrRBSGetLowestAndHighestGen( LONG* plRBSGenMin, LONG* plRBSGenMax ) = 0;
+    virtual ERR ErrRBSGetLowestAndHighestGen( LONG* plRBSGenMin, LONG* plRBSGenMax, BOOL fBackupDir ) = 0;
 
     // Returns the directory and file path for the given revert snapshot generation.
-    virtual ERR ErrRBSFilePathForGen( __out_bcount ( cbDirPath ) WCHAR* wszRBSDirPath, LONG cbDirPath, __out_bcount ( cbFilePath ) WCHAR* wszRBSFilePath, LONG cbFilePath, LONG lRBSGen ) = 0;
+    virtual ERR ErrRBSFilePathForGen( 
+        __out_bcount ( cbDirPath ) WCHAR* wszRBSDirPath, 
+        LONG cbDirPath, 
+        __out_bcount ( cbFilePath ) WCHAR* wszRBSFilePath, 
+        LONG cbFilePath, 
+        LONG lRBSGen, 
+        BOOL fBackupDir ) = 0;
 
     // Reads file create time from revert snapshot file header.
     virtual ERR ErrRBSFileHeader( PCWSTR wszRBSFilePath,  _Out_ RBSFILEHDR* prbsfilehdr ) = 0;
@@ -387,7 +409,9 @@ public:
     // Delete the given directory and all files/folders within it and logs event.
     virtual ERR ErrRemoveFolder( PCWSTR wszDirPath, PCWSTR wszRBSRemoveReason) = 0;
 
-    virtual PCWSTR WSZRBSAbsRootDirPath() = 0;
+    virtual PCWSTR WszRBSAbsRootDirPath() = 0;
+
+    virtual ERR ErrRBSAbsRootDirPathToUse( __out_bcount( cbDirPath ) WCHAR* wszRBSAbsRootDirPath, LONG cbDirPath, BOOL fBackupDir ) = 0;
 };
 
 class RBSCleanerIOOperator : public IRBSCleanerIOOperator
@@ -399,11 +423,18 @@ public:
     ERR ErrRBSInitPaths();
     ERR ErrRBSDiskSpace( QWORD* pcbFreeForUser );
     ERR ErrGetDirSize( PCWSTR wszDirPath, _Out_ QWORD* pcbSize );
-    ERR ErrRBSGetLowestAndHighestGen( LONG* plRBSGenMin, LONG* plRBSGenMax );
-    ERR ErrRBSFilePathForGen( __out_bcount ( cbDirPath ) WCHAR* wszRBSDirPath, LONG cbDirPath, __out_bcount ( cbFilePath ) WCHAR* wszRBSFilePath, LONG cbFilePath, LONG lRBSGen );
+    ERR ErrRBSGetLowestAndHighestGen( LONG* plRBSGenMin, LONG* plRBSGenMax, BOOL fBackupDir );
+    ERR ErrRBSFilePathForGen( 
+        __out_bcount ( cbDirPath ) WCHAR* wszRBSDirPath, 
+        LONG cbDirPath, 
+        __out_bcount ( cbFilePath ) WCHAR* wszRBSFilePath, 
+        LONG cbFilePath, 
+        LONG lRBSGen, 
+        BOOL fBackupDir );
     ERR ErrRBSFileHeader( PCWSTR wszRBSFilePath, _Out_ RBSFILEHDR* prbsfilehdr );
-    ERR ErrRemoveFolder( PCWSTR wszDirPath, PCWSTR wszRBSRemoveReason);
-    PCWSTR WSZRBSAbsRootDirPath();
+    ERR ErrRemoveFolder( PCWSTR wszDirPath, PCWSTR wszRBSRemoveReason );
+    PCWSTR WszRBSAbsRootDirPath();
+    ERR ErrRBSAbsRootDirPathToUse( __out_bcount( cbDirPath ) WCHAR* wszRBSAbsRootDirPath, LONG cbDirPath, BOOL fBackupDir );
 
 private:
     INST*                           m_pinst;
@@ -412,7 +443,7 @@ private:
     PWSTR                           m_wszRBSBaseName;
 };
 
-INLINE PCWSTR RBSCleanerIOOperator::WSZRBSAbsRootDirPath() { return m_wszRBSAbsRootDirPath; }
+INLINE PCWSTR RBSCleanerIOOperator::WszRBSAbsRootDirPath() { return m_wszRBSAbsRootDirPath; }
 
 //  ================================================================
 class IRBSCleanerConfig
@@ -435,6 +466,9 @@ public:
 
     // Low disk space at which we will start cleaning up RBS aggressively.
     virtual QWORD CbLowDiskSpaceThreshold() = 0;
+
+    // Low disk space at which we will decide to raise failure item to disable RBS provided there is only one RBS.
+    virtual QWORD CbLowDiskSpaceDisableRBSThreshold() = 0;
 
     // Max alloted space for revert snapshots when the disk space is low.
     virtual QWORD CbMaxSpaceForRBSWhenLowDiskSpace() = 0;
@@ -466,6 +500,7 @@ public:
     INT CPassesMax() { return INT_MAX; }
     BOOL FEnableCleanup();
     QWORD CbLowDiskSpaceThreshold();
+    QWORD CbLowDiskSpaceDisableRBSThreshold();
     QWORD CbMaxSpaceForRBSWhenLowDiskSpace();
     INT CSecRBSMaxTimeSpan();
     INT CSecMinCleanupIntervalTime();
@@ -481,6 +516,14 @@ INLINE BOOL RBSCleanerConfig::FEnableCleanup()
 INLINE QWORD RBSCleanerConfig::CbLowDiskSpaceThreshold()
 {
     return ( (QWORD) UlParam( m_pinst, JET_paramFlight_RBSLowDiskSpaceThresholdGb ) ) * 1024 * 1024 * 1024;
+}
+
+INLINE QWORD RBSCleanerConfig::CbLowDiskSpaceDisableRBSThreshold()
+{
+    // We will raise a failure item to let HA disable RBS in case of low disk space and there are no older RBS to cleanup.
+    // We don't want to reuse the same low disk space threshold since we want to give rbs cleaner a chance to cleanup older RBS, 
+    // so we will lower the threshold by further 25GB to disable RBS.
+    return ( (QWORD) min( UlParam( m_pinst, JET_paramFlight_RBSLowDiskSpaceThresholdGb ) - 25, 0 ) ) * 1024 * 1024 * 1024;
 }
 
 INLINE QWORD RBSCleanerConfig::CbMaxSpaceForRBSWhenLowDiskSpace()
@@ -604,6 +647,8 @@ private:
     ERR     ErrDoOneCleanupPass( );
     BOOL    FMaxPassesReached( ) const;
     BOOL    FGenValid( long lrbsgen );
+
+    ERR ErrRBSCleanupBackup( QWORD* cbFreeRBSDisk, QWORD* cbTotalRBSDiskSpace );
 };
 
 INLINE VOID RBSCleaner::SetFirstValidGen( long lrbsgen )
@@ -630,19 +675,14 @@ INLINE BOOL RBSCleaner::FMaxPassesReached() const
 
 const TICK dtickRBSFlushInterval = 30 * 1000;   // Time interval before force flush of snapshot is considered.
 
-class CRevertSnapshot : public CZeroInit
+class CRevertSnapshot
 {
  public:
     CRevertSnapshot( _In_ INST* const pinst );
 
-    ~CRevertSnapshot();
+    virtual ~CRevertSnapshot();
 
-    ERR ErrRBSInit( BOOL fRBSCreateIfMissing );
-    ERR ErrRBSRecordDbAttach( _In_ FMP* const pfmp );
-    ERR ErrRBSInitDBFromRstmap( _In_ const RSTMAP* const prstmap, LONG lgenLow, LONG lgenHigh );
-
-    DBTIME GetDbtimeForFmp( FMP *pfmp );
-    ERR ErrSetDbtimeForFmp( FMP *pfmp, DBTIME dbtime );
+    ERR ErrRBSInit( BOOL fRBSCreateIfMissing, ERR createSkippedError );
 
     VOID Term();
 
@@ -651,7 +691,8 @@ class CRevertSnapshot : public CZeroInit
             PGNO pgno,
             _In_reads_( cbImage ) const BYTE *pbImage,
             ULONG cbImage,
-            RBS_POS *prbsposRecord );
+            RBS_POS *prbsposRecord,
+            ULONG fFlags );
 
     ERR ErrCaptureNewPage(
             DBID dbid,
@@ -679,9 +720,6 @@ class CRevertSnapshot : public CZeroInit
 
     ERR ErrSetReadBuffer( ULONG iStartSegment );
     ERR ErrGetNextRecord( RBSRecord **ppRecord, RBS_POS* lgposRecStart, _Out_ PWSTR wszErrReason );
-
-    BOOL FRollSnapshot();
-    ERR ErrRollSnapshot( BOOL fPrevRBSValid, BOOL fInferFromRstmap );
     
     ERR ErrSetRBSFileApi( _In_ IFileAPI *pfapirbs );
 
@@ -703,21 +741,15 @@ class CRevertSnapshot : public CZeroInit
     }
 
     static VOID EnterDbHeaderFlush( CRevertSnapshot* prbs, _Out_ SIGNATURE* const psignRBSHdrFlush );
-    static ERR  ErrRBSInitFromRstmap( INST* pinst );
 
  private:
-    INST            *m_pinst;
-    RBSFILEHDR      *m_prbsfilehdrCurrent;
-
     PWSTR           m_wszRBSAbsRootDirPath;
     PWSTR           m_wszRBSBaseName;
-    PWSTR           m_wszRBSCurrentFile;                // Path to the current RBS file.
-    PWSTR           m_wszRBSCurrentLogDir;              // Path to the current RBS Log dir.
-    IFileAPI        *m_pfapiRBS;                        // file handle for read/write the file
 
     BOOL            m_fInitialized;                     // Whether or not the object is initialized.
     BOOL            m_fInvalid;                         // Whether the snapshot is marked as invalid.
     BOOL            m_fDumping;                         // Whether this is just being used to dump the snapshot
+    BOOL            m_fPatching;                        // Whether this is just being used to patch the snapshot.
 
     ULONG           m_cNextActiveSegment;
     ULONG           m_cNextWriteSegment;
@@ -727,7 +759,6 @@ class CRevertSnapshot : public CZeroInit
     CCriticalSection m_critBufferLock;
     CSnapshotBuffer *m_pBuffersToWrite;
     CSnapshotBuffer *m_pBuffersToWriteLast;
-    CCriticalSection m_critWriteLock;
 
     CSnapshotReadBuffer *m_pReadBuffer;
 
@@ -735,49 +766,58 @@ class CRevertSnapshot : public CZeroInit
 
     TICK            m_tickLastFlush;
 
-    _int64          m_ftSpaceUsageLastLogged;           // Last time we logged the space usage info
-    QWORD           m_cbFileSizeSpaceUsageLastRun;      // The logical file size during our last run of logging the space usage.
-    LONG            m_lGenSpaceUsageLastRun;            // What was the current log generation during the last run of logging the space usage.
-
-    ERR ErrRBSSetRequiredLogs( BOOL fInferFromRstmap );
-    ERR ErrRBSCopyRequiredLogs( BOOL fInferFromRstmap );
-
-    ERR ErrCaptureDbHeader( FMP * const pfmp );
-    ERR ErrCaptureDbAttach( FMP * const pfmp );
-    ERR ErrCaptureRec(
-            const RBSRecord * prec,
-            const DATA      * pExtraData,
-                  RBS_POS   * prbsposRecord );
     ERR ErrQueueCurrentAndAllocBuffer();
 
     static DWORD WriteBuffers_( VOID * pvThis );
     ERR ErrWriteBuffers();
     ERR ErrFlush();
 
-    ERR ErrRBSInvalidate();
-    VOID RBSLogSpaceUsage();
-
     ERR ErrResetHdr( );
     VOID FreeFileApi( );
     VOID FreeHdr( );
     VOID FreePaths( );
-    VOID FreeCurrentFilePath();
-    VOID FreeCurrentLogDirPath();
-
-    ERR ErrRBSCreateOrLoadRbsGen(
-        long lRBSGen,
-        LOGTIME tmPrevGen,
-        _Out_bytecap_c_(cbOSFSAPI_MAX_PATHW) PWSTR wszRBSAbsFilePath,
-        _Out_bytecap_c_(cbOSFSAPI_MAX_PATHW) PWSTR wszRBSAbsLogDirPath );
 
     VOID LogCorruptionEvent(
             PCWSTR wszReason,
             __int64 checksumExpected,
             __int64 checksumActual );
 
+protected:
+    INST            *m_pinst;
+    RBSFILEHDR      *m_prbsfilehdrCurrent;
+
+    PWSTR           m_wszRBSCurrentFile;                // Path to the current RBS file.
+    PWSTR           m_wszRBSCurrentLogDir;              // Path to the current RBS Log dir.
+    IFileAPI        *m_pfapiRBS;                        // file handle for read/write the file
+
+    CCriticalSection m_critWriteLock;
+
+    ERR ErrRBSCreateOrLoadRbsGen(
+        long lRBSGen,
+        LOGTIME tmPrevGen,
+        _In_ const SIGNATURE signPrevRBSHdrFlush,
+        _Out_bytecap_c_(cbOSFSAPI_MAX_PATHW) PWSTR wszRBSAbsFilePath,
+        _Out_bytecap_c_(cbOSFSAPI_MAX_PATHW) PWSTR wszRBSAbsLogDirPath );
+
+    ERR ErrCaptureRec(
+        const RBSRecord * prec,
+        const DATA      * pExtraData,
+        RBS_POS   * prbsposRecord );
+    ERR ErrCaptureDbAttach( WCHAR* wszDatabaseName, const DBID dbid );
+
+    ERR ErrRBSInvalidate();
+
+    VOID FreeCurrentFilePath();
+    VOID FreeCurrentLogDirPath();
+
+    virtual VOID RBSCheckSpaceUsage() {}
+
  public:
-    BOOL FInitialized()                                     { return m_fInitialized; };
-    BOOL FInvalid()                                         { return m_fInvalid; };
+    BOOL FInitialized() const                               { return m_fInitialized; };
+    BOOL FInvalid() const                                   { return m_fInvalid; };
+    BOOL FPatching() const                                  { return m_fPatching; };
+
+    VOID SetPatching()                                      { m_fPatching = true; }
 };
 
 INLINE VOID CRevertSnapshot::FreeFileApi( )
@@ -835,6 +875,59 @@ INLINE VOID CRevertSnapshot::FreePaths( )
     FreeCurrentFilePath();
     FreeCurrentLogDirPath();
 }
+
+// Used when databases are attached and preimages are captured.
+//
+class CRevertSnapshotForAttachedDbs : public CRevertSnapshot
+{
+private:
+    QWORD           m_cbFileSizeSpaceUsageLastRun;      // The logical file size during our last run of logging the space usage.
+    LONG            m_lGenSpaceUsageLastRun;            // What was the current log generation during the last run of logging the space usage.
+    _int64          m_ftSpaceUsageLastLogged;           // Last time we logged the space usage info.
+
+    ERR ErrRBSSetRequiredLogs( BOOL fInferFromRstmap );
+    ERR ErrRBSCopyRequiredLogs( BOOL fInferFromRstmap );
+
+    ERR ErrCaptureDbHeader( FMP * const pfmp );
+
+    ERR ErrRBSInvalidateFmps();
+
+    BOOL FRBSRaiseFailureItemIfNeeded();
+    VOID RBSCheckSpaceUsage();
+
+public:
+    CRevertSnapshotForAttachedDbs( _In_ INST* const pinst );
+    ~CRevertSnapshotForAttachedDbs() {}
+
+    ERR ErrRBSRecordDbAttach( _In_ FMP* const pfmp );
+    ERR ErrRBSInitDBFromRstmap( _In_ const RSTMAP* const prstmap, LONG lgenLow, LONG lgenHigh );
+
+    DBTIME  GetDbtimeForFmp( FMP *pfmp );
+    ERR     ErrSetDbtimeForFmp( FMP *pfmp, DBTIME dbtime );
+
+    BOOL    FRollSnapshot();
+    ERR     ErrRollSnapshot( BOOL fPrevRBSValid, BOOL fInferFromRstmap );
+
+    static ERR ErrRBSInitFromRstmap( INST* const pinst );
+};
+
+// Used when preimages are captured as part of patching pages (via incremenetal reseed api)
+//
+class CRevertSnapshotForPatch : public CRevertSnapshot
+{
+private:
+    DBID m_dbidPatchingMaxInUse;
+
+public:
+    CRevertSnapshotForPatch( _In_ INST* const pinst );
+    ~CRevertSnapshotForPatch() {}
+
+    ERR ErrRBSInitDB( CIrsOpContext* const pirs );
+    ERR ErrCaptureFakeDbAttach( CIrsOpContext* const pirs );
+    ERR ErrRBSInvalidateIrs( PCWSTR wszReason );
+
+    static ERR ErrRBSInitForPatch( INST* const pinst );
+};
 
 #include <pshpack1.h>
 
@@ -914,7 +1007,8 @@ private:
                                                                     //       Store it in checkpoint if we are changing the apply logic.
     IFileAPI*                   m_pfapiDb;
     CArray< CPagePointer >*     m_rgRBSDbPage;        
-    IBitmapAPI*                 m_psbmDbPages;                      // Sparse bit map indicating whether a given page has been captured.                                                                    
+    IBitmapAPI*                 m_psbmDbPages;                      // Sparse bit map indicating whether a given page has been captured.
+    IBitmapAPI*                 m_psbmCachedDbPages;                // Sparse bit map indicating whether a given page is currently in our page cache.
 
     DBTIME                      m_dbTimePrevDirtied;                // Returns previous db time dirtied set for this database in the RBS gen we processed earlier. Used to check for consistency. 
                                                                     // If this doesn't match with dbtime of the database from previous RBS gen, any previous RBS with this database attached should be invalid.
@@ -933,6 +1027,7 @@ private:
 private:
     ERR ErrFlushDBPage( void* pvPage, PGNO pgno, USHORT cbDbPageSize, const OSFILEQOS qos );
     static INT __cdecl ICRBSDatabaseRevertContextCmpPgRec( const CPagePointer* pppg1, const CPagePointer* pppg2 );
+    static INT __cdecl ICRBSDatabaseRevertContextPgEquals( const CPagePointer* pppg1, const CPagePointer* pppg2 );
     static void OsWriteIoComplete(
         const ERR errIo,
         IFileAPI* const pfapi,
@@ -948,10 +1043,10 @@ public:
     ~CRBSDatabaseRevertContext();
     ERR ErrRBSDBRCInit( RBSATTACHINFO* prbsattachinfo, SIGNATURE* psignRBSHdrFlush, CPG cacheSize );
     ERR ErrSetDbstateForRevert( ULONG rbsrchkstate, LOGTIME logtimeRevertTo );
-    ERR ErrSetDbstateAfterRevert( ULONG rbsrchkstate );
+    ERR ErrSetDbstateAfterRevert( SIGNATURE* psignRbsHdrFlush );
     ERR ErrRBSCaptureDbHdrFromRBS( RBSDbHdrRecord* prbsdbhdrrec, BOOL* pfGivenDbfilehdrCaptured );
-    ERR ErrAddPage( void* pvPage, PGNO pgno );
-    ERR ErrResetSbmDbPages();
+    ERR ErrAddPage( void* pvPage, PGNO pgno, BOOL fReplaceCached, BOOL* pfPageAddedToCache );
+    ERR ErrResetSbmPages( IBitmapAPI** ppsbm );
     ERR ErrFlushDBPages( USHORT cbDbPageSize, BOOL fFlushDbHdr, CPG* pcpgReverted );
     BOOL FPageAlreadyCaptured( PGNO pgno );
     ERR ErrBeginTracingToIRS();
@@ -959,14 +1054,15 @@ public:
     // =====================================================================
     // Member retrieval..
 public:
-    WCHAR*      WszDatabaseName() const     { return m_wszDatabaseName; }
-    DBID        DBIDCurrent() const         { return m_dbidCurrent; }
-    LONG        LgenLastConsistent() const  { return m_pdbfilehdr->le_lgposConsistent.le_lGeneration; }
-    LONG        LGenMinRequired() const     { return m_pdbfilehdr->le_lGenMinRequired; }
-    LONG        LGenMaxRequired() const     { return m_pdbfilehdr->le_lGenMaxRequired; }
-    DBTIME      DbTimePrevDirtied() const   { return m_dbTimePrevDirtied; }
-    DBFILEHDR*  PDbfilehdrFromRBS() const   { return m_pdbfilehdrFromRBS; }
-    CPRINTF*    CprintfIRSTrace() const     { return m_pcprintfIRSTrace; }
+    WCHAR*          WszDatabaseName() const     { return m_wszDatabaseName; }
+    DBID            DBIDCurrent() const         { return m_dbidCurrent; }
+    LONG            LgenLastConsistent() const  { return m_pdbfilehdr->le_lgposConsistent.le_lGeneration; }
+    LONG            LGenMinRequired() const     { return m_pdbfilehdr->le_lGenMinRequired; }
+    LONG            LGenMaxRequired() const     { return m_pdbfilehdr->le_lGenMaxRequired; }
+    DBTIME          DbTimePrevDirtied() const   { return m_dbTimePrevDirtied; }
+    DBFILEHDR*      PDbfilehdrFromRBS() const   { return m_pdbfilehdrFromRBS; }
+    CPRINTF*        CprintfIRSTrace() const     { return m_pcprintfIRSTrace; }
+    IBitmapAPI**    PpsbmDbPages()              { return &m_psbmDbPages;  }
 
     // =====================================================================
     // Member manipulation.
@@ -1013,8 +1109,8 @@ private:
     BOOL FRBSDBRC( PCWSTR wszDatabaseName, IRBSDBRC* pirbsdbrc );
 
     ERR ErrRBSDBRCInitFromAttachInfo( const BYTE* pbRBSAttachInfo, SIGNATURE* psignRBSHdrFlush );
-    ERR ErrComputeRBSRangeToApply( LOGTIME ltRevertExpected, LOGTIME* pltRevertActual );
-    ERR ErrRBSGenApply( LONG lRBSGen, BOOL fDbHeaderOnly );
+    ERR ErrComputeRBSRangeToApply( PCWSTR wszRBSAbsRootDirPath, LOGTIME ltRevertExpected, LOGTIME* pltRevertActual );
+    ERR ErrRBSGenApply( LONG lRBSGen, RBSFILEHDR* prbsfilehdr, BOOL fDbHeaderOnly, BOOL fUseBackupDir );
     ERR ErrApplyRBSRecord( RBSRecord* prbsrec, BOOL fCaptureDBHdrFromRBS, BOOL fDbHeaderOnly, BOOL* pfGivenDbfilehdrCaptured );
     ERR ErrCheckApplyRBSContinuation();
     ERR ErrAddRevertedNewPage( DBID dbid, PGNO pgnoRevertNew );
@@ -1025,10 +1121,13 @@ private:
     ERR ErrUpdateRevertTimeFromCheckpoint( LOGTIME *pltRevertExpected );
     ERR ErrUpdateRevertCheckpoint( ULONG revertstate, RBS_POS rbspos, LOGTIME tmCreateCurrentRBSGen, BOOL fUpdateRevertedPageCount );
     ERR ErrManageStateAfterRevert( LONG* pLgenNewMinReq, LONG* pLgenNewMaxReq );
-    ERR ErrUpdateDbStatesAfterRevert();
+    ERR ErrCopyRequiredLogsAfterRevert( LONG lgenMinToCopy, LONG lgenMaxToCopy );
+    ERR ErrBackupRBSAfterRevert();
+    ERR ErrRemoveRBSAfterRevert();
+    ERR ErrUpdateDbStatesAfterRevert( SIGNATURE* psignRbsHdrFlush );
     ERR ErrSetLogExt( PCWSTR wszRBSLogDirPath );
 
-    ERR ErrAddPageRecord( void* pvPage, DBID dbid, PGNO pgno );
+    ERR ErrAddPageRecord( void* pvPage, DBID dbid, PGNO pgno, BOOL fReplaceCached );
     ERR ErrFlushPages( BOOL fFlushDbHdr );
     BOOL FPageAlreadyCaptured( DBID dbid, PGNO pgno );
 
@@ -1062,3 +1161,4 @@ public:
 // =====================================================================
 
 VOID UtilLoadRBSinfomiscFromRBSfilehdr( JET_RBSINFOMISC* prbsinfomisc, const ULONG cbrbsinfomisc, const RBSFILEHDR* prbsfilehdr );
+VOID RBSResourcesCleanUpFromInst( _In_ INST * const pinst );

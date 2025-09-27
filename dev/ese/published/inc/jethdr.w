@@ -665,6 +665,7 @@ typedef void (JET_API *JET_SPCATCALLBACK)( _In_ const unsigned long pgno, _In_ c
 #define JET_efvRevertSnapshot                               9360    //  Added revert snapshot flush signature to database header and added lrtypExtentFreed, which logs details about the extent freed to allow for revert snapshot to capture the pages of the freed extent.
 #define JET_efvApplyRevertSnapshot                          9380    //  Added le_lgposCommitBeforeRevert to the database header which captures the last commit lgpos before revert was done and is used to ignore JET_errDbTimeTooOld errors on pasive copies.
 #define JET_efvExtentPageCountCache                         9400    //  Adds support for the ExtentPageCountCache table.
+#define JET_efvLz4Compression                               9420    //  Adds support for compressing/decompressing data using Lz4.
 
 // Special format specifiers here
 #define JET_efvUseEngineDefault             (0x40000001)    //  Instructs the engine to use the maximal default supported Engine Format Version. (default)
@@ -2845,9 +2846,14 @@ typedef struct
             unsigned long       cbStruct;       /* size of this structure */
             const void *        pbCommitCtx;    /* commit context */
             unsigned long       cbCommitCtx;    /* size of commit context */
+            unsigned long       fCallbackType;  /* type of callback */
         } CommitCtx;
     };
 } JET_RECOVERYCONTROL;
+
+#define fCommitCtxLegacyCommitCallback  1
+#define fCommitCtxPreCommitCallback     2
+#define fCommitCtxPostCommitCallback    3
 #endif // JET_VERSION >= 0x0A00
 
 #if ( JET_VERSION >= 0x0600 )
@@ -3949,6 +3955,7 @@ typedef enum
 // end_PubEsent
 #define JET_paramFlight_EnableReattachRaceBugFix 74 //  Enable bug fix for race between dirty-cache-keep-alive database reattach and checkpoint update
 // #define JET_paramSLVDefragFreeThreshold      74  //  chunks whose free % is > this will be allocated from
+#define JET_paramFlight_EnableLz4Compression    75 //  Enable Lz4 compression
 // #define JET_paramSLVDefragMoveThreshold      75  //  chunks whose free % is > this will be relocated
 #define JET_paramEnableSortedRetrieveColumns    76  //  internally sort (in a dynamically allocated parallel array) JET_RETRIEVECOLUMN structures passed to JetRetrieveColumns()
 // begin_PubEsent
@@ -3958,19 +3965,22 @@ typedef enum
 #define JET_paramRecordUpgradeDirtyLevel        78  //  how aggresively should pages with their record format converted be flushed (0-3)
 // end_PubEsent
 #define JET_paramRecoveryCurrentLogfile         79  //  which generation is currently being replayed (read only)
-#define JET_paramReplayingReplicatedLogfiles    80  //  if a logfile doesn't exist, wait for it to be created
 // begin_PubEsent
 //                                              81  //  JET_paramGlobalMinVerPages defined above
 #define JET_paramOSSnapshotTimeout              82  //  timeout for the freeze period in msec
 // end_PubEsent
-//                                              83  //  OBSOLETE: Was JET_paramUnicodeIndexLibrary.
+#define JET_paramFlight_SkipDbHeaderWriteForLgenCommittedUpdate 83  //  Skip database header write only for lgenCommitted update (lgenMinRequired and lgenMaxRequired updates would still trigger the write)
 
 #if ( JET_VERSION >= 0x0A01 )
+
+#define JET_paramFlight_RBSForceRollIntervalSec                 80  // Time after which we should force roll into new revert snapshot by raising failure item and letting HA remount. This is temporary till we have live roll.
 
 #define JET_paramFlight_NewQueueOptions                         84  //  Controls options for new Meted IO Queue
 #define JET_paramFlight_ConcurrentMetedOps                      85  //  Controls how many IOs we leave out at once for the new Meted IO Queue.
 #define JET_paramFlight_LowMetedOpsThreshold                    86  //  Controls the transition from 1 meted op to JET_paramFlight_ConcurrentMetedOps (which is the max).
 #define JET_paramFlight_MetedOpStarvedThreshold                 87  //  Milliseconds until a meted IO op is considered starved and dispatched no matter what.
+
+#define JET_paramFlight_MaxRBSBuffers                           88  //  Max number of buffers to allocate for revert snapshot.
 
 #define JET_paramFlight_EnableShrinkArchiving                   89  //  Turns on archiving truncated data when shrinking a database (subject to efv).
 
@@ -4209,10 +4219,11 @@ typedef enum
 #define JET_sesparamIOPriority              4108    //  Specifies IO Priority flags to use (see JET_IOPriority* flags)
 
 #define JET_sesparamCommitContextContainsCustomerData   4109    //  Boolean value specifying whether the value specified with JET_sesparamCommitGenericContext contains customer data.
+#define JET_sesparamCommitContextNeedPreCommitCallback  4110    //  Boolean value specifying whether the application wants pre/post commit callbacks with the generic context.
 #endif // JET_VERSION >= 0x0A01
 
 // begin_PubEsent
-#define JET_sesparamMaxValueInvalid         4110    //  This is not a valid session parameter. It can change from release to release!
+#define JET_sesparamMaxValueInvalid         4111    //  This is not a valid session parameter. It can change from release to release!
 
 typedef struct
 {
@@ -5350,21 +5361,6 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 
 #endif // JET_VERSION >= 0x0600
 
-    /* RBS revert states */
-
-#if ( JET_VERSION >= 0x0A01 )
-#define JET_revertstateNone                 0   // Revert has not yet started/default state.
-#define JET_revertstateInProgress           1   // Revert snapshots are currently being applied to the databases.
-#define JET_revertstateCopingLogs           2   // The required logs to bring databases to a clean state are being copied to the log directory after revert.
-#define JET_revertstateCompleted            3   // Revert snapshots have been finished applying.
-#endif // JET_VERSION >= 0x0A01
-
-    /* RBS revert grbits */
-
-#if ( JET_VERSION >= 0x0A01 )
-#define JET_bitDeleteAllExistingLogs  0x00000001  /* Delete all the existing log files at the end of revert. */
-#endif // JET_VERSION >= 0x0A01
-
     /* Column data types */
 
 #define JET_coltypNil               0
@@ -5424,6 +5420,22 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #endif // JET_VERSION >= 0x0A00
 
 // end_PubEsent
+
+    /* RBS revert states */
+
+#if ( JET_VERSION >= 0x0A01 )
+#define JET_revertstateNone                 0   // Revert has not yet started/default state.
+#define JET_revertstateInProgress           1   // Revert snapshots are currently being applied to the databases.
+#define JET_revertstateCopingLogs           2   // The required logs to bring databases to a clean state are being copied to the log directory after revert.
+#define JET_revertstateBackupSnapshot       3   // Backs up revert snapshots for investigation purposes.
+#define JET_revertstateRemoveSnapshot       4   // Removes the snapshot which have been applied to the databases and backed up.
+#endif // JET_VERSION >= 0x0A01
+
+    /* RBS revert grbits */
+
+#if ( JET_VERSION >= 0x0A01 )
+#define JET_bitDeleteAllExistingLogs  0x00000001  /* Delete all the existing log files at the end of revert. */
+#endif // JET_VERSION >= 0x0A01
 
 #if ( JET_VERSION >= 0x0600 )
         /* Info levels for JetGetSessionInfo */
@@ -5591,6 +5603,14 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_bitEndDatabaseIncrementalReseedCancel       0x00000001      //  Stop an incremental reseed operation prematurely for any (failing) reason.  Database will be left in inconsistent JET_dbstateIncrementalReseedInProgress state.
 
 #endif // JET_VERSION >= 0x0601
+
+#if ( JET_VERSION >= 0x0A01 )
+
+    /* Flags for JetBeginDatabaseIncrementalReseed */
+
+#define JET_bitBeginDatabaseIncrementalReseedPatchRBS   0x00000001      //  Try to patch RBS file as part of increseed. If this flag is not passed, we will lose the RBS files and the ability to revert back to the past.
+
+#endif // JET_VERSION >= 0x0A01
 
 
 // begin_PubEsent
@@ -6083,7 +6103,7 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_errMissingCurrentLogFiles       -565  /* Some current log files are missing for continuous restore */
 
 #define JET_errDbTimeTooOld                     -566  /* dbtime on page smaller than dbtimeBefore in record */
-#define JET_errDbTimeTooNew                     -567  /* dbtime on page in advance of the dbtimeBefore in record */
+#define JET_errDbTimeTooNew                     -567  /* dbtime on page in advance of the dbtimeBefore and below dbtimeAfter in record */
 // end_PubEsent
 //#define wrnCleanedUpMismatchedFiles                568  /* INTERNAL WARNING: indicates that the redo function cleaned up logs/checkpoint because of a size mismatch (see JET_paramCleanupMismatchedLogFiles) */
 // begin_PubEsent
@@ -6146,10 +6166,11 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_errEngineFormatVersionParamTooLowForRequestedFeature    -621 /* Thrown by a format feature (not at JetSetSystemParameter) if the client requests a feature that requires a version higher than that set for the JET_paramEngineFormatVersion. */
 #define JET_errEngineFormatVersionSpecifiedTooLowForLogVersion                      -622 /* The specified JET_ENGINEFORMATVERSION is set too low for this log stream, the log files have already been upgraded to a higher version.  A higher JET_ENGINEFORMATVERSION value must be set in the param. */
 #define JET_errEngineFormatVersionSpecifiedTooLowForDatabaseVersion                 -623 /* The specified JET_ENGINEFORMATVERSION is set too low for this database file, the database file has already been upgraded to a higher version.  A higher JET_ENGINEFORMATVERSION value must be set in the param. */
-
 // end_PubEsent
-
 #define errLogServiceStopped                -624  /* Logging has been stopped via JetStopServiceInstance2 JET_bitStopServiceStopAndEmitLog */
+// begin_PubEsent
+#define JET_errDbTimeBeyondMaxRequired      -625  /* dbtime on page greater than or equal to dbtimeAfter in record, but record is outside required range for the database */
+// end_PubEsent
 
 #define errBackupAbortByCaller              -800  /* INTERNAL ERROR: Backup was aborted by client or RPC connection with client failed */
 // begin_PubEsent
@@ -6532,6 +6553,7 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_errRBSRCInvalidDbFormatVersion  -1937  /* The database format version for the databases to be reverted doesn't support applying the revert snapshot. */
 #define JET_errRBSCannotDetermineDivergence -1938  /* The required logs for the revert snapshot are missing in log directory and hence we cannot determine if those logs are diverged with the logs in snapshot directory. */
 #define errRBSRequiredRangeTooLarge         -1939  /* RBS was not created as the required range was too large and we don't want to start revert snapshot from such a state. */
+#define errRBSPatching                      -1940  /* RBS was not created as RBS is being attached for patching purposes, usually due to incremental reseed or page patching on the databases attached to the RBS. */
 // begin_PubEsent
 
 #define JET_wrnDefragAlreadyRunning          2000 /* Online defrag already running on specified database */
@@ -11258,12 +11280,14 @@ JET_ERR JET_API
 JetBeginDatabaseIncrementalReseedA(
     _In_ JET_INSTANCE   instance,
     _In_ JET_PCSTR      szDatabase,
+    _In_ unsigned long  genFirstDivergedLog,
     _In_ JET_GRBIT      grbit );
 
 JET_ERR JET_API
 JetBeginDatabaseIncrementalReseedW(
     _In_ JET_INSTANCE   instance,
     _In_ JET_PCWSTR     szDatabase,
+    _In_ unsigned long  genFirstDivergedLog,
     _In_ JET_GRBIT      grbit );
 
 #ifdef JET_UNICODE

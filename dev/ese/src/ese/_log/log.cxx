@@ -1519,6 +1519,7 @@ ERR ErrLGRecoveryControlCallback(
             recctrl.CommitCtx.cbStruct = sizeof( recctrl.CommitCtx );
             recctrl.CommitCtx.pbCommitCtx = (BYTE *)wszLogName;
             recctrl.CommitCtx.cbCommitCtx = lgen;
+            recctrl.CommitCtx.fCallbackType = fCurrentLog;
             break;
 
         default:
@@ -1822,19 +1823,19 @@ BOOL LOG::FWaypointLatencyEnabled() const
     return fTrue;
 }
 
-LONG LOG::LLGElasticWaypointLatency() const
+VOID LOG::LGElasticWaypointLatency( LONG *plWaypointLatency, LONG *plElasticWaypointLatency ) const
 {
-    LONG lElasticWaypointDepth;
-    if ( FWaypointLatencyEnabled() && UlParam( m_pinst, JET_paramFlight_ElasticWaypointLatency ) )
+    if ( FWaypointLatencyEnabled() )
     {
-        lElasticWaypointDepth = (LONG)UlParam( m_pinst, JET_paramWaypointLatency ) + (LONG)UlParam( m_pinst, JET_paramFlight_ElasticWaypointLatency );
+        *plWaypointLatency = (LONG)UlParam( m_pinst, JET_paramWaypointLatency );
+        *plElasticWaypointLatency = (LONG)UlParam( m_pinst, JET_paramFlight_ElasticWaypointLatency );
     }
     else
     {
-        lElasticWaypointDepth = FWaypointLatencyEnabled() ? (LONG)UlParam( m_pinst, JET_paramWaypointLatency ) : 0;
+        *plWaypointLatency = 0;
+        // No elastic LLR without LLR
+        *plElasticWaypointLatency = 0;
     }
-
-    return lElasticWaypointDepth;
 }
 
 VOID LOG::LGIGetEffectiveWaypoint(
@@ -2185,16 +2186,18 @@ ERR LOG::ErrLGUpdateGenRequired(
 
         //  Note: If we're updating fHeaderUpdateMaxRequired, we should have already flushed the respective log
 
-        if ( err >= JET_errSuccess )
+        if ( err >= JET_errSuccess &&
+             // Either we are not skipping lgenCommitted only updates, or min/max Required got updated, or this call did not even pass in a lgenCommitted (special call from backup)
+             ( !BoolParam( m_pinst, JET_paramFlight_SkipDbHeaderWriteForLgenCommittedUpdate ) || fHeaderUpdateMinRequired || fHeaderUpdateMaxRequired || lGenCommitted == 0 ) )
         {
             err = ErrUtilWriteAttachedDatabaseHeaders( m_pinst, pfsapi, pfmpT->WszDatabaseName(), pfmpT, pfmpT->Pfapi() );
 
-            if ( err >= JET_errSuccess && ( fHeaderUpdateMinRequired || fHeaderUpdateMaxRequired ) )
+            if ( err >= JET_errSuccess && ( fHeaderUpdateMinRequired || fHeaderUpdateMaxRequired || lGenCommitted == 0 ) )
             {
                 const IOFLUSHREASON iofr =
                     IOFLUSHREASON(
                         ( fHeaderUpdateMinRequired ? iofrDbHdrUpdMinRequired : 0 ) |
-                        ( fHeaderUpdateMaxRequired ? iofrDbHdrUpdMaxRequired : 0 ) );
+                        ( ( fHeaderUpdateMaxRequired || lGenCommitted == 0 ) ? iofrDbHdrUpdMaxRequired : 0 ) );
                 err = ErrIOFlushDatabaseFileBuffers( ifmp, iofr );
             }
             
@@ -3488,11 +3491,9 @@ ERR LOG::ErrLGUpdateWaypointIFMP( IFileSystemAPI *const pfsapi, _In_ const IFMP 
         &fSkippedAttachDetach,
         ifmpTarget ) );
 
-    if ( fSkippedAttachDetach )
-    {
-        Assert( ifmpTarget == ifmpNil ); // only can happen if we're trying to update all IFMPs.
-        Error( ErrERRCheck( JET_errInternalError ) );
-    }
+    // fSkippedAttachDetach can happen if we're trying to update all IFMPs and some of them
+    // have not yet been reattached.
+    Assert( !fSkippedAttachDetach || ifmpTarget == ifmpNil );
 
 HandleError:
     if ( fOwnsChkptCritSec )

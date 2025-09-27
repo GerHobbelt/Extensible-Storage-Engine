@@ -4007,6 +4007,8 @@ ERR ISAMAPI ErrIsamAttachDatabase(
     FMP                 *pfmp                           = NULL;
     IFileSystemAPI      *pfsapi;
     FEATURECONTROL      fcMaintainExtentPageCountCache;
+    PGNO                pgnoFDP;
+    OBJID               objidFDP;
     enum { ATTACH_NONE, ATTACH_LOGGED, ATTACH_DB_UPDATED, ATTACH_DB_OPENED, ATTACH_END }
         attachState;
     attachState = ATTACH_NONE;
@@ -4294,11 +4296,14 @@ ERR ISAMAPI ErrIsamAttachDatabase(
             OnDebug( PGNO pgnoLastBefore = pfmp->PgnoLast() );
             CallJ( ErrDBSetLastPage( ppib, ifmp ), Detach );
             Assert( pgnoLastBefore >= pfmp->PgnoLast() );
+            pfmp->m_isdlAttach.Trigger( eAttachSetLastOwnedPage );
+
             if ( !BoolParam( JET_paramEnableViewCache ) )
             {
                 OnDebug( pgnoLastBefore = pfmp->PgnoLast() );
                 CallJ( ErrIONewSize( ifmp, *tcScope, pfmp->PgnoLast(), 0, JET_bitNil ), Detach );
                 Assert( pgnoLastBefore == pfmp->PgnoLast() );
+                pfmp->m_isdlAttach.Trigger( eAttachResizeToLastOwnedPage );
             }
 
             //  ensure our database has the expected size.
@@ -4311,27 +4316,23 @@ ERR ISAMAPI ErrIsamAttachDatabase(
             }
             }
 
-            {
-                PGNO pgnoFDP;
-                OBJID objidFDP;
-
-                // Look up the ExtentPageCountCache table before we do anything that might affect
-                // ExtentPageCountCache values. This sets up bookkeeping so any changes to space
-                // made by Update and Shrink are correctly tracked.  Since we're not providing a
-                // creation function to this call, it only looks up the table if it's there; it
-                // doesn't create it and doesn't error if it's not there, just sets pgnoFDP and
-                // objidFDP to nulls.
-                CallJ( ErrDBTryCreateSystemTable(
-                           ppib,
-                           ifmp,
-                           szMSExtentPageCountCache,
-                           NULL,
-                           NO_GRBIT,
-                           &pgnoFDP,
-                           &objidFDP ),
-                       MoreAttachedThanDetached );
-                g_rgfmp[ ifmp ].SetExtentPageCountCacheTableInfo( pgnoFDP, objidFDP );
-            }
+            // Look up the ExtentPageCountCache table before we do anything that might affect
+            // ExtentPageCountCache values. This sets up bookkeeping so any changes to space
+            // made by Update and Shrink are correctly tracked.  Since we're not providing a
+            // creation function to this call, it only looks up the table if it's there; it
+            // doesn't create it and doesn't error if it's not there, just sets pgnoFDP and
+            // objidFDP to nulls.
+            CallJ( ErrDBTryCreateSystemTable(
+                       ppib,
+                       ifmp,
+                       szMSExtentPageCountCache,
+                       NULL,
+                       NO_GRBIT,
+                       &pgnoFDP,
+                       &objidFDP ),
+                   MoreAttachedThanDetached );
+            g_rgfmp[ ifmp ].SetExtentPageCountCacheTableInfo( pgnoFDP, objidFDP );
+            pfmp->m_isdlAttach.Trigger( eAttachCheckForExtentPageCountCacheDone );
 
             // Trigger leak reclaimer.
             JET_ERR errLeakReclaimer =  JET_errSuccess;
@@ -4643,6 +4644,8 @@ ERR ISAMAPI ErrIsamAttachDatabase(
     OnDebug( PGNO pgnoLastBefore = pfmp->PgnoLast() );
     CallJ( ErrDBSetLastPage( ppib, ifmp ), MoreAttachedThanDetached );
     Assert( pgnoLastBefore >= pfmp->PgnoLast() );
+    pfmp->m_isdlAttach.Trigger( eAttachSetLastOwnedPage );
+
     if ( !pfmp->FReadOnlyAttach() && !g_fRepair )
     {
         if ( !BoolParam( JET_paramEnableViewCache ) )
@@ -4650,6 +4653,7 @@ ERR ISAMAPI ErrIsamAttachDatabase(
             OnDebug( pgnoLastBefore = pfmp->PgnoLast() );
             CallJ( ErrIONewSize( ifmp, *tcScope, pfmp->PgnoLast(), 0, JET_bitNil ), MoreAttachedThanDetached );
             Assert( pgnoLastBefore == pfmp->PgnoLast() );
+            pfmp->m_isdlAttach.Trigger( eAttachResizeToLastOwnedPage );
         }
     }
 
@@ -4669,14 +4673,12 @@ ERR ISAMAPI ErrIsamAttachDatabase(
 
     if ( !pfmp->FReadOnlyAttach() && !g_fRepair )
     {
-        PGNO pgnoFDP;
-        OBJID objidFDP;
-
-        // Look up the ExtentPageCountCache table before we do anything that might affect ExtentPageCountCache values.
-        // This sets up bookkeeping so any changes to space made by Update and Shrink are
-        // correctly tracked.  Since we're not providing a creation function to this call,
-        // it only looks up the table if it's there; it doesn't create it and doesn't error
-        // if it's not there, just sets pgnoFDP and objidFDP to nulls.
+        // Look up the ExtentPageCountCache table before we do anything that might affect
+        // ExtentPageCountCache values. This sets up bookkeeping so any changes to space
+        // made by Update and Shrink are correctly tracked.  Since we're not providing a
+        // creation function to this call, it only looks up the table if it's there; it
+        // doesn't create it and doesn't error if it's not there, just sets pgnoFDP and
+        // objidFDP to nulls.
         CallJ( ErrDBTryCreateSystemTable(
                    ppib,
                    ifmp,
@@ -4687,6 +4689,7 @@ ERR ISAMAPI ErrIsamAttachDatabase(
                    &objidFDP ),
                MoreAttachedThanDetached );
         g_rgfmp[ ifmp ].SetExtentPageCountCacheTableInfo( pgnoFDP, objidFDP );
+        pfmp->m_isdlAttach.Trigger( eAttachCheckForExtentPageCountCacheDone );
 
         //  Upgrade the DB Version if necessary
         CallJ( ErrDBUpdateAndFlushVersion(
@@ -4807,8 +4810,6 @@ PostAttachTasks:
         !pfmp->FReadOnlyAttach()
         )
     {
-        PGNO  pgnoFDP;
-        OBJID objidFDP;
         const WCHAR * rgwsz[] = { pfmp->WszDatabaseName(), NULL };
 
         // See if the table is there or not.
@@ -4829,56 +4830,56 @@ PostAttachTasks:
         FEATURECONTROL fcT = fc::NotSpecified; // Assume nothing to do.
         switch ( fcMaintainExtentPageCountCache )
         {
-            case fc::NotSpecified:
-                // Caller didn't say anything about the cache, so we're going to look it up and use it if
-                // it's there, but do nothing if it's not.
-                if ( objidFDP != objidNil )
-                {
-                    evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
-                    rgwsz[1] = L"EXISTING_STATE";
-                }
-                break;
-                
-            case fc::Disable:
+        case fc::NotSpecified:
+            // Caller didn't say anything about the cache, so we're going to look it up and use it if
+            // it's there, but do nothing if it's not.
+            if ( objidFDP != objidNil )
+            {
+                evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
+                rgwsz[1] = L"EXISTING_STATE";
+            }
+            break;
+
+        case fc::Disable:
+            evtId = EXTENT_PAGE_COUNT_CACHE_NOT_IN_USE_ID;
+            if ( objidFDP != objidNil )
+            {
+                fcT = fc::Disable;
+                rgwsz[1] = L"REQUEST_PARAM";
+            }
+            else
+            {
+                rgwsz[1] = L"REQUEST_PARAM_MATCHES_STATE";
+            }
+            break;
+
+        case fc::Enable:
+            if ( !pfmp->FEfvSupported( JET_efvExtentPageCountCache ) )
+            {
+                // The feature is not supported, so we don't need to do
+                // anything.
+                Assert( objidFDP == objidNil );
                 evtId = EXTENT_PAGE_COUNT_CACHE_NOT_IN_USE_ID;
-                if ( objidFDP != objidNil )
-                {
-                    fcT = fc::Disable;
-                    rgwsz[1] = L"REQUEST_PARAM";
-                }
-                else
-                {
-                    rgwsz[1] = L"REQUEST_PARAM_MATCHES_STATE";
-                }
-                break;
- 
-            case fc::Enable:
-                if ( !pfmp->FEfvSupported( JET_efvExtentPageCountCache ) )
-                {
-                    // The feature is not supported, so we don't need to do
-                    // anything.
-                    Assert( objidFDP == objidNil );
-                    evtId = EXTENT_PAGE_COUNT_CACHE_NOT_IN_USE_ID;
-                    fcT = fc::NotSpecified;
-                    rgwsz[1] = L"UNSUPPORTED_REQUEST_PARAM";
-                }
-                else if ( objidFDP != objidNil )
-                {
-                    evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
-                    fcT = fc::NotSpecified;
-                    rgwsz[1] = L"REQUEST_PARAM_MATCHES_STATE";
-                }
-                else 
-                {
-                    evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
-                    fcT = fc::Enable;
-                    rgwsz[1] = L"REQUEST_PARAM";
-                }
-                break;
-                
-            default:
-                AssertSz( fFalse, "Unexpected case in switch.");
-                CallJ( ErrERRCheck( JET_errInvalidParameter ), Detach );
+                fcT = fc::NotSpecified;
+                rgwsz[1] = L"UNSUPPORTED_REQUEST_PARAM";
+            }
+            else if ( objidFDP != objidNil )
+            {
+                evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
+                fcT = fc::NotSpecified;
+                rgwsz[1] = L"REQUEST_PARAM_MATCHES_STATE";
+            }
+            else
+            {
+                evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
+                fcT = fc::Enable;
+                rgwsz[1] = L"REQUEST_PARAM";
+            }
+            break;
+
+        default:
+            AssertSz( fFalse, "Unexpected case in switch.");
+            CallJ( ErrERRCheck( JET_errInvalidParameter ), Detach );
         }
 
         if ( evtId != PLAIN_TEXT_ID )
@@ -4934,7 +4935,7 @@ PostAttachTasks:
         g_rgfmp[ ifmp ].SetExtentPageCountCacheTableInfo( pgnoFDP, objidFDP );
     }
 
-    //pfmp->m_isdlAttach.Trigger( eAttachProcessMSysExtentPageCountCache );
+    pfmp->m_isdlAttach.Trigger( eAttachProcessMSysExtentPageCountCache );
 
     {
     PdbfilehdrReadOnly pdbfilehdr = pfmp->Pdbfilehdr();

@@ -1288,7 +1288,7 @@ Language=English
 MessageId=516
 SymbolicName=DBTIME_MISMATCH_ID
 Language=English
-%1 (%2) %3Database %4: Page %5 failed verification due to a timestamp mismatch at log position %10 (currently replaying log position %12).  The 'before' timestamp persisted to the log record was %6 but the actual timestamp on the page was %7.  The 'after' update timestamp %9 that would have updated the on-page timestamp.  Recovery/restore will fail with error %8.  If this condition persists then please restore the database from a previous backup. This problem is likely due to faulty hardware "losing" one or more flushes on this page some time in the past. Please contact your hardware vendor for further assistance diagnosing the problem.
+%1 (%2) %3Database %4: Page %5 failed verification due to a timestamp mismatch at log position %10 (currently replaying log position %12).  The before/after timestamps in the log record were %6/%9 but the actual timestamp on the page was %7.  Recovery/restore will fail with error %8.  If this condition persists then please restore the database from a previous backup. This problem is likely due to faulty hardware "losing" one or more flushes on this page or the database header at some time in the past. Please contact your hardware vendor for further assistance diagnosing the problem.
 %nAdditional information:
 %n%tWithin initial required range: %11
 %n%tTotal number of pages affected: %13
@@ -1562,7 +1562,7 @@ Language=English
 .
 
 MessageId=556
-SymbolicName=DECOMPRESSION_FAILED
+SymbolicName=DECOMPRESSION_FAILED_ID
 Language=English
 %1 (%2) %3Database %4: Data in line %5 on pgno %6 in a B-Tree (ObjectId: %7, PgnoRoot: %8) failed to decompress.
 .
@@ -1636,6 +1636,12 @@ Language=English
 %nAdditional information:
 %n%tWithin initial required range: %9
 %n%tTotal number of pages affected: %10
+.
+
+MessageId=566
+SymbolicName=DECRYPTION_FAILED_ID
+Language=English
+%1 (%2) %3Database %4: Data in line %5 on pgno %6 in a B-Tree (ObjectId: %7, PgnoRoot: %8) failed to decrypt.
 .
 
 
@@ -2073,6 +2079,16 @@ Counted CpgOE: %7%n
 Counted CpgAE: %8%n
 Cached CpgOE: %9%n
 Cached CpgAE: %10%n
+.
+
+MessageId=656
+SymbolicName=BEGIN_TRANSACTION_FOR_EXTENT_PAGE_COUNT_CACHE_PREPARE_FAILED_ID
+Language=English
+%1 (%2) %3Beginning a transaction to prepare a row in the Extent Page Count Cache table failed.  The cached value is now incorrect.%n
+Database: %4%n
+Objid: %5%n
+PgnoFDP: %6%n
+Err: %7%n
 .
 
 
@@ -2926,7 +2942,12 @@ SymbolicName=CATALOGRESEED_FAILURE_TAG_ID
 Language=English
 .
 
-MessageId=3015
+MessageId=3071
+SymbolicName=RBSROLLREQUIRED_FAILURE_TAG_ID
+Language=English
+.
+
+MessageId=3072
 SymbolicName=MAX_FAILURE_TAG_ID
 Language=English
 .
@@ -3017,6 +3038,12 @@ MessageId=5006
 SymbolicName=RBS_SPACE_GROWTH_ID
 Language=English
 %1 (%2) %3The revert snapshot file "%4" created on "%5" has grown by "%6 bytes" since "%7". Number of logs generated during this period was "%8".
+.
+
+MessageId=5007
+SymbolicName=RBS_INVALIDATED_ID
+Language=English
+%1 (%2) %3The revert snapshot file at "%4" was invalidated due to "%5".
 .
 
 ;////////////////////////////////////////////////////////////////////////

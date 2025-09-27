@@ -31,6 +31,8 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
+#include <malloc.h>
+
 //  calling convention
 
 #ifdef _MSC_VER
@@ -108,10 +110,10 @@ void OSSYNCAPI EnforceFail( const char* szMessage, const char* szFilename, LONG 
 
 //  OSSYNC_FOREVER marks all convergence loops
 
-#if defined( _M_IX86 ) || defined( _M_AMD64 )
-inline void OSSyncPause() { _mm_pause(); }
-#elif defined( _M_ARM ) || defined( _M_ARM64 )
+#if defined( _M_ARM ) || defined( _M_ARM64 ) || defined( _M_ARM64EC )
 inline void OSSyncPause() { __yield(); }
+#elif defined( _M_IX86 ) || defined( _M_AMD64 )
+inline void OSSyncPause() { _mm_pause(); }
 #else
 inline void OSSyncPause() {};
 #endif
@@ -243,11 +245,6 @@ INT OSSYNCAPI OSSyncGetProcessorCount();
 //  NOTE:  the current context may change processors at any time
 
 INT OSSYNCAPI OSSyncGetCurrentProcessor();
-
-//  sets the processor number returned by OSSyncGetCurrentProcessor()
-
-void OSSYNCAPI OSSyncSetCurrentProcessor( const INT iProc );
-
 
 //  Processor Local Storage
 

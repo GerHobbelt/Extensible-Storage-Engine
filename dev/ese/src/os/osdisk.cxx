@@ -2953,13 +2953,6 @@ void COSDisk::LoadCachePerf_( HANDLE hDisk )
                     m_osdi.m_ossad.BusType, m_osdi.m_ossad.BusMajorVersion, m_osdi.m_ossad.BusMinorVersion ) );
     }
 
-    m_osdi.m_errorOsdspd = ErrorOSDiskIOsStorageQueryProp( hDisk, StorageDeviceSeekPenaltyProperty, &m_osdi.m_osdspd, sizeof(m_osdi.m_osdspd) );
-    if ( m_osdi.m_errorOsdspd == ERROR_SUCCESS )
-    {
-        OSTrace( JET_tracetagFile, OSFormat( "\t m_osdi.m_osdspd = { Ver.Size=%d.%d, IncursSeekPenalty=%d };\n",
-                    m_osdi.m_osdspd.Version, m_osdi.m_osdspd.Size, m_osdi.m_osdspd.IncursSeekPenalty ) );
-    }
-
     m_osdi.m_errorOsdtd = ErrorOSDiskIOsStorageQueryProp( hDisk, StorageDeviceTrimProperty, &m_osdi.m_osdtd, sizeof(m_osdi.m_osdtd) );
     if ( m_osdi.m_errorOsdtd == ERROR_SUCCESS )
     {
@@ -3057,8 +3050,19 @@ ERR COSDisk::ErrInitDisk( __in_z const WCHAR * const wszDiskPathId, _In_ const D
                             0,
                             NULL );
 
+    m_osdi.m_errorOsdspd = ErrorOSDiskIOsStorageQueryProp( m_hDisk, StorageDeviceSeekPenaltyProperty, &m_osdi.m_osdspd, sizeof(m_osdi.m_osdspd) );
+    if ( m_osdi.m_errorOsdspd == ERROR_SUCCESS )
+    {
+        OSTrace( JET_tracetagFile, OSFormat( "\t m_osdi.m_osdspd = { Ver.Size=%d.%d, IncursSeekPenalty=%d };\n",
+                    m_osdi.m_osdspd.Version, m_osdi.m_osdspd.Size, m_osdi.m_osdspd.IncursSeekPenalty ) );
+    }
+
     //  Best effort (at least some of this will not work / load if not admin or system)
-    LoadDiskInfo_( wszDiskPath, dwDiskNumber );
+    //  Disabling because of contention seen in repl because of repeated calls
+    //  LoadDiskInfo_( wszDiskPath, dwDiskNumber );
+    SetSmartEseNoLoadFailed( eSmartLoadDiskOpenFailed, ERROR_CALL_NOT_IMPLEMENTED, m_osdi.m_szDiskModel, sizeof(m_osdi.m_szDiskModel) );
+    SetSmartEseNoLoadFailed( eSmartLoadDiskOpenFailed, ERROR_CALL_NOT_IMPLEMENTED, m_osdi.m_szDiskSerialNumber, sizeof(m_osdi.m_szDiskSerialNumber) );
+    OSStrCbCopyA( m_osdi.m_szDiskFirmwareRev, sizeof(m_osdi.m_szDiskFirmwareRev), "EseNoLo" );
 
     m_eState = eOSDiskConnected;
 

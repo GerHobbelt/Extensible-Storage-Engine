@@ -20,7 +20,7 @@ class CBlockCacheHeaderHelpers
             checksumDefault = checksumLegacy,
         };
 
-    public:
+    protected:
 
         static ERR ErrGetFileId(    _In_    IFileFilter* const              pff, 
                                     _Out_   LittleEndian<VolumeId>* const   pvolumeid, 
@@ -44,18 +44,15 @@ class CBlockCacheHeaderHelpers
         static ULONG GenerateChecksum( _In_ const T* const pt );
 
         template< class T >
-        static ERR ErrLoadHeader( _In_ IFileFilter* const pff, _Out_ T** const ppt )
-        {
-            return ErrLoadHeader( pff, 0, ppt );
-        }
-
-        template< class T >
         static ERR ErrLoadHeader( _In_ IFileFilter* const pff, _In_ const QWORD ib, _Out_ T** const ppt );
 
         template< class T >
         static ERR ErrLoadHeader(   _In_reads_( cbHeader )  const BYTE* const   pbHeader,
                                     _In_                    const DWORD         cbHeader,
                                     _Out_                   T** const           ppt );
+
+        template< class T >
+        static ERR ErrValidateHeader( _Inout_ T* const pt );
 
     private:
 
@@ -64,18 +61,15 @@ class CBlockCacheHeaderHelpers
                                         _In_                        const DWORD         cbData );
 
         template< class T >
-        static ERR ErrValidateHeader( _In_ const T* const pt );
-
-        template< class T >
-        static ERR ErrRepairHeader( _In_ const T* const pt,
-                                    _In_ const ULONG    ulChecksumExpected,
-                                    _In_ const ULONG    ulChecksumActual );
+        static ERR ErrRepairHeader( _Inout_ T* const    pt,
+                                    _In_    const ULONG ulChecksumExpected,
+                                    _In_    const ULONG ulChecksumActual );
 
         template< ChecksumType CT >
-        static ERR ErrRepairHeader( _Inout_updates_bytes_( cbData ) const VOID* const   pvData,
-                                    _In_                            const DWORD         cbData,
-                                    _In_                            const ULONG         ulChecksumExpected,
-                                    _In_                            const ULONG         ulChecksumActual );
+        static ERR ErrRepairHeader( _Inout_updates_bytes_( cbData ) VOID* const pvData,
+                                    _In_                            const DWORD cbData,
+                                    _In_                            const ULONG ulChecksumExpected,
+                                    _In_                            const ULONG ulChecksumActual );
 
         template< class T >
         static ERR ErrReadHeader( _In_ IFileFilter* const pff, _In_ const QWORD ib, _In_ const T* const pt );
@@ -205,12 +199,6 @@ INLINE VOID CBlockCacheHeaderHelpers::GenerateUniqueId( _Out_writes_( cbGuid )  
 }
 
 template< class T >
-INLINE ULONG CBlockCacheHeaderHelpers::GenerateChecksum( _In_ const T* const pt )
-{
-    return GenerateChecksum<CBlockCacheHeaderTraits<T>::checksumType>( (const BYTE*)pt, sizeof( T ) );
-}
-
-template< class T >
 INLINE ERR CBlockCacheHeaderHelpers::ErrLoadHeader( _In_    IFileFilter* const  pff,
                                                     _In_    const QWORD         ib,
                                                     _Out_   T** const           ppt )
@@ -223,14 +211,14 @@ INLINE ERR CBlockCacheHeaderHelpers::ErrLoadHeader( _In_    IFileFilter* const  
     *ppt = NULL;
 
     Call( pff->ErrSize( &cbSize, IFileAPI::filesizeLogical ) );
-    if ( ib + sizeof( T ) > cbSize )
+    if ( ib + cbSize < sizeof( T ) )
     {
         Error( ErrERRCheck( JET_errReadVerifyFailure ) );
     }
 
     Alloc( pvData = PvOSMemoryPageAlloc( sizeof( T ), NULL ) );
     Call( ErrReadHeader( pff, ib, (T*)pvData ) );
-    Call( ErrValidateHeader( (const T*)pvData  ) );
+    Call( ErrValidateHeader( (T*)pvData  ) );
 
     pt = new( pvData ) T();
     pvData = NULL;
@@ -250,6 +238,12 @@ HandleError:
 }
 
 template< class T >
+INLINE ULONG CBlockCacheHeaderHelpers::GenerateChecksum( _In_ const T* const pt )
+{
+    return GenerateChecksum<CBlockCacheHeaderTraits<T>::checksumType>( (const BYTE*)pt, sizeof( T ) );
+}
+
+template< class T >
 INLINE ERR CBlockCacheHeaderHelpers::ErrLoadHeader( _In_reads_( cbHeader )  const BYTE* const   pbHeader,
                                                     _In_                    const DWORD         cbHeader, 
                                                     _Out_                   T** const           ppt )
@@ -264,7 +258,7 @@ INLINE ERR CBlockCacheHeaderHelpers::ErrLoadHeader( _In_reads_( cbHeader )  cons
 
     memcpy( pvData, pbHeader, min( sizeof( T ), cbHeader ) );
 
-    Call( ErrValidateHeader( (const T*)pvData ) );
+    Call( ErrValidateHeader( (T*)pvData ) );
 
     pt = new( pvData ) T();
     pvData = NULL;
@@ -299,7 +293,7 @@ INLINE ULONG CBlockCacheHeaderHelpers::GenerateChecksum<CBlockCacheHeaderHelpers
 }
 
 template< class T >
-INLINE ERR CBlockCacheHeaderHelpers::ErrValidateHeader( _In_ const T* const pt )
+INLINE ERR CBlockCacheHeaderHelpers::ErrValidateHeader( _Inout_ T* const pt )
 {
     ERR err = JET_errSuccess;
 
@@ -316,21 +310,21 @@ HandleError:
 }
 
 template< class T >
-INLINE ERR CBlockCacheHeaderHelpers::ErrRepairHeader(   _In_ const T* const pt,
-                                                        _In_ const ULONG    ulChecksumExpected,
-                                                        _In_ const ULONG    ulChecksumActual )
+INLINE ERR CBlockCacheHeaderHelpers::ErrRepairHeader(   _Inout_ T* const    pt,
+                                                        _In_    const ULONG ulChecksumExpected,
+                                                        _In_    const ULONG ulChecksumActual )
 {
-    return ErrRepairHeader<CBlockCacheHeaderTraits<T>::checksumType>(   (const BYTE*)pt,
+    return ErrRepairHeader<CBlockCacheHeaderTraits<T>::checksumType>(   (BYTE*)pt,
                                                                         sizeof( T ),
                                                                         ulChecksumExpected, 
                                                                         ulChecksumActual);
 }
 
 template< CBlockCacheHeaderHelpers::ChecksumType CT >
-INLINE ERR CBlockCacheHeaderHelpers::ErrRepairHeader(   _Inout_updates_bytes_( cbData ) const VOID* const   pvData,
-                                                        _In_                            const DWORD         cbData,
-                                                        _In_                            const ULONG         ulChecksumExpected,
-                                                        _In_                            const ULONG         ulChecksumActual )
+INLINE ERR CBlockCacheHeaderHelpers::ErrRepairHeader(   _Inout_updates_bytes_( cbData ) VOID* const pvData,
+                                                        _In_                            const DWORD cbData,
+                                                        _In_                            const ULONG ulChecksumExpected,
+                                                        _In_                            const ULONG ulChecksumActual )
 {
     ERR err = JET_errSuccess;
 
@@ -345,10 +339,10 @@ HandleError:
 
 template<>
 INLINE ERR CBlockCacheHeaderHelpers::ErrRepairHeader<CBlockCacheHeaderHelpers::ChecksumType::checksumECC>(
-    _Inout_updates_bytes_( cbData ) const VOID* const   pvData,
-    _In_                            const DWORD         cbData,
-    _In_                            const ULONG         ulChecksumExpected,
-    _In_                            const ULONG         ulChecksumActual )
+    _Inout_updates_bytes_( cbData ) VOID* const pvData,
+    _In_                            const DWORD cbData,
+    _In_                            const ULONG ulChecksumExpected,
+    _In_                            const ULONG ulChecksumActual )
 {
     ERR err = JET_errSuccess;
 

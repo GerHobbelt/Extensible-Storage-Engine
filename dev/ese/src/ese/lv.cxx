@@ -1319,7 +1319,7 @@ LOCAL bool FLVCompressedChunk( const LONG cbLVChunkMost, const KEY& key, const D
     return false;
 }
 
-LOCAL CompressFlags LVIAddXpress10FlagsIfEnabled(
+LOCAL CompressFlags LVIAddCompressionFlagsIfEnabled(
         CompressFlags compressFlags,
         const INST* const pinst,
         const IFMP ifmp
@@ -1331,6 +1331,14 @@ LOCAL CompressFlags LVIAddXpress10FlagsIfEnabled(
          g_rgfmp[ ifmp ].ErrDBFormatFeatureEnabled( JET_efvXpress10Compression ) >= JET_errSuccess )
     {
         return CompressFlags( compressFlags | compressXpress10 );
+    }
+
+    // If user asks for xpress and lz4 is enabled, use that.
+    if ( (compressFlags & compressXpress) &&
+         BoolParam( pinst, JET_paramFlight_EnableLz4Compression ) &&
+         g_rgfmp[ ifmp ].ErrDBFormatFeatureEnabled( JET_efvLz4Compression ) >= JET_errSuccess )
+    {
+        return CompressFlags( compressFlags | compressLz4 );
     }
 
     return compressFlags;
@@ -1384,7 +1392,7 @@ LOCAL ERR ErrLVITryCompress(
 
     if ( fTryCompress && NULL != ( pbDataCompressed = PbPKAllocCompressionBuffer() ) )
     {
-        CompressFlags compressFlagsEffective = LVIAddXpress10FlagsIfEnabled( compressFlags, pinst, pfucbTable->ifmp );
+        CompressFlags compressFlagsEffective = LVIAddCompressionFlagsIfEnabled( compressFlags, pinst, pfucbTable->ifmp );
 
         INT cbDataCompressedActual;
         const ERR errT = ErrPKCompressData(
@@ -1447,10 +1455,8 @@ LOCAL ERR ErrLVITryCompress(
                 pbDataEncrypted,
                 &cbDataEncryptedActual,
                 CbPKCompressionBuffer(),
-                pfucbTable->pbEncryptionKey,
-                pfucbTable->cbEncryptionKey,
-                PinstFromPfucb( pfucbTable )->m_iInstance,
-                pfucbLV->u.pfcb->TCE() );
+                pfucbLV,
+                pfucbTable );
         if ( err < JET_errSuccess )
         {
             PKFreeCompressionBuffer( pbDataEncrypted );
@@ -1701,10 +1707,8 @@ LOCAL ERR ErrLVRetrieve(
                     (BYTE*)(BYTE*)dataIn.Pv(),
                     pbDataDecrypted,
                     &cbDataDecryptedActual,
-                    pfucbLV->pfucbTable->pbEncryptionKey,
-                    pfucbLV->pfucbTable->cbEncryptionKey,
-                    PinstFromPfucb( pfucbLV )->m_iInstance,
-                    pfucbLV->u.pfcb->TCE() ) );
+                    pfucbLV,
+                    pfucbLV->pfucbTable ) );
         dataIn.SetPv( pbDataDecrypted );
         dataIn.SetCb( cbDataDecryptedActual );
     }
@@ -1804,10 +1808,8 @@ LOCAL ERR ErrLVCompare(
                     (BYTE*)dataIn.Pv(),
                     pbDataDecrypted,
                     &cbDataDecryptedActual,
-                    pfucbLV->pfucbTable->pbEncryptionKey,
-                    pfucbLV->pfucbTable->cbEncryptionKey,
-                    PinstFromPfucb( pfucbLV )->m_iInstance,
-                    pfucbLV->u.pfcb->TCE() ) );
+                    pfucbLV,
+                    pfucbLV->pfucbTable ) );
         dataIn.SetPv( pbDataDecrypted );
         dataIn.SetCb( cbDataDecryptedActual );
     }
@@ -1891,10 +1893,8 @@ LOCAL ERR ErrLVIGetDataSize(
                     (BYTE*)dataIn.Pv(),
                     pbDataDecrypted,
                     &cbDataDecryptedActual,
-                    pfucbLV->pfucbTable->pbEncryptionKey,
-                    pfucbLV->pfucbTable->cbEncryptionKey,
-                    PinstFromPfucb( pfucbLV )->m_iInstance,
-                    pfucbLV->u.pfcb->TCE() ) );
+                    pfucbLV,
+                    pfucbLV->pfucbTable ) );
         dataIn.SetPv( pbDataDecrypted );
         dataIn.SetCb( cbDataDecryptedActual );
     }
@@ -2529,10 +2529,7 @@ ERR ErrRECSetLongField(
                         (BYTE*)dataRetrieved.Pv(),
                         pbDataDecrypted,
                         &cbDataDecryptedActual,
-                        pfucb->pbEncryptionKey,
-                        pfucb->cbEncryptionKey,
-                        PinstFromPfucb( pfucb )->m_iInstance,
-                        pfucb->u.pfcb->TCE() );
+                        pfucb );
             if ( errT < JET_errSuccess )
             {
                 Call( errT );
@@ -4234,8 +4231,8 @@ ERR ErrRECAOIntrinsicLV(
 
         if ( fTryCompress )
         {
-            // If user asks for xpress and xpress10 is enabled, use that.
-            CompressFlags compressFlagsEffective = LVIAddXpress10FlagsIfEnabled( compressFlags, PinstFromPfucb( pfucb ), pfucb->ifmp );
+            // If user asks for xpress and xpress10/lz4 is enabled, use that.
+            CompressFlags compressFlagsEffective = LVIAddCompressionFlagsIfEnabled( compressFlags, PinstFromPfucb( pfucb ), pfucb->ifmp );
 
             BYTE * pbDataCompressed = rgbCompressed;
             INT cbDataCompressedMax = sizeof( rgbCompressed );
@@ -4336,10 +4333,7 @@ ERR ErrRECAOIntrinsicLV(
                     pbDataEncrypted,
                     &cbDataEncryptedActual,
                     cbDataEncryptedMax,
-                    pfucb->pbEncryptionKey,
-                    pfucb->cbEncryptionKey,
-                    PinstFromPfucb( pfucb )->m_iInstance,
-                    pfucb->u.pfcb->TCE() ) );
+                    pfucb ) );
 
         dataSet.SetPv( pbDataEncrypted );
         dataSet.SetCb( cbDataEncryptedActual );

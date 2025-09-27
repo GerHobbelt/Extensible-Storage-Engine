@@ -272,9 +272,10 @@ LOCAL ERR ErrLGRIReportDbtimeMismatch(
     Assert( FMP::FAllocatedFmp( ifmp ) );
     Assert( dbtimeOnPage != dbtimeBeforeInLogRec );
 
-    const ERR       err         = ErrERRCheck( dbtimeOnPage < dbtimeBeforeInLogRec ? JET_errDbTimeTooOld : JET_errDbTimeTooNew );
+    const ERR       err         = ErrERRCheck( dbtimeOnPage < dbtimeBeforeInLogRec ? JET_errDbTimeTooOld : ( dbtimeOnPage < dbtimeAfterInLogRec ? JET_errDbTimeTooNew : JET_errDbTimeBeyondMaxRequired ) );
     const FMP* const pfmp       = FMP::FAllocatedFmp( ifmp ) ? &g_rgfmp[ ifmp ] : NULL;
     const LGPOS     lgposStop   = pinst->m_plog->LgposLGLogTipNoLock();
+    Assert( err != JET_errDbTimeBeyondMaxRequired || !pfmp->FContainsDataFromFutureLogs() );
 
     OSTraceSuspendGC();
     const WCHAR* wszDatabaseName = pfmp ?
@@ -305,9 +306,8 @@ LOCAL ERR ErrLGRIReportDbtimeMismatch(
         0,
         NULL,
         pinst );
-    OSUHAPublishEvent(  ( err == JET_errDbTimeTooOld ?
-                            HaDbFailureTagLostFlushDbTimeTooOld :
-                            HaDbFailureTagLostFlushDbTimeTooNew ),
+    OSUHAPublishEvent(  ( err == JET_errDbTimeTooOld ? HaDbFailureTagLostFlushDbTimeTooOld :
+                          ( err == JET_errDbTimeTooNew ? HaDbFailureTagLostFlushDbTimeTooNew : HaDbFailureTagLostFlushDbTimeBeyondMaxRequired ) ),
                         pinst,
                         HA_LOGGING_RECOVERY_CATEGORY,
                         HaDbIoErrorNone,
@@ -1572,7 +1572,7 @@ ERR LOG::ErrLGRIInitSession(
     {
         // We will initialize the revert snapshot from Rstmap during LGRIInitSession.
         // Also, check if we need to roll the snapshot and roll it if required.
-        Call( CRevertSnapshot::ErrRBSInitFromRstmap( m_pinst ) );
+        Call( CRevertSnapshotForAttachedDbs::ErrRBSInitFromRstmap( m_pinst ) );
 
         // If required range was a problem or if db's are not on the required efv m_prbs would be null in ErrRBSInitFromRstmap
         if ( m_pinst->m_prbs && m_pinst->m_prbs->FRollSnapshot() )
@@ -1868,6 +1868,8 @@ LOCAL VOID LGICleanupTransactionToLevel0( PIB * const ppib, CTableHash * pctable
     //  empty the list of RCEs
     ppib->RemoveAllDeferredRceid();
     ppib->RemoveAllRceid();
+    ppib->ErrSetClientCommitContextGeneric( NULL, 0 );
+    ppib->SetFCommitContextNeedPreCommitCallback( fFalse );
 }
 
 ERR LOG::ErrLGEndAllSessionsMacro( BOOL fLogEndMacro )
@@ -5959,7 +5961,6 @@ ERR LOG::ErrLGRIRedoAttachDb(
     //  Update database file header as necessary
     //
     Assert( !pfmp->FReadOnlyAttach() );
-    BOOL fUpdateHeader = fFalse;
     OnDebug( pfmp->SetDbHeaderUpdateState( FMP::DbHeaderUpdateState::dbhusHdrLoaded ) );
     
     // If RBS header flush is set in the database header but RBS is not enabled anymore, we will reset the sign in the database header 
@@ -5970,7 +5971,6 @@ ERR LOG::ErrLGRIRedoAttachDb(
     if ( FSIGSignSet( &pdbfilehdr->signRBSHdrFlush ) && !pfmp->FRBSOn() )
     {
         SIGResetSignature( &pdbfilehdr->signRBSHdrFlush );
-        fUpdateHeader = fTrue;
     }
     }
 
@@ -6014,7 +6014,6 @@ ERR LOG::ErrLGRIRedoAttachDb(
         DBISetHeaderAfterAttach( pdbfilehdr.get(), m_lgposRedo, NULL, ifmp, fKeepBackupInfo );
         }
         Assert( pfmp->LgposWaypoint().lGeneration <= pfmp->LgposAttach().lGeneration );
-        fUpdateHeader = fTrue;
     }
     else
     {
@@ -6028,7 +6027,6 @@ ERR LOG::ErrLGRIRedoAttachDb(
             LOGTIME tmCreate;
             LONG lGenCurrent = m_pLogStream->GetCurrentFileGen( &tmCreate );
             pdbfilehdr->SetDbstate( JET_dbstateDirtyShutdown, lGenCurrent, &tmCreate, fTrue );
-            fUpdateHeader = fTrue;
         }
     }
 
@@ -6097,7 +6095,6 @@ ERR LOG::ErrLGRIRedoAttachDb(
             }
 
             pdbfilehdr->le_lGenMinRequired = lGenCurrent;
-            fUpdateHeader = fTrue;
         }
 
         Expected( ( pdbfilehdr->le_lGenPreRedoMinConsistent == 0 ) ||
@@ -6111,7 +6108,6 @@ ERR LOG::ErrLGRIRedoAttachDb(
             }
 
             pdbfilehdr->le_lGenMinConsistent = lGenCurrent;
-            fUpdateHeader = fTrue;
         }
     }
     // Set lGenMinConsistent back to lGenMinRequired because that's our effective initial checkpoint.
@@ -6119,7 +6115,6 @@ ERR LOG::ErrLGRIRedoAttachDb(
     if ( pdbfilehdr->le_lGenMinConsistent != pdbfilehdr->le_lGenMinRequired )
     {
         pdbfilehdr->le_lGenMinConsistent = pdbfilehdr->le_lGenMinRequired;
-        fUpdateHeader = fTrue;
     }
     } // .dtor releases PdbfilehdrReadWrite
 
@@ -6127,11 +6122,8 @@ ERR LOG::ErrLGRIRedoAttachDb(
     //
     Call( pfmp->ErrCreateFlushMap( JET_bitNil ) );
 
-    if ( fUpdateHeader )
-    {
-        Assert( pfmp->Pdbfilehdr()->le_objidLast > 0 );
-        Call( ErrUtilWriteAttachedDatabaseHeaders( m_pinst, m_pinst->m_pfsapi, wszDbName, pfmp ) );
-    }
+    Assert( pfmp->Pdbfilehdr()->le_objidLast > 0 );
+    Call( ErrUtilWriteAttachedDatabaseHeaders( m_pinst, m_pinst->m_pfsapi, wszDbName, pfmp ) );
 
     OnDebug( const ULONG dbstate = pfmp->Pdbfilehdr()->Dbstate() );
     Assert( JET_dbstateDirtyShutdown == dbstate ||
@@ -6162,10 +6154,8 @@ ERR LOG::ErrLGRIRedoAttachDb(
 
     Assert( !pfmp->FReadOnlyAttach() );
 
-    //  since the attach is now reflected in the header (either
-    //  because it existed that way or because we just updated
-    //  it in the fUpdateHeader code path above), we can now
-    //  safely set the waypoint
+    //  since the attach is now reflected in the header,
+    //  we can now safely set the waypoint
     //
     FMP::EnterFMPPoolAsWriter();
     pfmp->SetWaypoint( pfmp->LgposAttach().lGeneration );
@@ -6934,6 +6924,11 @@ ERR LOG::ErrLGRIRedoOperation( LR *plr )
             if ( 1 == ppib->Level() )
             {
                 Assert( lrtypCommit0 == plr->lrtyp );
+                if ( ppib->CbClientCommitContextGeneric() )
+                {
+                    Assert( ppib->FCommitContextNeedPreCommitCallback() );
+                    CallR( ErrLGCommitCtxCallback( m_pinst, ppib->PvClientCommitContextGeneric(), ppib->CbClientCommitContextGeneric(), fCommitCtxPreCommitCallback ) );
+                }
                 ppib->trxCommit0 = plrcommit0->le_trxCommit0;
                 if ( !m_pinst->m_fTrxNewestSetByRecovery ||
                      TrxCmp( ppib->trxCommit0, m_pinst->m_trxNewest ) > 0 )
@@ -6945,6 +6940,11 @@ ERR LOG::ErrLGRIRedoOperation( LR *plr )
                 LGAddLgpos( &lgposCurrent, sizeof( LRCOMMIT0 ) - 1 );
                 ppib->lgposCommit0 = lgposCurrent;
                 VERCommitTransaction( ppib );
+                if ( ppib->CbClientCommitContextGeneric() )
+                {
+                    Assert( ppib->FCommitContextNeedPreCommitCallback() );
+                    CallR( ErrLGCommitCtxCallback( m_pinst, ppib->PvClientCommitContextGeneric(), ppib->CbClientCommitContextGeneric(), fCommitCtxPostCommitCallback ) );
+                }
                 LGICleanupTransactionToLevel0( ppib, m_pctablehash );
             }
             else
@@ -7433,9 +7433,21 @@ ERR LOG::ErrLGRIRedoOperation( LR *plr )
     case lrtypCommitCtx:    // originally lrtypIgnored3
     {
         const LRCOMMITCTX * const plrCommitC = (LRCOMMITCTX *)plr;
-        if ( plrCommitC->FCallbackNeeded() )
+        if ( plrCommitC->FPreCommitCallbackNeeded() )
         {
-            CallR( ErrLGCommitCtxCallback( m_pinst, plrCommitC->PbCommitCtx(), plrCommitC->CbCommitCtx() ) );
+            // If client wants pre/post commit callback, just store the commit context and do the callback when the commit happens
+            PIB *ppib;
+            CallR( ErrLGRIPpibFromProcid( plrCommitC->ProcID(), &ppib ) );
+            if ( ppib->FAfterFirstBT() )
+            {
+                Assert( ppib->Level() > 0 );
+                CallR( ppib->ErrSetClientCommitContextGeneric( plrCommitC->PbCommitCtx(), plrCommitC->CbCommitCtx() ) );
+                ppib->SetFCommitContextNeedPreCommitCallback( fTrue );
+            }
+        }
+        else if ( plrCommitC->FCallbackNeeded() )
+        {
+            CallR( ErrLGCommitCtxCallback( m_pinst, plrCommitC->PbCommitCtx(), plrCommitC->CbCommitCtx(), fCommitCtxLegacyCommitCallback ) );
         }
         break;
     }
@@ -9277,13 +9289,26 @@ BOOL LOG::FLGRICheckRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL
             CDBMScanFollower::SkippedDBMScanCheckRecord( pfmp, pgno );
         }
 
-        // Special-case pgno=1, it should fall through and return true
+        // Special-case pgno=1, it should return true
         // because the header will get reset and it will be considered
         // a page that needs scanning
         if ( pgno != 1 )
         {
             return fFalse;
         }
+        else
+        {
+            return fTrue;
+        }
+    }
+
+    // if we have already played this scan check once then there is no need to do it again
+    //
+    // NOTE:  to avoid gaps due to crashes we will always replay from the max log generation
+    // we have ever replayed because we can't guarantee we replayed all those records
+    if ( m_lgposRedo.lGeneration < pfmp->Pdbfilehdr()->le_lGenRecovering )
+    {
+        return fFalse;
     }
 
     // We've made it this far, which means scanning is on and we haven't seen this page before
@@ -9407,8 +9432,12 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
             const OBJID objidPage = cpage.ObjidFDP();
 
             // If either the dbtime from local page or dbtime from log record is dbtimeRevert, we will skip checking the consistency of the page.
+            // We will also consider a page as revert new page, if active is an uninitialized page or a shrunk page but passive is a reverted new page which could happen during increseed.
+            //
             const BOOL fDbtimeRevertedNewPage = 
-                ( CmpLgpos( g_rgfmp[ ifmp ].Pdbfilehdr()->le_lgposCommitBeforeRevert, m_lgposRedo ) > 0 &&
+                ( ( CmpLgpos( g_rgfmp[ ifmp ].Pdbfilehdr()->le_lgposCommitBeforeRevert, m_lgposRedo ) > 0 ||
+                    plrscancheck->DbtimePage() == 0 ||
+                    plrscancheck->DbtimePage() == dbtimeShrunk ) &&
                   CPAGE::FRevertedNewPage( dbtimePage ) ) || 
                 CPAGE::FRevertedNewPage( plrscancheck->DbtimePage() );
 
@@ -9792,7 +9821,13 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
             {
                 //  since the page was not previously cached, we should super cold it
 
-                BFMarkAsSuperCold( ifmp, plrscancheck->Pgno(), bflfDBScan );
+                if ( m_arrayPagerefSupercold.Capacity() <= m_arrayPagerefSupercold.Size() )
+                {
+                    (void)m_arrayPagerefSupercold.ErrSetCapacity( LNextPowerOf2( m_arrayPagerefSupercold.Size() + 1 ) );
+                }
+
+                (void)m_arrayPagerefSupercold.ErrSetEntry(  m_arrayPagerefSupercold.Size(),
+                                                            PageRef( plrscancheck->Dbid(), plrscancheck->Pgno() ) );
             }
 
             //  Ideally, we should check for the error returned when latching the page to filter out cases where
@@ -11703,6 +11738,22 @@ ERR LOG::ErrLGRIRedoOperations(
         {
             INT fNSNextStep;
 
+            // super cold any pages we don't expect to see again
+            for ( size_t i = 0; i < m_arrayPagerefSupercold.Size(); i++ )
+            {
+                const PageRef& pageref = m_arrayPagerefSupercold.Entry( i );
+                const IFMP ifmpT = m_pinst->m_mpdbidifmp[ pageref.dbid ];
+                const PGNO pgnoT = pageref.pgno;
+
+                if ( ifmpT < g_ifmpMax && pgnoT != pgnoNull && pgnoT <= g_rgfmp[ifmpT].PgnoLast() )
+                {
+                    BFMarkAsSuperCold( ifmpT, pgnoT, bflfDBScan );
+                }
+            }
+
+            const CArray<PageRef>::ERR errArray = m_arrayPagerefSupercold.ErrSetSize( 0 );
+            Assert( errArray == CArray<PageRef>::ERR::errSuccess );
+
             // we report the progress either if this log took too long to replay (at least 5 seconds) or
             // if the control callback says so ...
             //
@@ -12028,15 +12079,24 @@ ProcessNextRec:
             ULONG cifmpsAttached = 0;
 
             // Currently flush log if flush-tip falls too far behind waypoint depth. We could also do it time based etc.
-            if ( m_lgposRedo.lGeneration > m_lgposFlushTip.lGeneration + LLGElasticWaypointLatency() )
+            LONG lWaypointDepth, lElasticWaypointDepth;                                 
+            LGElasticWaypointLatency( &lWaypointDepth, &lElasticWaypointDepth );
+            if ( m_lgposRedo.lGeneration > m_lgposFlushTip.lGeneration + lWaypointDepth + lElasticWaypointDepth )
             {
                 BOOL fFlushed = fFalse;
                 Call( m_pLogStream->ErrLGFlushLogFileBuffers( iofrLogMaxRequired, &fFlushed ) );
                 if ( fFlushed )
                 {
-                    // During recovery redo, consider full log flushed
+                    // During recovery redo, consider full log flushed (except when using LLR)
+                    //
+                    // Setting flush-tip LLR logs back with LLR matches what we do in do-time in LOG_STREAM::ErrLGIFinishNewLogFile
+                    // and it prevents this scenario, with, say LLR=l, ElasticLLR=e.
+                    // Current FlushTip=N, once lgenRedo reaches N+l+e+1, we would move FlushTip to N+l+e+1 and lgenMaxRequired to N+e+1.
+                    // On the next l log roll, we would again move lgenMaxRequired since FlushTip includes that.
+                    // So, in effect, we would update lgenMaxRequired l+1 times per l+e+1 logs, rather than once per e+1 logs like we meant to.
+                    // Keeping FlushTip LLR logs back fixes that, lgenMaxRequired would then only move every e+1 logs.
                     LGPOS lgposNextFlushTip;
-                    lgposNextFlushTip.lGeneration = m_lgposRedo.lGeneration;
+                    lgposNextFlushTip.lGeneration = lElasticWaypointDepth ? m_lgposRedo.lGeneration - lWaypointDepth : m_lgposRedo.lGeneration;
                     lgposNextFlushTip.isec = lgposMax.isec;
                     lgposNextFlushTip.ib   = lgposMax.ib;
                     LGSetFlushTip( lgposNextFlushTip );

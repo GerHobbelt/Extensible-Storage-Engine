@@ -353,7 +353,7 @@ ERR ErrBFICapturePagePreimage( BF *pbf, RBS_POS *prbsposSnapshot )
         return JET_errSuccess;
     }
 
-    ERR err = g_rgfmp[ pbf->ifmp ].PRBS()->ErrCapturePreimage( g_rgfmp[ pbf->ifmp ].Dbid(), pbf->pgno, (const BYTE *)pbf->pv, CbBFIBufferSize( pbf ), prbsposSnapshot );
+    ERR err = g_rgfmp[ pbf->ifmp ].PRBS()->ErrCapturePreimage( g_rgfmp[ pbf->ifmp ].Dbid(), pbf->pgno, (const BYTE *)pbf->pv, CbBFIBufferSize( pbf ), prbsposSnapshot, 0 );
     OSTrace( JET_tracetagRBS, OSFormat(
              "Collecting pre-image dbid:%u,pgno:%lu,dbtime:0x%I64x,dbtimeBegin:0x%I64x,rbspos:%u,%u\n",
              g_rgfmp[ pbf->ifmp ].Dbid(),
@@ -4833,6 +4833,10 @@ ERR ErrBFFlushSync( IFMP ifmp )
         //  write this BF to the database
         
         TraceContextScope tcScope( iorpBFDatabaseFlush );
+        if ( pbf->fFlushed )
+        {
+            tcScope->iorReason.AddFlag( iorfRepeated );
+        }
         err = ErrBFISyncWrite( pbf, bfltExclusive, qosIODispatchImmediate, *tcScope );
         pbf->sxwl.ReleaseExclusiveLatch();
 
@@ -15619,13 +15623,20 @@ void BFIMaintTelemetryRequest()
 
 void BFIMaintTelemetryITask( VOID *, VOID * pvContext )
 {
+    ERR         err                         = JET_errSuccess;
+    LONGLONG**  rgrgcbCacheByIfmpTce        = NULL;
+    LONGLONG**  rgrgcbCacheDirtyByIfmpTce   = NULL;
+    TICK**      rgrgtickMinByIfmpTce        = NULL;
+
     //  compute the cache footprint by ifmp, tce
 
-    LONGLONG** rgrgcbCacheByIfmpTce = new LONGLONG*[ g_ifmpMax ];
-    TICK** rgrgtickMinByIfmpTce = new TICK*[ g_ifmpMax ];
+    Alloc( rgrgcbCacheByIfmpTce = new LONGLONG*[ g_ifmpMax ] );
+    Alloc( rgrgcbCacheDirtyByIfmpTce = new LONGLONG* [g_ifmpMax] );
+    Alloc( rgrgtickMinByIfmpTce = new TICK*[ g_ifmpMax ] );
     for ( IFMP ifmpT = 0; ifmpT < g_ifmpMax; ifmpT++ )
     {
         rgrgcbCacheByIfmpTce[ ifmpT ] = NULL;
+        rgrgcbCacheDirtyByIfmpTce[ifmpT] = NULL;
         rgrgtickMinByIfmpTce[ ifmpT ] = NULL;
     }
 
@@ -15656,11 +15667,13 @@ void BFIMaintTelemetryITask( VOID *, VOID * pvContext )
 
         if ( rgrgcbCacheByIfmpTce[ ifmp ] == NULL )
         {
-            rgrgcbCacheByIfmpTce[ ifmp ] = new LONGLONG[ tceMax ];
-            rgrgtickMinByIfmpTce[ ifmp ] = new TICK[ tceMax ];
+            Alloc( rgrgcbCacheByIfmpTce[ ifmp ] = new LONGLONG[ tceMax ] );
+            Alloc( rgrgcbCacheDirtyByIfmpTce[ifmp] = new LONGLONG[tceMax] );
+            Alloc( rgrgtickMinByIfmpTce[ ifmp ] = new TICK[ tceMax ] );
             for ( int tceT = 0; tceT < tceMax; tceT++ )
             {
                 rgrgcbCacheByIfmpTce[ ifmp ][ tceT ] = 0;
+                rgrgcbCacheDirtyByIfmpTce[ifmp][tceT] = 0;
                 rgrgtickMinByIfmpTce[ ifmp ][ tceT ] = tickNow;
             }
         }
@@ -15668,6 +15681,13 @@ void BFIMaintTelemetryITask( VOID *, VOID * pvContext )
         //  track the space consumed by ifmp and tce
 
         rgrgcbCacheByIfmpTce[ ifmp ][ pbf->tce ] += g_rgcbPageSize[ pbf->icbBuffer ];
+
+        //  track space consumed by dirty buffers by ifmp and tce
+
+        if ( pbf->bfdf >= bfdfDirty )
+        {
+            rgrgcbCacheDirtyByIfmpTce[ifmp][pbf->tce] += g_rgcbPageSize[pbf->icbBuffer];
+        }
 
         //  only track the last touch time for buffers cached for normal use and that aren't held over for any other
         //  reason (e.g. dirty and cannot be flushed) because we are trying to find the natural reference interval
@@ -15712,7 +15732,8 @@ void BFIMaintTelemetryITask( VOID *, VOID * pvContext )
                     rgrgcbCacheByIfmpTce[ ifmp ][ tce ],
                     TickCmp( tickNow, rgrgtickMinByIfmpTce[ ifmp ][ tce ] ) >= 0 ?
                         DtickDelta( rgrgtickMinByIfmpTce[ ifmp ][ tce ], tickNow ) :
-                        0 );
+                        0,
+                    rgrgcbCacheDirtyByIfmpTce[ifmp][tce] );
             }
         }
 
@@ -15721,16 +15742,29 @@ void BFIMaintTelemetryITask( VOID *, VOID * pvContext )
 
     //  release our resources
 
+HandleError:
     for ( IFMP ifmpT = 0; ifmpT < g_ifmpMax; ifmpT++ )
     {
-        delete[] rgrgcbCacheByIfmpTce[ ifmpT ];
-        delete[] rgrgtickMinByIfmpTce[ ifmpT ];
+        if ( rgrgcbCacheByIfmpTce )
+        {
+            delete[] rgrgcbCacheByIfmpTce[ifmpT];
+        }
+        if ( rgrgcbCacheDirtyByIfmpTce )
+        {
+            delete[] rgrgcbCacheDirtyByIfmpTce[ifmpT];
+        }
+        if ( rgrgtickMinByIfmpTce )
+        {
+            delete[] rgrgtickMinByIfmpTce[ifmpT];
+        }
     }
 
     delete[] rgrgcbCacheByIfmpTce;
+    delete[] rgrgcbCacheDirtyByIfmpTce;
     delete[] rgrgtickMinByIfmpTce;
 
     //  schedule our next telemetry
+
     BFIMaintTelemetryRequest();
 }
 
@@ -16794,7 +16828,8 @@ ERR ErrBFICachePage(    PBF* const ppbf,
                         const ULONG_PTR pctCachePriority,
                         const TraceContext& tc,
                         const BFLatchType bfltTraceOnly,
-                        const BFLatchFlags bflfTraceOnly )
+                        const BFLatchFlags bflfTraceOnly,
+                        BOOL* const pfRepeatedRead )
 {
     ERR             err;
     PGNOPBF         pgnopbf;
@@ -16804,6 +16839,8 @@ ERR ErrBFICachePage(    PBF* const ppbf,
     const TCE       tce = (TCE)tc.nParentObjectClass;
 
     Assert( pgno >= 1 );
+
+    *pfRepeatedRead = fFalse;
 
     // use pre-allocated BF if provided (we own freeing it in case of error)
     pgnopbf.pbf = *ppbf;
@@ -17031,6 +17068,8 @@ ERR ErrBFICachePage(    PBF* const ppbf,
                             pgnopbf.pbf,
                             pgnopbf.pbf->pv,
                             pgnopbf.pbf->tce ) );
+
+    *pfRepeatedRead = fRepeatedlyRead;
 
     return JET_errSuccess;
 
@@ -18197,6 +18236,7 @@ ERR ErrBFIPrereadPage( IFMP ifmp, PGNO pgno, const BFPreReadFlags bfprf, const B
         //  technically this is a write latch, but we will use bfltMax as a sentinel to indicate 
         //  we're pre-reading a page, not latching.
 
+        BOOL fRepeatedRead;
         err = ErrBFICachePage( &pbf,
                                 ifmp,
                                 pgno,
@@ -18206,7 +18246,8 @@ ERR ErrBFIPrereadPage( IFMP ifmp, PGNO pgno, const BFPreReadFlags bfprf, const B
                                 PctBFCachePri( bfpri ),                                 // pctCachePriority
                                 tc,                                                     // tc
                                 bfltMax,                                                // bfltTraceOnly
-                                ( bfprf & bfprfDBScan ) ? bflfDBScan : bflfNone );      // bflfTraceOnly
+                                ( bfprf & bfprfDBScan ) ? bflfDBScan : bflfNone,        // bflfTraceOnly
+                                &fRepeatedRead );
         fBFOwned = fFalse;
         Call( err );
 
@@ -18216,6 +18257,10 @@ ERR ErrBFIPrereadPage( IFMP ifmp, PGNO pgno, const BFPreReadFlags bfprf, const B
         //  manipulation of the BF will be done in BFIAsyncReadComplete()
 
         TraceContextScope tcPreread( iorpBFPreread );
+        if ( fRepeatedRead )
+        {
+            tcPreread->iorReason.AddFlag( iorfRepeated );
+        }
         CallS( ErrBFIAsyncRead( pbf, qos, pioreqReserved, *tcPreread ) );
         pioreqReserved = NULL;
 
@@ -20460,6 +20505,7 @@ ERR ErrBFILatchPage(    _Out_ BFLatch* const    pbfl,
             //  try to add this page to the cache
 
             pgnopbf.pbf = NULL;
+            BOOL fRepeatedRead;
             err = ErrBFICachePage(  &pgnopbf.pbf,
                                     ifmp,
                                     pgno,
@@ -20469,7 +20515,8 @@ ERR ErrBFILatchPage(    _Out_ BFLatch* const    pbfl,
                                     PctBFCachePri( bfpri ),             // pctCachePriority
                                     tc,                                 // tc
                                     bfltReq,                            // bfltTraceOnly
-                                    bflfT );                            // bflfTraceOnly
+                                    bflfT,                              // bflfTraceOnly
+                                    &fRepeatedRead );
             AssertRTL( err > -65536 && err < 65536 );
             AssertTrack( ( err != JET_errFileIOBeyondEOF ) || !fNewPage, "BFILatchEofUncached" );
 
@@ -20505,6 +20552,10 @@ ERR ErrBFILatchPage(    _Out_ BFLatch* const    pbfl,
                     //  read the page image from disk
 
                     pgnopbf.pbf->fSyncRead = fTrue; // note: not doing this in BFISyncRead() may cause bug some day, but don't want to mark pages re-read due to OS paged out
+                    if ( fRepeatedRead )
+                    {
+                        tcBFLatch->iorReason.AddFlag( iorfRepeated );
+                    }
                     BFISyncRead( pgnopbf.pbf, QosBFIMergeInstUserDispPri( PinstFromIfmp( ifmp ), QosBFUserAndIoPri( bfpri ) ), *tcBFLatch );
                     OSTraceFMP(
                         ifmp,
@@ -22242,6 +22293,10 @@ ERR ErrBFIFlushExclusiveLatchedAndPreparedBF(   __inout const PBF       pbf,
     if ( pbf->lrukic.FSuperColded() || pbf->lrukic.PctCachePriority() < 50 )
     {
         tcFlush->iorReason.AddFlag( iorfSuperColdOrLowPriority );
+    }
+    if ( pbf->fFlushed )
+    {
+        tcFlush->iorReason.AddFlag( iorfRepeated );
     }
 
     if ( FBFIDatabasePage( pbf ) )
@@ -24377,7 +24432,7 @@ ERR ErrBFISyncWrite( PBF pbf, const BFLatchType bfltHave, OSFILEQOS qos, const T
 
     //  issue sync write
 
-    err = pfapi->ErrIOWrite( tc,
+    err = pfapi->ErrIOWrite(    tc,
                                 ibOffset,
                                 cbData,
                                 pbData,
@@ -24579,13 +24634,13 @@ ERR ErrBFIAsyncWrite( PBF pbf, OSFILEQOS qos, const TraceContext& tc )
     IFileAPI * const pfapi = g_rgfmp[pbf->ifmp].Pfapi();
 
     const ERR err = pfapi->ErrIOWrite(  tc,
-                                    OffsetOfPgno( pbf->pgno ),
-                                    CbBFIPageSize( pbf ),
-                                    (BYTE*)pbf->pv,
-                                    qos,
-                                    IFileAPI::PfnIOComplete( BFIAsyncWriteComplete ),
-                                    DWORD_PTR( pbf ),
-                                    IFileAPI::PfnIOHandoff( BFIAsyncWriteHandoff ) );
+                                        OffsetOfPgno( pbf->pgno ),
+                                        CbBFIPageSize( pbf ),
+                                        (BYTE*)pbf->pv,
+                                        qos,
+                                        IFileAPI::PfnIOComplete( BFIAsyncWriteComplete ),
+                                        DWORD_PTR( pbf ),
+                                        IFileAPI::PfnIOHandoff( BFIAsyncWriteHandoff ) );
     CallSx( err, errDiskTilt );
 
     //  deal with disk over quota / tilted

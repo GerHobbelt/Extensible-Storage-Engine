@@ -162,6 +162,14 @@ public:
             FireWall( "PibUtcCleanup" );
             TLSSetUserTraceContext( NULL );
         }
+
+        if ( m_pClientCommitContextGeneric != NULL )
+        {
+            delete[] m_pClientCommitContextGeneric;
+            m_pClientCommitContextGeneric = NULL;
+            m_cbClientCommitContextGeneric = 0;
+            m_cbClientCommitContextGenericAllocated = 0;
+        }
     }
 
     //  It would make a lot sense to make this static, but there are several callers, and that would balloon this 
@@ -241,7 +249,7 @@ private:
             FLAG32      m_fOLD2:1;                          //    session is for OLD2
             FLAG32      m_fMustRollbackToLevel0:1;          //    session must rollback to level 0 before being able to commit
             FLAG32      m_fDBScan:1;                        //    session is for DBSCAN
-#ifdef DEBUG
+#if defined(DEBUG) || defined(EXPENSIVE_INLINE_EXTENT_PAGE_COUNT_CACHE_VALIDATION)
             FLAG32      m_fUpdatingExtentPageCountCache:1;  //    session is currently updating the cached CPG values in the catalog
 #endif
         };
@@ -339,15 +347,16 @@ private:
     TrxidStack          m_trxidstack;
 //  376 / 472 bytes
 
-    BYTE                m_cbClientCommitContextGeneric;
-    BYTE                m_rgbClientCommitContextGeneric[70];
-
+    BYTE*               m_pClientCommitContextGeneric;
+    USHORT              m_cbClientCommitContextGeneric;
+    USHORT              m_cbClientCommitContextGenericAllocated;
     BYTE                m_fCommitContextContainsCustomerData;
-//  448 / 544 bytes
+    BYTE                m_fCommitContextNeedPreCommitCallback;
+//  384 / 484 bytes
 
     UserTraceContext    m_utc;              // Packs together OPERATION_CONTEXT, correlation ID, and exchange specific tracing information
     TICK                m_tickLevel0Begin;
-//  472 / 572 bytes
+//  408 / 512 bytes
 
     volatile BOOL       m_fLoggedCheckpointGettingDeep;
 
@@ -359,7 +368,7 @@ private:
     ULONG               m_grbitUserIoPriority;          // The user specified JET_sesparamIOPriority flags.
     ULONG               m_qosIoPriority;                // The converted QOS flags to pass to IO functions.
 
-//  504 / 608 bytes
+//  440 / 548 bytes
 
 public:
     LEVEL               Level() const { return m_level; }
@@ -438,8 +447,8 @@ public:
     VOID                SetFReadOnlyTrx()                                   { m_fReadOnlyTrx = fTrue; }
     VOID                ResetFReadOnlyTrx()                                 { m_fReadOnlyTrx = fFalse; }
 
-#ifdef DEBUG
-    // Debug only marker that we're currently updating the cache.  Used only in asserts.
+#if defined(DEBUG) || defined(EXPENSIVE_INLINE_EXTENT_PAGE_COUNT_CACHE_VALIDATION)
+    // Marker that we're currently updating the cache.  Used in asserts and certain optional validation code.
     BOOL                FUpdatingExtentPageCountCache() const               { return m_fUpdatingExtentPageCountCache; }
     VOID                SetFUpdatingExtentPageCountCache()                  { m_fUpdatingExtentPageCountCache = fTrue;  }
     VOID                ResetFUpdatingExtentPageCountCache()                { m_fUpdatingExtentPageCountCache = fFalse; }
@@ -472,10 +481,13 @@ public:
 
     ERR                 ErrSetClientCommitContextGeneric( const void * const pvCtx, const INT cbCtx );
     INT                 CbClientCommitContextGeneric() const            { return m_cbClientCommitContextGeneric; }
-    const VOID *        PvClientCommitContextGeneric() const            { return m_rgbClientCommitContextGeneric; }
+    const VOID *        PvClientCommitContextGeneric() const            { return m_pClientCommitContextGeneric; }
 
     ERR                 ErrSetCommitContextContainsCustomerData( const void * const pvCtx, const INT cbCtx );
     BOOL                FCommitContextContainsCustomerData() const      { return m_fCommitContextContainsCustomerData; }
+
+    VOID                SetFCommitContextNeedPreCommitCallback( BOOL fValue )   { m_fCommitContextNeedPreCommitCallback = !!fValue; }
+    BOOL                FCommitContextNeedPreCommitCallback() const             { return m_fCommitContextNeedPreCommitCallback; }
 
     ERR                 ErrSetOperationContext( const void* const pvOperationContext, const INT cbCtx );
     const VOID *        PvOperationContext() const                      { return &m_utc.context; }
@@ -534,11 +546,13 @@ public:
 };
 
 //  Be conscious of the size if you're changing it ...
+/*
 #ifdef _WIN64
-C_ASSERT( sizeof(PIB) == 608 );
+C_ASSERT( sizeof(PIB) == 548 );
 #else  //  !_WIN64
-C_ASSERT( sizeof(PIB) == 504 );
+C_ASSERT( sizeof(PIB) == 440 );
 #endif  //  _WIN64
+*/
 
 INLINE SIZE_T OffsetOfTrxOldestILE()    { return OffsetOf( PIB, m_ileTrxOldest ); }
 
@@ -811,22 +825,38 @@ INLINE VOID PIB::FreePvRecordFormatConversionBuffer()
     m_pvRecordFormatConversionBuffer = NULL;
 }
 
+#define cbMaxCommitCtx  30*1000
+
 //  ================================================================
 INLINE ERR PIB::ErrSetClientCommitContextGeneric( const void * const pvCtx, const INT cbCtx )
 //  ================================================================
 {
-    if ( cbCtx > sizeof(m_rgbClientCommitContextGeneric) )
+    ERR err;
+    if ( cbCtx > cbMaxCommitCtx )
     {
+        m_cbClientCommitContextGeneric = 0;
         return ErrERRCheck( JET_errInvalidBufferSize );
     }
 
-    Assert( cbCtx < 256 );  // size of ppib->m_cbClientCommitContextGeneric
-    m_cbClientCommitContextGeneric = (BYTE)cbCtx;
-
+    m_cbClientCommitContextGeneric = 0;
+    if ( cbCtx > m_cbClientCommitContextGenericAllocated )
+    {
+        BYTE *pBuffer;
+        AllocR( pBuffer = new BYTE[ cbCtx ] );
+        delete[] m_pClientCommitContextGeneric;
+        m_pClientCommitContextGeneric = pBuffer;
+        m_cbClientCommitContextGenericAllocated = (USHORT)cbCtx;
+    }
     if ( cbCtx )
     {
-        memcpy( m_rgbClientCommitContextGeneric, pvCtx, cbCtx );
+        Assert( cbCtx <= m_cbClientCommitContextGenericAllocated );
+        memcpy( m_pClientCommitContextGeneric, pvCtx, cbCtx );
     }
+    else
+    {
+        m_fCommitContextNeedPreCommitCallback = fFalse;
+    }
+    m_cbClientCommitContextGeneric = (USHORT)cbCtx;
 
     return JET_errSuccess;
 }
@@ -843,8 +873,6 @@ INLINE ERR PIB::ErrSetCommitContextContainsCustomerData( const void * const pvCt
     m_fCommitContextContainsCustomerData = !!*(DWORD *)pvCtx;
     return JET_errSuccess;
 }
-
-//  =======================================================================
 
 //  ================================================================
 INLINE ERR PIB::ErrSetOperationContext( const void * const pvCtx, const INT cbCtx )
@@ -1157,6 +1185,11 @@ INLINE VOID PIBSetTrxBegin0( PIB * const ppib )
     PIB* const ppibTrxOldest = ppls->m_ilTrxOldest.PrevMost();
     Assert ( !ppibTrxOldest || ( INT( ppibTrxOldest->trxBegin0 - ppib->trxBegin0 ) <= 0 ) );
 #endif
+    // Oldest transaction can only change if this is the first transaction
+    if ( ppls->m_ilTrxOldest.PrevMost() == NULL )
+    {
+        pinst->SetTrxOldestCachedMayBeStale();
+    }
     ppls->m_ilTrxOldest.InsertAsNextMost( ppib );
     ppls->m_rwlPIBTrxOldest.LeaveAsWriter();
 
@@ -1178,6 +1211,11 @@ INLINE VOID PIBResetTrxBegin0( PIB * const ppib )
     if ( ppls != NULL )
     {
         ppls->m_rwlPIBTrxOldest.EnterAsWriter();
+        // Oldest transaction can only change if this is the first transaction
+        if ( ppls->m_ilTrxOldest.PrevMost() == ppib )
+        {
+            PinstFromPpib( ppib )->SetTrxOldestCachedMayBeStale();
+        }
         ppls->m_ilTrxOldest.Remove( ppib );
         ppls->m_rwlPIBTrxOldest.LeaveAsWriter();
     }

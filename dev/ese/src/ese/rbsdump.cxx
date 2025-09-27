@@ -63,6 +63,9 @@ VOID LOCAL DUMPRBSHeaderStandard( INST *pinst, _In_ const DB_HEADER_READER* cons
     DUMPPrintF( "Snapshot Header Flush Signature: " );
     DUMPPrintSig( &prbsfilehdr->rbsfilehdr.signRBSHdrFlush );
 
+    DUMPPrintF( "Prev Snapshot Header Flush Signature: " );
+    DUMPPrintSig( &prbsfilehdr->rbsfilehdr.signPrevRBSHdrFlush );
+
     g_cbPageFromSnapshot = prbsfilehdr->rbsfilehdr.le_cbDbPageSize;
     DUMPPrintF( "Database page size %u\n", (USHORT)prbsfilehdr->rbsfilehdr.le_cbDbPageSize );
 
@@ -246,8 +249,9 @@ VOID RBSRecToSz( const RBSRecord *prbsrec, __out_bcount(cbRBSRec) PSTR szRBSRec,
             OSStrCbFormatA( rgchBuf, sizeof(rgchBuf), " [%u:%lu],[%s%s],objid:%d,dbtime:%I64x",
                 (DBID)  prbsdbpgrec->m_dbid,
                 (ULONG) prbsdbpgrec->m_pgno,
-                ( prbsdbpgrec->m_fFlags & fRBSPreimageXpress ) ? "X" : "",
+                ( prbsdbpgrec->m_fFlags & fRBSPreimageCompressed ) ? "X" : "",
                 ( prbsdbpgrec->m_fFlags & fRBSPreimageDehydrated ) ? "D" : "",
+                ( prbsdbpgrec->m_fFlags & fRBSPreimageRevertAlways ) ? "A" : "",
                 objid, dbtime );
             OSStrCbAppendA( szRBSRec, cbRBSRec, rgchBuf );
             OSMemoryPageFree( pbDataDecompressed );
