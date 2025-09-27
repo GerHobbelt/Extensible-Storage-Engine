@@ -1828,7 +1828,7 @@ VOID LOG::LGElasticWaypointLatency( LONG *plWaypointLatency, LONG *plElasticWayp
     if ( FWaypointLatencyEnabled() )
     {
         *plWaypointLatency = (LONG)UlParam( m_pinst, JET_paramWaypointLatency );
-        *plElasticWaypointLatency = (LONG)UlParam( m_pinst, JET_paramFlight_ElasticWaypointLatency );
+        *plElasticWaypointLatency = (LONG)UlParam( m_pinst, JET_paramElasticWaypointLatency );
     }
     else
     {
@@ -1957,13 +1957,14 @@ ERR LOG::ErrLGUpdateGenRequired(
             continue;
         }
 
-
         if ( !pfmpT->FAllowHeaderUpdate() )
         {
             if ( pfSkippedAttachDetach )
             {
                 *pfSkippedAttachDetach = fTrue;
             }
+            // Do not trim LGEN_LOGTIME_MAP list
+            lGenMaxRequiredMin = 0;
             pfmpT->RwlDetaching().LeaveAsReader();
             continue;
         }
@@ -2187,12 +2188,12 @@ ERR LOG::ErrLGUpdateGenRequired(
         //  Note: If we're updating fHeaderUpdateMaxRequired, we should have already flushed the respective log
 
         if ( err >= JET_errSuccess &&
-             // Either we are not skipping lgenCommitted only updates, or min/max Required got updated, or this call did not even pass in a lgenCommitted (special call from backup)
-             ( !BoolParam( m_pinst, JET_paramFlight_SkipDbHeaderWriteForLgenCommittedUpdate ) || fHeaderUpdateMinRequired || fHeaderUpdateMaxRequired || lGenCommitted == 0 ) )
+             // Either min/max Required got updated, or this call did not even pass in a lgenCommitted (special call from backup)
+             ( fHeaderUpdateMinRequired || fHeaderUpdateMaxRequired || lGenCommitted == 0 ) )
         {
             err = ErrUtilWriteAttachedDatabaseHeaders( m_pinst, pfsapi, pfmpT->WszDatabaseName(), pfmpT, pfmpT->Pfapi() );
 
-            if ( err >= JET_errSuccess && ( fHeaderUpdateMinRequired || fHeaderUpdateMaxRequired || lGenCommitted == 0 ) )
+            if ( err >= JET_errSuccess )
             {
                 const IOFLUSHREASON iofr =
                     IOFLUSHREASON(
@@ -4165,9 +4166,20 @@ VOID LOG::LGAddWastage( const ULONG cbWastage )
     m_cbCurrentWastage += cbWastage;
 }
 
+VOID LOG::LGAddFreePages( const ULONG cFreePages )
+{
+    m_cCurrentFreePages += cFreePages;
+}
+
+BOOL LOG::FTooManyFreePagesInChkptDepth()
+{
+    return ( UlParam( m_pinst, JET_paramFlight_RBSMaxTableDeletePages ) != 0 &&
+             ( m_cTotalFreePages + m_cCurrentFreePages ) > UlParam( m_pinst, JET_paramFlight_RBSMaxTableDeletePages ) );
+}
+
 VOID LOG::LGAddUsage( const ULONG cbUsage )
 {
-    const ULONG cbChkptDepthSlot = (ULONG)( UlParam( m_pinst, JET_paramCheckpointDepthMax ) / NUM_WASTAGE_SLOTS );
+    const ULONG cbChkptDepthSlot = (ULONG)( UlParam( m_pinst, JET_paramCheckpointDepthMax ) / NUM_CHKPT_SLOTS );
     if ( cbChkptDepthSlot == 0 )
     {
         return;
@@ -4176,11 +4188,17 @@ VOID LOG::LGAddUsage( const ULONG cbUsage )
     m_cbCurrentUsage += cbUsage;
     while ( m_cbCurrentUsage >= cbChkptDepthSlot )
     {
-        m_cbTotalWastage += m_cbCurrentWastage - m_rgWastages[ m_iNextWastageSlot ];
+        m_cbTotalWastage += m_cbCurrentWastage - m_rgWastages[ m_iNextChkptSlot ];
         Assert( m_cbTotalWastage >= 0 );
-        m_rgWastages[ m_iNextWastageSlot ] = m_cbCurrentWastage;
-        m_iNextWastageSlot = ( m_iNextWastageSlot + 1 ) % NUM_WASTAGE_SLOTS;
+        m_rgWastages[ m_iNextChkptSlot ] = m_cbCurrentWastage;
         m_cbCurrentWastage = 0;
+
+        m_cTotalFreePages += m_cCurrentFreePages - m_rgFreePages[ m_iNextChkptSlot ];
+        Assert( m_cTotalFreePages >= 0 );
+        m_rgFreePages[ m_iNextChkptSlot ] = m_cCurrentFreePages;
+        m_cCurrentFreePages = 0;
+
+        m_iNextChkptSlot = ( m_iNextChkptSlot + 1 ) % NUM_CHKPT_SLOTS;
         m_cbCurrentUsage -= cbChkptDepthSlot;
     }
 }

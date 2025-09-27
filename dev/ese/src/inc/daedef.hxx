@@ -5033,7 +5033,7 @@ public:
 
     volatile TRX        m_trxNewest;
     CCriticalSection    m_critPIB;
-    RWLPOOL< PIB >      m_rwlpoolPIBTrx;
+    RWLPOOL             m_rwlpoolPIBTrx;
     CResource           m_cresPIB;
     PIB* volatile       m_ppibGlobal;
     // During recovery read-only transactions get a trxBegin0 relative to the ones seen in recovery. Have

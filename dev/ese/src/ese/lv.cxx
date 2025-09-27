@@ -581,7 +581,9 @@ ERR ErrFILEOpenLVRoot( FUCB *pfucb, FUCB **ppfucbLV, BOOL fCreate )
 {
     ERR         err;
     PIB         *ppib;
-    PGNO        pgnoLV = pgnoNull;
+    PGNO        pgnoLV          = pgnoNull;
+    OBJID       objidLV         = objidNil;
+    __int64     ftPgnoLVLastSet = 0;
 
     Assert( pfcbNil != pfucb->u.pfcb );
     Assert( pfucb->ppib != PinstFromPfucb(pfucb)->m_ppibLV );
@@ -650,7 +652,7 @@ ERR ErrFILEOpenLVRoot( FUCB *pfucb, FUCB **ppfucbLV, BOOL fCreate )
     Assert( pgnoNull == pgnoLV );   // initial value
     if ( !fTemp )
     {
-        Call( ErrCATAccessTableLV( ppib, pfucb->ifmp, pfucb->u.pfcb->ObjidFDP(), &pgnoLV ) );
+        Call( ErrCATAccessTableLV( ppib, pfucb->ifmp, pfucb->u.pfcb->ObjidFDP(), &pgnoLV, &objidLV, &ftPgnoLVLastSet ) );
     }
     else
     {
@@ -670,6 +672,11 @@ ERR ErrFILEOpenLVRoot( FUCB *pfucb, FUCB **ppfucbLV, BOOL fCreate )
     if( pgnoNull != pgnoLV )
     {
         err = ErrFILEIInitLVRoot( pfucb, pgnoLV, ppfucbLV );
+
+        if ( ftPgnoLVLastSet != 0 && *ppfucbLV != pfucbNil )
+        {
+            ( *ppfucbLV )->u.pfcb->SetFileTimePgnoFDPLastSet( ftPgnoLVLastSet );
+        }
     }
     else
     {
@@ -1335,7 +1342,6 @@ LOCAL CompressFlags LVIAddCompressionFlagsIfEnabled(
 
     // If user asks for xpress and lz4 is enabled, use that.
     if ( (compressFlags & compressXpress) &&
-         BoolParam( pinst, JET_paramFlight_EnableLz4Compression ) &&
          g_rgfmp[ ifmp ].ErrDBFormatFeatureEnabled( JET_efvLz4Compression ) >= JET_errSuccess )
     {
         return CompressFlags( compressFlags | compressLz4 );
@@ -6124,7 +6130,7 @@ ERR ErrRECDereferenceLongFieldsInRecord( FUCB *pfucb )
     //  only called by ErrIsamDelete(), which always begins a transaction
     Assert( pfucb->ppib->Level() > 0 );
 
-    AssertDIRNoLatch( pfucb->ppib );
+    AssertDIRMaybeNoLatch( pfucb->ppib, pfucb );
 
     CallR( ErrDIRGet( pfucb ) );
     Expected( !pfucb->kdfCurr.data.FNull() );
@@ -6148,7 +6154,7 @@ HandleError:
     {
         CallS( ErrDIRRelease( pfucb ) );
     }
-    AssertDIRNoLatch( pfucb->ppib );
+    AssertDIRMaybeNoLatch( pfucb->ppib, pfucb );
     return err;
 }
 

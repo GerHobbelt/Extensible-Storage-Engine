@@ -17710,6 +17710,7 @@ VOID FUCB::Dump( CPRINTF * pcprintf, DWORD_PTR ulBase ) const
     EDBGDumplinkDml( FUCB, this, PIB, ppib, ulBase );
     EDBGDumplinkDml( FUCB, this, FUCB, pfucbNextOfSession, ulBase );
     EDBGDumplinkDml( FUCB, this, FCB, u.pfcb, ulBase );
+    EDBGDumplinkDml( FUCB, this, FUCB, pfucbLatchHolderForSpace, ulBase );
     (*pcprintf)( FORMAT_POINTER( FUCB, this, u.pscb, ulBase ) );
     (*pcprintf)( FORMAT_INT( FUCB, this, ifmp, ulBase ) );
 
@@ -17793,10 +17794,10 @@ VOID FUCB::Dump( CPRINTF * pcprintf, DWORD_PTR ulBase ) const
 
     EDBGDumplinkDml( FUCB, this, FUCB, pfucbTable, ulBase );
 
-    (*pcprintf)( FORMAT_UINT( FUCB, this, ulLTLast, ulBase ) );
-    (*pcprintf)( FORMAT_UINT( FUCB, this, ulTotalLast, ulBase ) );
-    (*pcprintf)( FORMAT_UINT( FUCB, this, ulLTCurr, ulBase ) );
-    (*pcprintf)( FORMAT_UINT( FUCB, this, ulTotalCurr, ulBase ) );
+    (*pcprintf)( FORMAT_UINT( FUCB, this, ullLTLast, ulBase ) );
+    (*pcprintf)( FORMAT_UINT( FUCB, this, ullTotalLast, ulBase ) );
+    (*pcprintf)( FORMAT_UINT( FUCB, this, ullLTCurr, ulBase ) );
+    (*pcprintf)( FORMAT_UINT( FUCB, this, ullTotalCurr, ulBase ) );
 
     EDBGDumplinkDml( FUCB, this, CSR, pcsrRoot, ulBase );
 
@@ -18051,7 +18052,6 @@ VOID FMP::Dump( CPRINTF * pcprintf, DWORD_PTR dwOffset ) const
     (*pcprintf)( FORMAT_BOOL_BF( FMP, this, m_fCopiedPatchHeader, dwOffset ) );
     (*pcprintf)( FORMAT_BOOL_BF( FMP, this, m_fEDBBackupDone, dwOffset ) );
     (*pcprintf)( FORMAT_BOOL_BF( FMP, this, m_fDontRegisterOLD2Tasks, dwOffset ) );
-    (*pcprintf)( FORMAT_BOOL_BF( FMP, this, m_fCacheAvail, dwOffset ) );
     (*pcprintf)( FORMAT_BOOL_BF( FMP, this, m_fMaintainMSObjids, dwOffset ) );
     (*pcprintf)( FORMAT_BOOL_BF( FMP, this, m_fNoWaypointLatency, dwOffset ) );
     (*pcprintf)( FORMAT_BOOL_BF( FMP, this, m_fAttachedForRecovery, dwOffset ) );
@@ -18223,6 +18223,7 @@ VOID FMP::Dump( CPRINTF * pcprintf, DWORD_PTR dwOffset ) const
     (*pcprintf)( FORMAT_POINTER( FMP, this, m_pLogRedoMapZeroed, dwOffset ) );
     (*pcprintf)( FORMAT_POINTER( FMP, this, m_pLogRedoMapBadDbtime, dwOffset ) );
     (*pcprintf)( FORMAT_POINTER( FMP, this, m_pLogRedoMapDbtimeRevert, dwOffset ) );
+    (*pcprintf)( FORMAT_POINTER( FMP, this, m_pLogRedoMapDbtimeRevertIgnore, dwOffset ) );
 }
 
 INLINE ERR CHECKPOINT::Dump( CPRINTF* pcprintf, DWORD_PTR dwOffset ) const

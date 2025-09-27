@@ -127,8 +127,8 @@ MSINTERNAL enum class MJET_PARAM
     AccessDeniedRetryPeriod = 53, // Number of milliseconds to retry when about to fail with AccessDenied
     EnableIndexChecking = 45, // Enable checking OS version for indexes (false by default).
     EnableIndexCleanup = 54, // Enable cleanup of out-of-date index entries (Windows 2003 through Windows 7); Does NLS version checking (Windows 2003 and later).
-    Flight_SmoothIoTestPermillage = 55, // The per mille of total (or one thousandths, or tenths of a percent) of IO should be made smooth.  Ex(s): 995‰ = 99.5% smooth, 10‰ = 1%, etc.  0 = disabled.
-    Flight_ElasticWaypointLatency = 56, // Amount of extra elastic waypoint latency
+    Flight_SmoothIoTestPermillage = 55, // The per mille of total (or one thousandths, or tenths of a percent) of IO should be made smooth.  Ex(s): 995(/1000) = 99.5% smooth, 10(/1000) = 1%, etc.  0 = disabled.
+    ElasticWaypointLatency = 56, // Amount of extra elastic waypoint latency
     Flight_SynchronousLVCleanup = 57, // Perform synchronous cleanup (actual delete) of LVs instead of flag delete with cleanup happening later
     Flight_RBSRevertIOUrgentLevel = 58, // IO urgent level for reverting the databases using RBS. Used to decide how many outstanding I/Os will be allowed.
     Flight_EnableXpress10Compression = 59, // Enable Xpress10 compression using corsica hardware
@@ -139,20 +139,17 @@ MSINTERNAL enum class MJET_PARAM
     AbortRetryFailCallback = 108, // I/O error callback (JET_ABORTRETRYFAILCALLBACK)
     BackupChunkSize = 66, // backup read size in pages
     BackupOutstandingReads = 67, // backup maximum reads outstanding
-    Flight_CheckRedoNeededBeyondRequiredRange = 68, // Check to make sure that all updates beyond required range need to be applied during redo (i.e. are not already written out to the database)
+    Flight_RBSMaxTableDeletePages = 68, // Maximum table delete size (in pages) to allow if we are activated on the RBS copy
     LogFileCreateAsynch = 69, // prepares next log file while logging to the current one to smooth response time
     ErrorToString = 70, // turns a JET_err into a string (taken from the comment in jet.h)
     ZeroDatabaseDuringBackup = 71, // Overwrite deleted records/LVs during backup
     UnicodeIndexDefault = 72, // default LCMapString() lcid and flags to use for CreateIndex() and unique multi-values check
     RuntimeCallback = 73, // pointer to runtime-only callback function
-    Flight_EnableReattachRaceBugFix = 74, // Enable bug fix for race between dirty-cache-keep-alive database reattach and checkpoint update
-    Flight_EnableLz4Compression = 75, // Enable Lz4 compression
     EnableSortedRetrieveColumns = 76, // internally sort (in a dynamically allocated parallel array) JET_RETRIEVECOLUMN structures passed to JetRetrieveColumns()
     CleanupMismatchedLogFiles = 77, // instead of erroring out after a successful recovery with JET_errLogFileSizeMismatchDatabasesConsistent, ESE will silently delete the old log files and checkpoint file and continue operations
     RecordUpgradeDirtyLevel = 78, // how aggresively should pages with their record format converted be flushed (0-3)
     RecoveryCurrentLogfile = 79, // which generation is currently being replayed (read only)
     OSSnapshotTimeout = 82, // timeout for the freeze period in msec
-    Flight_SkipDbHeaderWriteForLgenCommittedUpdate = 83, // Skip database header write only for lgenCommitted update (lgenMinRequired and lgenMaxRequired updates would still trigger the write)
     Flight_RBSForceRollIntervalSec = 80, // Time after which we should force roll into new revert snapshot by raising failure item and letting HA remount. This is temporary till we have live roll.
     Flight_NewQueueOptions = 84, // Controls options for new Meted IO Queue
     Flight_ConcurrentMetedOps = 85, // Controls how many IOs we leave out at once for the new Meted IO Queue.
@@ -162,7 +159,7 @@ MSINTERNAL enum class MJET_PARAM
     Flight_EnableShrinkArchiving = 89, // Turns on archiving truncated data when shrinking a database (subject to efv).
     Flight_EnableBackupDuringRecovery = 90, // Turns on backup during recovery (i.e. seed from passive copy).
     Flight_RBSRollIntervalSec = 91, // Time after which we should roll into new revert snapshot.
-    Flight_RBSMaxRequiredRange = 92, // Max required range allowed for revert snapshot. If combined required range of the dbs is greater than this we will skip creating the revert snapshot 
+    Flight_RBSMaxRequiredRange = 92, // Max required range allowed for revert snapshot. If combined required range of the dbs is greater than this we will skip creating the revert snapshot
     Flight_RBSCleanupEnabled = 93, // Turns on clean up for revert snapshot.
     Flight_RBSLowDiskSpaceThresholdGb = 94, // Low disk space in gigabytes at which we will start cleaning up RBS aggressively.
     Flight_RBSMaxSpaceWhenLowDiskSpaceGb = 95, // Max alloted space in gigabytes for revert snapshots when the disk space is low.
@@ -180,6 +177,8 @@ MSINTERNAL enum class MJET_PARAM
     IndexTuplesLengthMax = 111, // for tuple indexes, maximum length of a tuple
     IndexTuplesToIndexMax = 112, // for tuple indexes, maximum number of characters in a given string to index
     AlternateDatabaseRecoveryPath = 113, // recovery-only - search for dirty-shutdown databases in specified location only
+    Flight_ExtentPageCountCacheVerifyOnly = 114, // Verify values read from the Extent Page Count Cache rather than just returning them.
+    Flight_EnablePgnoFDPLastSetTime = 115, // whether we want to enable setting PgnoPFDSetTime in the system table for a table entry.
     IndexTupleIncrement = 132, // for tuple indexes, offset increment for each succesive tuple
     IndexTupleStart = 133, // for tuple indexes, offset to start tuple indexing
     KeyMost = 134, // read only maximum settable key length before key trunctation occurs

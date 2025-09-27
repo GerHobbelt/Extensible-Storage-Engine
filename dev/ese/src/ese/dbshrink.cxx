@@ -418,6 +418,7 @@ LOCAL ERR ErrSHKIMoveLastExtent(
                 // Make sure the page does not have any useful data.
                 if ( ( errPageStatus != JET_errPageNotInitialized ) &&
                      ( ( dbtimeOnPage != dbtimeShrunk ) || ( clines != 0 ) ) &&
+                     ( ( dbtimeOnPage != dbtimeRevert ) || ( clines != 0 ) ) &&
                      ( !fPreInitPage || ( clines > 0 ) ) &&
                      ( !fEmptyPage || ( clines != 0 ) ) )
                 {
@@ -542,7 +543,7 @@ LOCAL ERR ErrSHKIMoveLastExtent(
                 if ( FSPSpaceCatLeaked( spcatfCurrent ) )
                 {
                     // Release page to its owner and re-evaluate the page.
-                    Call( ErrSPCaptureSnapshot( pSpCatCtx->pfucb, pgnoCurrent, 1 ) );
+                    Call( ErrSPCaptureSnapshot( pSpCatCtx->pfucb, pgnoCurrent, 1, fFalse ) );
                     Call( ErrSPFreeExt( pSpCatCtx->pfucb, pgnoCurrent, 1, "PageUnleak" ) );
                     cpgUnleaked++;
                     fMovedPage = fTrue;
@@ -864,11 +865,18 @@ ERR ErrSHKShrinkDbFromEof(
     HRT dhrtFileTruncation = 0;
     HRT dhrtPageCategorization = 0;
     HRT dhrtDataMove = 0;
-    OnDebug( BOOL fDbMayHaveChanged = fFalse );
+    BOOL fDbMayHaveChanged = fFalse;
 
     Assert( !pfmp->FIsTempDB() );
 
     Call( ErrSHKIShrinkEofTracingBegin( pinst->m_pfsapi, g_rgfmp[ ifmp ].WszDatabaseName(), &pcprintfShrinkTraceRaw ) );
+
+    // Bail out as early as possible if the database is already sufficiently small.
+    if ( pfmp->CpgOfCb( pfmp->CbOwnedFileSize() ) <= pfmp->CpgShrinkDatabaseSizeLimit() )
+    {
+        sdr = sdrReachedSizeLimit;
+        goto DoneWithDataMove;
+    }
 
     Assert( !BoolParam( JET_paramEnableViewCache ) );
 
@@ -906,7 +914,7 @@ ERR ErrSHKShrinkDbFromEof(
         Error( ErrERRCheck( JET_errSPOwnExtCorrupted ) );
     }
 
-    OnDebug( fDbMayHaveChanged = fTrue );
+    fDbMayHaveChanged = fTrue;
 
     Assert( !pfmp->FShrinkIsRunning() );
     pfmp->SetShrinkIsRunning();
@@ -1036,6 +1044,13 @@ DoneWithDataMove:
     Call( pfmp->Pfapi()->ErrSize( &cbSizeFileFinal, IFileAPI::filesizeLogical ) );
     cbSizeOwnedFinal = OffsetOfPgno( eiFinalOE.PgnoLast() + 1 );
 
+    if ( !eiInitialOE.FValid() )
+    {
+        eiInitialOE = eiFinalOE;
+        cbSizeFileInitial = cbSizeFileFinal;
+        cbSizeOwnedInitial = cbSizeOwnedFinal;
+    }
+
     // Check if we now own less space (i.e., if we shrank).
     if ( eiFinalOE.PgnoLast() >= eiInitialOE.PgnoLast() )
     {
@@ -1114,47 +1129,50 @@ HandleError:
         sdr = sdrFailed;
     }
 
-    // Emit event.
-    OSTraceSuspendGC();
-    const HRT dhrtElapsed = DhrtHRTElapsedFromHrtStart( hrtStarted );
-    const double dblSecTotalElapsed = DblHRTSecondsElapsed( dhrtElapsed );
-    const DWORD dwMinElapsed = (DWORD)( dblSecTotalElapsed / 60.0 );
-    const double dblSecElapsed = dblSecTotalElapsed - (double)dwMinElapsed * 60.0;
-    dhrtExtMaint = min( dhrtExtMaint, dhrtElapsed );
-    dhrtFileTruncation = min( dhrtFileTruncation, dhrtElapsed );
-    dhrtPageCategorization = min( dhrtPageCategorization, dhrtElapsed );
-    dhrtDataMove = min( dhrtDataMove, dhrtElapsed );
-    HRT dhrtRemaining = dhrtElapsed - ( dhrtExtMaint + dhrtFileTruncation + dhrtPageCategorization + dhrtDataMove );
-    dhrtRemaining = max( dhrtRemaining, 0 );
-    const WCHAR* rgwsz[] =
+    // Emit event, except for when the database file was already small enough.
+    if ( ( sdr != sdrReachedSizeLimit ) || fDbMayHaveChanged )
     {
-        pfmp->WszDatabaseName(),
-        OSFormatW( L"%I32u", dwMinElapsed ), OSFormatW( L"%.2f", dblSecElapsed ),
-        OSFormatW( L"%I64u", cbSizeFileInitial ), OSFormatW( L"%d", pfmp->CpgOfCb( cbSizeFileInitial ) ),
-        OSFormatW( L"%I64u", cbSizeFileFinal ), OSFormatW( L"%d", pfmp->CpgOfCb( cbSizeFileFinal ) ),
-        OSFormatW( L"%I64u", cbSizeOwnedInitial ), OSFormatW( L"%d", pfmp->CpgOfCb( cbSizeOwnedInitial ) ),
-        OSFormatW( L"%I64u", cbSizeOwnedFinal ), OSFormatW( L"%d", pfmp->CpgOfCb( cbSizeOwnedFinal ) ),
-        OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgMoved ) ), OSFormatW( L"%d", cpgMoved ),
-        OSFormatW( L"%d", err ),
-        OSFormatW( L"%I32u:%d:0x%08I32x", pgnoLastProcessed, (int)sdr, (DWORD)spcatfLastProcessed ),
-        OSFormatW( L"%.2f", ( 100.0 * (double)dhrtExtMaint ) / (double)dhrtElapsed ),
-        OSFormatW( L"%.2f", ( 100.0 * (double)dhrtFileTruncation ) / (double)dhrtElapsed ),
-        OSFormatW( L"%.2f", ( 100.0 * (double)dhrtPageCategorization ) / (double)dhrtElapsed ),
-        OSFormatW( L"%.2f", ( 100.0 * (double)dhrtDataMove ) / (double)dhrtElapsed ),
-        OSFormatW( L"%.2f", ( 100.0 * (double)dhrtRemaining ) / (double)dhrtElapsed ),
-        OSFormatW( L"%d", cpgShelved ),
-        OSFormatW( L"%d", cpgUnleaked )
-    };
-    UtilReportEvent(
-        ( err < JET_errSuccess ) ? eventError : eventInformation,
-        GENERAL_CATEGORY,
-        ( err < JET_errSuccess ) ? DB_SHRINK_FAILED_ID : DB_SHRINK_SUCCEEDED_ID,
-        _countof( rgwsz ),
-        rgwsz,
-        0,
-        NULL,
-        pfmp->Pinst() );
-    OSTraceResumeGC();
+        OSTraceSuspendGC();
+        const HRT dhrtElapsed = DhrtHRTElapsedFromHrtStart( hrtStarted );
+        const double dblSecTotalElapsed = DblHRTSecondsElapsed( dhrtElapsed );
+        const DWORD dwMinElapsed = (DWORD)( dblSecTotalElapsed / 60.0 );
+        const double dblSecElapsed = dblSecTotalElapsed - (double)dwMinElapsed * 60.0;
+        dhrtExtMaint = min( dhrtExtMaint, dhrtElapsed );
+        dhrtFileTruncation = min( dhrtFileTruncation, dhrtElapsed );
+        dhrtPageCategorization = min( dhrtPageCategorization, dhrtElapsed );
+        dhrtDataMove = min( dhrtDataMove, dhrtElapsed );
+        HRT dhrtRemaining = dhrtElapsed - ( dhrtExtMaint + dhrtFileTruncation + dhrtPageCategorization + dhrtDataMove );
+        dhrtRemaining = max( dhrtRemaining, 0 );
+        const WCHAR* rgwsz[] =
+        {
+            pfmp->WszDatabaseName(),
+            OSFormatW( L"%I32u", dwMinElapsed ), OSFormatW( L"%.2f", dblSecElapsed ),
+            OSFormatW( L"%I64u", cbSizeFileInitial ), OSFormatW( L"%d", pfmp->CpgOfCb( cbSizeFileInitial ) ),
+            OSFormatW( L"%I64u", cbSizeFileFinal ), OSFormatW( L"%d", pfmp->CpgOfCb( cbSizeFileFinal ) ),
+            OSFormatW( L"%I64u", cbSizeOwnedInitial ), OSFormatW( L"%d", pfmp->CpgOfCb( cbSizeOwnedInitial ) ),
+            OSFormatW( L"%I64u", cbSizeOwnedFinal ), OSFormatW( L"%d", pfmp->CpgOfCb( cbSizeOwnedFinal ) ),
+            OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgMoved ) ), OSFormatW( L"%d", cpgMoved ),
+            OSFormatW( L"%d", err ),
+            OSFormatW( L"%I32u:%d:0x%08I32x", pgnoLastProcessed, (int)sdr, (DWORD)spcatfLastProcessed ),
+            OSFormatW( L"%.2f", ( 100.0 * (double)dhrtExtMaint ) / (double)dhrtElapsed ),
+            OSFormatW( L"%.2f", ( 100.0 * (double)dhrtFileTruncation ) / (double)dhrtElapsed ),
+            OSFormatW( L"%.2f", ( 100.0 * (double)dhrtPageCategorization ) / (double)dhrtElapsed ),
+            OSFormatW( L"%.2f", ( 100.0 * (double)dhrtDataMove ) / (double)dhrtElapsed ),
+            OSFormatW( L"%.2f", ( 100.0 * (double)dhrtRemaining ) / (double)dhrtElapsed ),
+            OSFormatW( L"%d", cpgShelved ),
+            OSFormatW( L"%d", cpgUnleaked )
+        };
+        UtilReportEvent(
+            ( err < JET_errSuccess ) ? eventError : eventInformation,
+            GENERAL_CATEGORY,
+            ( err < JET_errSuccess ) ? DB_SHRINK_FAILED_ID : DB_SHRINK_SUCCEEDED_ID,
+            _countof( rgwsz ),
+            rgwsz,
+            0,
+            NULL,
+            pfmp->Pinst() );
+        OSTraceResumeGC();
+    }
 
     if ( fDbOpen )
     {
@@ -1285,6 +1303,8 @@ LOCAL ERR ErrSHKIRootMoveSetCatRecPostImage(
     const PGNO pgnoNewFDP )
 {
     VOID* pv = NULL;
+    ERR err  = JET_errSuccess;
+
     BFAlloc( bfasTemporary, &pv, pdataPreImage->Cb() );
     pdataPostImage->SetPv( pv );
     pdataPreImage->CopyInto( *pdataPostImage );
@@ -1293,11 +1313,40 @@ LOCAL ERR ErrSHKIRootMoveSetCatRecPostImage(
     dataField.SetPv( (void*)( &pgnoNewFDP ) );
     dataField.SetCb( sizeof( pgnoNewFDP ) );
 
-    return ErrRECISetFixedColumnInLoadedDataBuffer(
+    Call( ErrRECISetFixedColumnInLoadedDataBuffer(
                 pdataPostImage,
                 pfucbCatalog->u.pfcb->Ptdb(),
                 fidMSO_PgnoFDP,
-                &dataField );
+                &dataField ) );
+
+    // If PgnoFDPLastSetTime column is already part of the record, lets modify it since we are setting a new pgnofdp.
+    // If not a part of the record, it will be set to current time the next time the table is accessed.
+    if ( BoolParam( PinstFromPfucb( pfucbCatalog ), JET_paramFlight_EnablePgnoFDPLastSetTime ) && 
+         g_rgfmp[ pfucbCatalog->ifmp ].ErrDBFormatFeatureEnabled( JET_efvRBSNonRevertableTableDeletes ) >= JET_errSuccess )
+    {
+        __int64 ftCurrent   = UtilGetCurrentFileTime();
+        const FID  fid      = FidOfColumnid( fidMSO_PgnoFDPLastSetTime );
+        Assert( fid.FFixed() );
+
+        BYTE        *pbRec  = (BYTE *)pdataPostImage->Pv();
+        REC         *prec   = (REC *)pbRec;
+
+        if ( fid <= prec->FidFixedLastInRec() )
+        {
+            DATA dataFieldFt;
+            dataFieldFt.SetPv( (void*) ( &ftCurrent ) );
+            dataFieldFt.SetCb( sizeof( __int64 ) );
+
+            Call( ErrRECISetFixedColumnInLoadedDataBuffer(
+                pdataPostImage,
+                pfucbCatalog->u.pfcb->Ptdb(),
+                fidMSO_PgnoFDPLastSetTime,
+                &dataFieldFt ) );
+        }
+    }
+
+HandleError:
+    return err;
 }
 
 LOCAL ERR ErrSHKICreateRootMove( ROOTMOVE* const prm, FUCB* const pfucb, const OBJID objidTable )

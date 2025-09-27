@@ -1537,7 +1537,7 @@ Language=English
 MessageId=552
 SymbolicName=LOG_CORRUPT_ID
 Language=English
-%1 (%2) %3The log file at "%4" is corrupt with reason '%5'. Last valid segment was %6, current segment is %7. The expected checksum was %8 and the actual checksum was %9. The read completed with error-code %10.  If this condition persists then please restore the logfile from a previous backup.
+%1 (%2) %3The log file at "%4" is corrupt with reason '%5'. Last valid segment was %6, current segment is %7. The stored checksum was %8 and the computed checksum was %9. The read completed with error-code %10.  If this condition persists then please restore the logfile from a previous backup.
 .
 
 MessageId=553
@@ -1722,7 +1722,7 @@ Language=English
 MessageId=611
 SymbolicName=DO_SECONDARY_INDEX_CLEANUP_ID
 Language=English
-%1 (%2) %3Database '%4': The secondary index '%5' of table '%6' will be rebuilt as a precautionary measure after the Windows version upgrade of this system. This message is informational and does not indicate a problem in the database.
+%1 (%2) %3Database '%4': The secondary index '%5' of table '%6' for locale '%7' is out of date with sorting libraries, index sort version: (SortId=%8, Version=%9), current sort version: (SortId=%10, Version=%11), and will be rebuilt. This message is informational and does not indicate a problem in the database.
 .
 
 MessageId=612
@@ -1734,13 +1734,13 @@ Language=English
 MessageId=613
 SymbolicName=PRIMARY_INDEX_OUT_OF_DATE_ERROR_ID
 Language=English
-%1 (%2) %3Database '%4': The primary index '%5' of table '%6' is out of date with sorting libraries. If used in this state (i.e. not rebuilt), it may appear corrupt or get further corrupted. If there is no later event showing the index being rebuilt, then please defragment the database to rebuild the index.
+%1 (%2) %3Database '%4': The primary index '%5' of table '%6' for locale '%7' is out of date with sorting libraries, index sort version: (SortId=%8, Version=%9), current sort version: (SortId=%10, Version=%11). If used in this state (i.e. not rebuilt), it may appear corrupt or get further corrupted. If there is no later event showing the index being rebuilt, then please defragment the database to rebuild the index.
 .
 
 MessageId=614
 SymbolicName=SECONDARY_INDEX_OUT_OF_DATE_ERROR_ID
 Language=English
-%1 (%2) %3Database '%4': The secondary index '%5' of table '%6' is out of date with sorting libraries. If used in this state (i.e. not rebuilt), it may appear corrupt or get further corrupted. If there is no later event showing the index being rebuilt, then please defragment the database to rebuild the index.
+%1 (%2) %3Database '%4': The secondary index '%5' of table '%6' for locale '%7' is out of date with sorting libraries, index sort version: (SortId=%8, Version=%9), current sort version: (SortId=%10, Version=%11). If used in this state (i.e. not rebuilt), it may appear corrupt or get further corrupted. If there is no later event showing the index being rebuilt, then please defragment the database to rebuild the index.
 .
 
 MessageId=615
@@ -2073,6 +2073,8 @@ SymbolicName=EXTENT_PAGE_COUNT_CACHE_EXTENSIVE_VALIDATION_FAILED_ID
 Language=English
 %1 (%2) %3Extra validation of the Extent Page Count Cache table failed.%n
 Database: %4%n
+Table: %11%n
+ObjName: %12%n
 Objid: %5%n
 PgnoFDP: %6%n
 Counted CpgOE: %7%n
@@ -2506,6 +2508,17 @@ Language=English
 %6 of those outstanding tasks have not started.%n
 .
 
+MessageId=753
+SymbolicName=DBSCAN_REDELETE_REVERTED_TABLE_SUCCESS
+Language=English
+%1 (%2) %3Db scan successfully deleted table at root page %4 with objid %5 as it was marked for delete by revert operation.
+.
+
+MessageId=754
+SymbolicName=DBSCAN_REDELETE_REVERTED_TABLE_FAILURE
+Language=English
+%1 (%2) %3Db scan failed to delete table at root page %4 with objid %5 which was marked for delete by revert operation with error %6.
+.
 
 ;// !!! ARE YOU SURE you're adding this in the right place !!! ???
 

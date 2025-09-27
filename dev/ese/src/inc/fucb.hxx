@@ -311,13 +311,13 @@ struct FUCB
 
     //  record position of last seek
     //
-    ULONG           ulLTLast;
-    ULONG           ulTotalLast;
+    ULONGLONG       ullLTLast;
+    ULONGLONG       ullTotalLast;
 
     //  record position of saved bookmark
     //
-    ULONG           ulLTCurr;
-    ULONG           ulTotalCurr;
+    ULONGLONG       ullLTCurr;
+    ULONGLONG       ullTotalCurr;
 
     //  used only by space manager
     //
@@ -335,7 +335,12 @@ struct FUCB
 
     CInvasiveConcurrentModSet< FUCB, OffsetOfIAE>::CElement m_iae;
 
-    BYTE           rgbAlign2[24];
+    //  set and used by Space
+    //  Space tree use requires a latch on the FDP of the FDP related to the space tree.
+    //  If this is a space tree, this holds a pointer to the FUCB that has that latch.
+    //  It's not always maintained, but is accurate if it's non NULL.
+    // 
+    FUCB           *pfucbLatchHolderForSpace;
 
 #ifdef DEBUGGER_EXTENSION
     VOID Dump( CPRINTF * pcprintf, DWORD_PTR dwOffset = 0 ) const;
@@ -361,8 +366,7 @@ INLINE VOID FUCB::VerifyOptimalPacking()
 {
     // Verify optimal packing.  These matter because keeping this structure to a 32 byte boundary
     // makes it significantly more memory efficient when the resource manager allocates it.
-    // We currently "waste" 27 bytes in rgbAlign[] and rgbAlign2[].  It'd be nice
-    // to find 5 bytes of savings to avoid wasting so much.
+    // We currently "waste" 12 bytes in rgbAlign[].
     //
     // No one ever calls this routine.  It's enough that it compiles cleanly for the static_asserts.
     //
@@ -388,7 +392,7 @@ INLINE VOID FUCB::VerifyOptimalPacking()
 
     static_assert( sizeof( FUCB ) == 512, "Current size" );
 
-    static_assert( _NoWastedSpaceAround( FUCB, pvtfndef, rgbAlign2 ) );
+    static_assert( _NoWastedSpaceAround( FUCB, pvtfndef, pfucbLatchHolderForSpace ) );
     static_assert( CacheLineMark( FUCB, pvtfndef, 0 ) );
     static_assert( NoWastedSpace( FUCB, pvtfndef,              ppib) );
     static_assert( NoWastedSpace( FUCB, ppib,                  pfucbNextOfSession) );
@@ -437,20 +441,21 @@ INLINE VOID FUCB::VerifyOptimalPacking()
     static_assert( NoWastedSpace( FUCB, pvRCEBuffer,           rgbitSet) );
 
     static_assert( CacheLineMark( FUCB, rgbitSet, 6 ) );
-    static_assert( NoWastedSpace( FUCB, rgbitSet,              ulLTLast) );
-    static_assert( NoWastedSpace( FUCB, ulLTLast,              ulTotalLast) );
-    static_assert( NoWastedSpace( FUCB, ulTotalLast,           ulLTCurr) );
-    static_assert( NoWastedSpace( FUCB, ulLTCurr,              ulTotalCurr) );
-    static_assert( NoWastedSpace( FUCB, ulTotalCurr,           pcsrRoot) );
+    static_assert( NoWastedSpace( FUCB, rgbitSet,              ullLTLast) );
+    static_assert( NoWastedSpace( FUCB, ullLTLast,             ullTotalLast) );
+    static_assert( NoWastedSpace( FUCB, ullTotalLast,          ullLTCurr) );
+    static_assert( NoWastedSpace( FUCB, ullLTCurr,             ullTotalCurr) );
+    static_assert( NoWastedSpace( FUCB, ullTotalCurr,          pcsrRoot) );
+
+    static_assert( CacheLineMark( FUCB, pcsrRoot, 7) );
     static_assert( NoWastedSpace( FUCB, pcsrRoot,              ls) );
     static_assert( NoWastedSpace( FUCB, ls,                    pfucbHashOverflow) );
-
-    static_assert( CacheLineMark( FUCB, pfucbHashOverflow,     7) );
     static_assert( NoWastedSpace( FUCB, pfucbHashOverflow,     cbEncryptionKey) );
     static_assert( NoWastedSpace( FUCB, cbEncryptionKey,       cpgSpaceRequestReserve) );
     static_assert( NoWastedSpace( FUCB, cpgSpaceRequestReserve,pbEncryptionKey) );
     static_assert( NoWastedSpace( FUCB, pbEncryptionKey,       pmoveFilterContext) );
     static_assert( NoWastedSpace( FUCB, pmoveFilterContext,    m_iae) );
+    static_assert( NoWastedSpace( FUCB, m_iae,                 pfucbLatchHolderForSpace) );
 }
 #endif
 

@@ -1381,7 +1381,8 @@ ERR ErrDBParseDbParams(
     _Out_opt_ CPG* const                                        pcpgShrinkDatabaseSizeLimit,    // JET_dbparamShrinkDatabaseSizeLimit
     _Out_opt_ BOOL* const                                       pfLeakReclaimerEnabled,         // JET_dbparamLeakReclaimerEnabled
     _Out_opt_ LONG* const                                       pdtickLeakReclaimerTimeQuota,   // JET_dbparamLeakReclaimerTimeQuota
-    _Out_opt_ FEATURECONTROL* const                             pfcMaintainExtentPageCountCache // JET_dbparamMaintainExtentPageCountCache
+    _Out_opt_ FEATURECONTROL* const                             pfcMaintainExtentPageCountCache,// JET_dbparamMaintainExtentPageCountCache
+    _Out_opt_ BOOL* const                                       pfSelfAllocSpBufReservation     // JET_dbparamFlight_SelfAllocSpBufReservationEnabled
     )
 {
     ULONG ulRawMaintainExtentPageCountCache = 0;
@@ -1442,6 +1443,15 @@ ERR ErrDBParseDbParams(
         *pfcMaintainExtentPageCountCache = fc::NotSpecified;
     }
 
+    if ( pfSelfAllocSpBufReservation != NULL )
+    {
+#ifdef DEBUG
+        *pfSelfAllocSpBufReservation = fTrue;
+#else
+        *pfSelfAllocSpBufReservation = fFalse;
+#endif
+    }
+
     //
     // Go through the array of DB parameters and collect all user inputs.
     //
@@ -1496,6 +1506,11 @@ ERR ErrDBParseDbParams(
                 fFoundMaintainExtentPageCountCache = fTrue;
                 cbParamDest = sizeof( ulRawMaintainExtentPageCountCache );
                 pvParamDest = &ulRawMaintainExtentPageCountCache;
+                break;
+
+            case JET_dbparamFlight_SelfAllocSpBufReservationEnabled:
+                cbParamDest = sizeof( *pfSelfAllocSpBufReservation );
+                pvParamDest = pfSelfAllocSpBufReservation;
                 break;
 
             default:
@@ -1620,12 +1635,13 @@ ERR ErrDBCreateDatabase(
 {
     ERR             err;
     WCHAR           rgwchDbFullName[IFileSystemAPI::cchPathMax];
-    WCHAR           *wszDbFullName          = rgwchDbFullName;
-    CPG             cpgDatabaseSizeMax      = 0;
-    ULONG           pctCachePriority        = g_pctCachePriorityUnassigned;
-    BOOL            fDatabaseOpen           = fFalse;
-    BOOL            fNewDBCreated           = fFalse;
-    BOOL            fLogged                 = fFalse;
+    WCHAR           *wszDbFullName              = rgwchDbFullName;
+    CPG             cpgDatabaseSizeMax          = 0;
+    ULONG           pctCachePriority            = g_pctCachePriorityUnassigned;
+    BOOL            fDatabaseOpen               = fFalse;
+    BOOL            fNewDBCreated               = fFalse;
+    BOOL            fLogged                     = fFalse;
+    BOOL            fSelfAllocSpBufReservation  = fFalse;
     LGPOS           lgposLogRec;
     FEATURECONTROL  fcMaintainExtentPageCountCache;
 
@@ -1638,7 +1654,8 @@ ERR ErrDBCreateDatabase(
                                NULL,                 // JET_dbparamShrinkDatabaseSizeLimit (not used here).
                                NULL,                 // JET_dbparamLeakReclaimerEnabled (not used here).
                                NULL,                 // JET_dbparamLeakReclaimerTimeQuota (not used here).
-                               &fcMaintainExtentPageCountCache ) );
+                               &fcMaintainExtentPageCountCache,
+                               &fSelfAllocSpBufReservation ) );
 
     Assert( !( grbit & bitCreateDbImplicitly ) || PinstFromPpib( ppib )->m_plog->FRecovering() );
 
@@ -1789,7 +1806,15 @@ ERR ErrDBCreateDatabase(
     pfmp->SetCreatingDB();
     pfmp->RwlDetaching().LeaveAsWriter();
 
-    pfmp->SetRuntimeDbParams( cpgDatabaseSizeMax, pctCachePriority, NO_GRBIT, -1, 0, fFalse, -1 );
+    pfmp->SetRuntimeDbParams(
+        cpgDatabaseSizeMax,
+        pctCachePriority,
+        NO_GRBIT,                       // JET_dbparamShrinkDatabaseOptions
+        -1,                             // JET_dbparamShrinkDatabaseTimeQuota
+        0,                              // JET_dbparamShrinkDatabaseSizeLimit
+        fFalse,                         // JET_dbparamLeakReclaimerEnabled
+        -1,                             // JET_dbparamLeakReclaimerTimeQuota
+        fSelfAllocSpBufReservation );
 
     //  check if database file already exists
     //
@@ -3998,6 +4023,7 @@ ERR ISAMAPI ErrIsamAttachDatabase(
     CPG                 cpgShrinkDatabaseSizeLimit      = 0;
     BOOL                fLeakReclaimerEnabled           = fFalse;
     LONG                dtickLeakReclaimerTimeQuota     = -1;
+    BOOL                fSelfAllocSpBufReservation      = fFalse;
     LGPOS               lgposLogRec;
     LOGTIME             logtimeOfGenWithAttach;
     BOOL                fReadOnly;
@@ -4022,7 +4048,8 @@ ERR ISAMAPI ErrIsamAttachDatabase(
                                &cpgShrinkDatabaseSizeLimit,
                                &fLeakReclaimerEnabled,
                                &dtickLeakReclaimerTimeQuota,
-                               &fcMaintainExtentPageCountCache ) );
+                               &fcMaintainExtentPageCountCache,
+                               &fSelfAllocSpBufReservation ) );
 
     memset( &logtimeOfGenWithAttach, 0, sizeof( logtimeOfGenWithAttach ) );
 
@@ -4149,7 +4176,7 @@ ERR ISAMAPI ErrIsamAttachDatabase(
 
             pfmp = &g_rgfmp[ ifmp ];
 
-            Assert( ( pfmp->PLogRedoMapZeroed() == NULL ) && ( pfmp->PLogRedoMapBadDbTime() == NULL ) && ( pfmp->PLogRedoMapDbtimeRevert() == NULL ) );
+            Assert( ( pfmp->PLogRedoMapZeroed() == NULL ) && ( pfmp->PLogRedoMapBadDbTime() == NULL ) && ( pfmp->PLogRedoMapDbtimeRevert() == NULL ) && ( pfmp->PLogRedoMapDbtimeRevertIgnore() == NULL ) );
 
             Assert( !pinst->FRecovering() );
             Assert( !pfmp->FReadOnlyAttach() && !g_fRepair );
@@ -4166,7 +4193,8 @@ ERR ISAMAPI ErrIsamAttachDatabase(
                                       dtickShrinkDatabaseTimeQuota,
                                       cpgShrinkDatabaseSizeLimit,
                                       fLeakReclaimerEnabled,
-                                      dtickLeakReclaimerTimeQuota );
+                                      dtickLeakReclaimerTimeQuota,
+                                      fSelfAllocSpBufReservation );
 
             const FormatVersions * pfmtversDesired = NULL;
             BOOL fDbNeedsUpdate = fFalse;
@@ -4281,13 +4309,10 @@ ERR ISAMAPI ErrIsamAttachDatabase(
 
             pfmp->InitializeDbtimeOldest();
 
-            if ( BoolParam( pinst, JET_paramFlight_EnableReattachRaceBugFix ) )
-            {
-                Assert( !pfmp->FAllowHeaderUpdate() );
-                pfmp->RwlDetaching().EnterAsWriter();
-                pfmp->SetAllowHeaderUpdate();
-                pfmp->RwlDetaching().LeaveAsWriter();
-            }
+            Assert( !pfmp->FAllowHeaderUpdate() );
+            pfmp->RwlDetaching().EnterAsWriter();
+            pfmp->SetAllowHeaderUpdate();
+            pfmp->RwlDetaching().LeaveAsWriter();
 
             {
             //  set the last page of the database and resize it (we normally do it at the end of recovery,
@@ -4410,7 +4435,8 @@ ERR ISAMAPI ErrIsamAttachDatabase(
                               dtickShrinkDatabaseTimeQuota,
                               cpgShrinkDatabaseSizeLimit,
                               fLeakReclaimerEnabled,
-                              dtickLeakReclaimerTimeQuota );
+                              dtickLeakReclaimerTimeQuota,
+                              fSelfAllocSpBufReservation );
 
     //  backup thread will wait on attach completion from this point
     //  as the db is marked as attaching.
@@ -4467,7 +4493,7 @@ ERR ISAMAPI ErrIsamAttachDatabase(
     Call( ErrDBReadHeaderCheckConsistency( pfsapi, pfmp ) );
     pfmp->TraceDbfilehdrInfo( tsidrEngineFmpDbHdr1st );
 
-    Assert( ( pfmp->PLogRedoMapZeroed() == NULL ) && ( pfmp->PLogRedoMapBadDbTime() == NULL ) && ( pfmp->PLogRedoMapDbtimeRevert() == NULL ) );
+    Assert( ( pfmp->PLogRedoMapZeroed() == NULL ) && ( pfmp->PLogRedoMapBadDbTime() == NULL ) && ( pfmp->PLogRedoMapDbtimeRevert() == NULL ) && ( pfmp->PLogRedoMapDbtimeRevertIgnore() == NULL ) );
 
     if ( !plog->FLogDisabled()
         && 0 == memcmp( &pfmp->Pdbfilehdr()->signLog, &plog->SignLog(), sizeof(SIGNATURE) ) )
@@ -4865,9 +4891,7 @@ PostAttachTasks:
             }
             else if ( objidFDP != objidNil )
             {
-                evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
-                fcT = fc::NotSpecified;
-                rgwsz[1] = L"REQUEST_PARAM_MATCHES_STATE";
+                // Too verbose, don't log anything. This is steady state when feature is on everywhere.
             }
             else
             {

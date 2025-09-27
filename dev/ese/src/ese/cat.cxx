@@ -2474,6 +2474,8 @@ ERR ErrCATAddTable(
     CPG             cpgInitial;
     const SYSOBJ    sysobj              = sysobjTable;
     const BYTE      bTrue               = 0xff;
+    __int64         ftCurrent           = UtilGetCurrentFileTime();
+    ULONG           iHighestFixedToSet  = iMSO_PgnoFDPLastSetTime;
 
     Assert( objidTable > objidSystemRoot );
     Assert( pSpacehints );
@@ -2574,7 +2576,18 @@ ERR ErrCATAddTable(
         Assert( 0 == rgdata[ iMSO_LVChunkMax ].Cb() );
     }
 
-    err = ErrCATInsert( ppib, pfucbCatalog, rgdata, cbLVChunkMax ? iMSO_LVChunkMax : iMSO_RootFlag );
+    if ( BoolParam( PinstFromPpib( ppib ), JET_paramFlight_EnablePgnoFDPLastSetTime ) && 
+         g_rgfmp[ pfucbCatalog->ifmp ].ErrDBFormatFeatureEnabled( JET_efvRBSNonRevertableTableDeletes ) >= JET_errSuccess )
+    {
+        rgdata[ iMSO_PgnoFDPLastSetTime ].SetPv( (BYTE*) &ftCurrent );
+        rgdata[ iMSO_PgnoFDPLastSetTime ].SetCb( sizeof( ftCurrent ) );
+    }
+    else
+    {
+        iHighestFixedToSet = cbLVChunkMax ? iMSO_LVChunkMax : iMSO_RootFlag;
+    }
+
+    err = ErrCATInsert( ppib, pfucbCatalog, rgdata, iHighestFixedToSet );
     if ( JET_errKeyDuplicate == err )
     {
         if ( 0 == strcmp( szTableName, "MSysDefrag1" ) )
@@ -2702,6 +2715,7 @@ ERR ErrCATAddTableIndex(
     const SYSOBJ                    sysobj = sysobjIndex;
     INT                         idataT = 0;
     UnalignedLittleEndian<USHORT>   le_cbKeyMost;
+    __int64 ftCurrent   = UtilGetCurrentFileTime();
 
     Assert( objidTable > objidSystemRoot );
     Assert( objidIndex > objidSystemRoot );
@@ -2885,9 +2899,21 @@ ERR ErrCATAddTableIndex(
         Assert( 0 == rgdata[iMSO_KeyMost].Cb() );
     }
 
+    if ( BoolParam( PinstFromPpib( ppib ), JET_paramFlight_EnablePgnoFDPLastSetTime )  && 
+         g_rgfmp[ pfucbCatalog->ifmp ].ErrDBFormatFeatureEnabled( JET_efvRBSNonRevertableTableDeletes ) >= JET_errSuccess )
+    {
+        rgdata[ iMSO_PgnoFDPLastSetTime ].SetPv( (BYTE*) &ftCurrent );
+        rgdata[ iMSO_PgnoFDPLastSetTime ].SetCb( sizeof( ftCurrent ) );
+        idataT = iMSO_PgnoFDPLastSetTime;
+    }
+    else
+    {
+        idataT = iMSO_KeyMost;
+    }
+
     //  only set fixed columns if higher fixed column is set to non-NULL value
     //
-    for ( idataT = iMSO_KeyMost; ( idataT > 0 && ( 0 == rgdata[idataT].Cb() ) ); idataT-- )
+    for ( ; ( idataT > 0 && ( 0 == rgdata[idataT].Cb() ) ); idataT-- )
         ;
     Assert( idataT > 0 );
     err = ErrCATInsert( ppib, pfucbCatalog, rgdata, idataT );
@@ -2916,6 +2942,9 @@ ERR ErrCATIAddTableLV(
     const ULONG     ulPages             = cpgLVTree;
     const ULONG     ulDensity           = ulFILEDensityMost;
     const ULONG     ulFlagsNil          = 0;
+
+    ULONG iHighestFixedToSet            = iMSO_PgnoFDPLastSetTime;
+    __int64 ftCurrent                   = UtilGetCurrentFileTime();
 
     //  objids are monotonically increasing, so LV should
     //  always have higher objid than its table
@@ -2948,7 +2977,18 @@ ERR ErrCATIAddTableLV(
     rgdata[iMSO_Pages].SetPv(           (BYTE *)&ulPages );
     rgdata[iMSO_Pages].SetCb(           sizeof(ulPages) );
 
-    ERR err = ErrCATInsert( ppib, pfucbCatalog, rgdata, iMSO_Pages );
+    if ( BoolParam( PinstFromPpib( ppib ), JET_paramFlight_EnablePgnoFDPLastSetTime ) && 
+         g_rgfmp[ pfucbCatalog->ifmp ].ErrDBFormatFeatureEnabled( JET_efvRBSNonRevertableTableDeletes ) >= JET_errSuccess )
+    {
+        rgdata[ iMSO_PgnoFDPLastSetTime ].SetPv( (BYTE*) &ftCurrent );
+        rgdata[ iMSO_PgnoFDPLastSetTime ].SetCb( sizeof( ftCurrent ) );
+    }
+    else
+    {
+        iHighestFixedToSet = iMSO_Pages;
+    }
+
+    ERR err = ErrCATInsert( ppib, pfucbCatalog, rgdata, iHighestFixedToSet );
 
     if ( err >= JET_errSuccess )
     {
@@ -4055,16 +4095,169 @@ HandleError:
 }
 
 
+/*  If it is possible to change the PgnoFDPLastSetTime in the catalog.
+/**/
+LOCAL BOOL FCATChangePgnoFDPLastSetTime( __int64 ftCurrentSet, USHORT cdbOpen, IFMP ifmp, INST* pinst )
+{
+    return ftCurrentSet == 0 &&
+        cdbOpen > 0 &&
+        !g_rgfmp[ ifmp ].FReadOnlyAttach() &&
+        !g_rgfmp[ ifmp ].FShrinkIsRunning() &&
+        !g_rgfmp[ ifmp ].FExclusiveOpen() &&  // Its possible FCATChangePgnoFDPLastSetTime gets called during attach when dbshrink tries to access system table before setting m_fShrinkIsRunning
+        g_rgfmp[ ifmp ].FLogOn() &&
+        !pinst->FRecovering() &&
+        BoolParam( pinst, JET_paramFlight_EnablePgnoFDPLastSetTime ) &&
+        g_rgfmp[ ifmp ].ErrDBFormatFeatureEnabled( JET_efvRBSNonRevertableTableDeletes ) >= JET_errSuccess;
+}
+
+ERR ErrCATChangePgnoFDPLastSetTime(
+    _In_ PIB* const         ppib,
+    _In_ const IFMP         ifmp,
+    _In_ const OBJID        objidTable,
+    _In_ const OBJID        objid,
+    _In_ const SYSOBJ       sysobj,
+    _In_ const __int64      ftCurrent )
+{
+    ERR         err             = JET_errSuccess;
+    FUCB *      pfucbCatalog    = pfucbNil;
+    BOOKMARK    bm;
+    BYTE        *pbBookmark     = NULL;
+    ULONG       cbBookmark;
+
+    BOOL    fBeginTrx           = fFalse;
+    JET_GRBIT grbitCommitBefore = ppib->grbitCommitDefault;
+    ppib->grbitCommitDefault    = 0;
+
+    //  begin transaction if one is already not begun
+    //
+    if ( ppib->Level() == 0 )
+    {
+        CallR( ErrDIRBeginTransaction( ppib, 49567, NO_GRBIT ) );
+        fBeginTrx   = fTrue;
+    }
+
+    Call( ErrCATOpen( ppib, ifmp, &pfucbCatalog, fFalse ) );
+    Call( ErrCATISeekTableObject( ppib, pfucbCatalog, objidTable, sysobj, objid ) );
+    Assert( Pcsr( pfucbCatalog )->FLatched() );
+
+    Call( ErrDIRRelease( pfucbCatalog ) );
+
+    Assert( pfucbCatalog->bmCurr.key.prefix.FNull() );
+    Assert( pfucbCatalog->bmCurr.data.FNull() );
+    Alloc( pbBookmark = (BYTE *)RESBOOKMARK.PvRESAlloc() );
+    cbBookmark = min( pfucbCatalog->bmCurr.key.Cb(), cbBookmarkAlloc );
+    Assert( cbBookmark <= cbBookmarkMost );
+    pfucbCatalog->bmCurr.key.CopyIntoBuffer( pbBookmark, cbBookmark );
+
+    bm.key.prefix.Nullify();
+    bm.key.suffix.SetPv( pbBookmark );
+    bm.key.suffix.SetCb( cbBookmark );
+    bm.data.Nullify();
+
+    Call( ErrIsamPrepareUpdate( ppib, pfucbCatalog, JET_prepReplaceNoLock ) );
+    Call( ErrIsamSetColumn(
+        ppib,
+        pfucbCatalog,
+        fidMSO_PgnoFDPLastSetTime,
+        (BYTE *)&ftCurrent,
+        sizeof( __int64 ),
+        NO_GRBIT,
+        NULL ) );
+    Call( ErrIsamUpdate( ppib, pfucbCatalog, NULL, 0, NULL, NO_GRBIT ) );
+
+    CallS( ErrCATClose( ppib, pfucbCatalog ) );
+    pfucbCatalog = pfucbNil;
+
+    Call( ErrCATOpen( ppib, ifmp, &pfucbCatalog, fTrue ) );     //  shadow catalog
+
+    Call( ErrDIRGotoBookmark( pfucbCatalog, bm ) );
+
+    Call( ErrIsamPrepareUpdate( ppib, pfucbCatalog, JET_prepReplaceNoLock ) );
+    Call( ErrIsamSetColumn(
+        ppib,
+        pfucbCatalog,
+        fidMSO_PgnoFDPLastSetTime,
+        (BYTE *)&ftCurrent,
+        sizeof( __int64 ),
+        NO_GRBIT,
+        NULL ) );
+    Call( ErrIsamUpdate( ppib, pfucbCatalog, NULL, 0, NULL, NO_GRBIT ) );
+
+HandleError:
+    RESBOOKMARK.Free( pbBookmark );
+
+    if( pfucbCatalog )
+    {
+        CallS( ErrCATClose( ppib, pfucbCatalog ) );
+    }
+
+    if ( ppib )
+    {
+        if ( fBeginTrx )
+        {
+            if ( err >= 0 )
+            {
+                err = ErrDIRCommitTransaction( ppib, NO_GRBIT );
+            }
+            if ( err < 0 )
+            {
+                CallSx( ErrDIRRollback( ppib ), JET_errRollbackError );
+            }
+        }
+
+        ppib->grbitCommitDefault = grbitCommitBefore;
+    }
+
+    return err;
+}
+
+LOCAL VOID RegisterPgnoFDPLastSetTimeTask(
+    const IFMP      ifmp,
+    const OBJID     objidTable,
+    const OBJID     objid,
+    const USHORT    sysobj,
+    const __int64   ftCurrent )
+{
+    ERR err = JET_errSuccess;
+    DBPGNOFDPLASTSETTIMETASK * ptask    = NULL;
+
+    if ( PinstFromIfmp( ifmp )->m_pver->m_fSyncronousTasks || g_rgfmp[ ifmp ].FDetachingDB() )
+    {
+        // don't start the task because the task manager is no longer running
+        // and we can't run it synchronously because it will deadlock.
+        return;
+    }
+
+    Alloc( ptask = new DBPGNOFDPLASTSETTIMETASK( ifmp, objidTable, objid, sysobj, ftCurrent ) );
+    Call( PinstFromIfmp( ifmp )->Taskmgr().ErrTMPost( TASK::DispatchGP, ptask ) );
+    ptask = NULL;
+
+HandleError:
+
+    if ( err < JET_errSuccess && ptask )
+    {
+        delete ptask;
+    }
+
+    return;
+}
+
 ERR ErrCATAccessTableLV(
     PIB             *ppib,
     const IFMP      ifmp,
     const OBJID     objidTable,
     PGNO            *ppgnoLVFDP,
-    OBJID           *pobjidLV )
+    OBJID           *pobjidLV,
+    __int64         *pftPgnoLVFDPLastSet,
+    const BOOL      fSkipPgnoFDPLastSetTime )
 {
     ERR             err;
     FUCB            *pfucbCatalog   = pfucbNil;
     BOOL            fInTransaction  = fFalse;
+    OBJID           objidLV;
+
+    __int64 ftPgnoFDPLastSet            = 0;
+    __int64 ftCurrent                   = UtilGetCurrentFileTime();
 
     Call( ErrDIRBeginTransaction( ppib, 34324, NO_GRBIT ) );
     fInTransaction = fTrue;
@@ -4090,6 +4283,11 @@ ERR ErrCATAccessTableLV(
             {
                 *pobjidLV   = objidNil;
             }
+
+            if ( NULL != pftPgnoLVFDPLastSet )
+            {
+                *pftPgnoLVFDPLastSet = 0;
+            }
         }
     }
     else
@@ -4111,20 +4309,58 @@ ERR ErrCATAccessTableLV(
         *ppgnoLVFDP = *(UnalignedLittleEndian< PGNO > *) dataField.Pv();
 //      UtilMemCpy( ppgnoLVFDP, dataField.Pv(), sizeof(PGNO) );
 
+        Assert( fidMSO_Id.FFixed() );
+        Call( ErrRECIRetrieveFixedColumn(
+            pfcbNil,
+            pfucbCatalog->u.pfcb->Ptdb(),
+            fidMSO_Id,
+            pfucbCatalog->kdfCurr.data,
+            &dataField ) );
+        CallS( err );
+        Assert( dataField.Cb() == sizeof(OBJID) );
+
+        objidLV = *(UnalignedLittleEndian< OBJID > *) dataField.Pv();
+        //          UtilMemCpy( pobjidLV, dataField.Pv(), sizeof(OBJID) );
+
+        Assert( fidMSO_PgnoFDPLastSetTime.FFixed() );
+        Call( ErrRECIRetrieveFixedColumn(
+            pfcbNil,
+            pfucbCatalog->u.pfcb->Ptdb(),
+            fidMSO_PgnoFDPLastSetTime,
+            pfucbCatalog->kdfCurr.data,
+            &dataField ) );
+
+        if ( dataField.Cb() == sizeof( __int64 ) )
+        {
+            ftPgnoFDPLastSet = *(UnalignedLittleEndian< __int64 > *)dataField.Pv();
+            Assert( ftPgnoFDPLastSet <= ftCurrent );
+        }
+        else
+        {
+            Assert( err == JET_wrnColumnNull );
+            Assert( dataField.Cb() == 0 );
+        }
+
         if( NULL != pobjidLV )
         {
-            Assert( fidMSO_Id.FFixed() );
-            Call( ErrRECIRetrieveFixedColumn(
-                        pfcbNil,
-                        pfucbCatalog->u.pfcb->Ptdb(),
-                        fidMSO_Id,
-                        pfucbCatalog->kdfCurr.data,
-                        &dataField ) );
-            CallS( err );
-            Assert( dataField.Cb() == sizeof(OBJID) );
+            *pobjidLV = objidLV;
+        }
 
-            *pobjidLV = *(UnalignedLittleEndian< OBJID > *) dataField.Pv();
-//          UtilMemCpy( pobjidLV, dataField.Pv(), sizeof(OBJID) );
+        // If for the LV table, PgnoFDPSet time is not set, lets set it to current time.
+        if ( !fSkipPgnoFDPLastSetTime && FCATChangePgnoFDPLastSetTime( ftPgnoFDPLastSet, ppib->rgcdbOpen[ g_rgfmp[ ifmp ].Dbid() ], ifmp, PinstFromPpib( ppib ) ) )
+        {
+            // Release latched catalog page to allow ErrCATChangePgnoFDPLastSetTime to latch the required catalog patches.
+            Assert( Pcsr( pfucbCatalog )->FLatched() );
+            BTUp( pfucbCatalog );
+            Assert( !Pcsr( pfucbCatalog )->FLatched() );
+
+            RegisterPgnoFDPLastSetTimeTask( ifmp, objidTable, objidLV, sysobjLongValue, ftCurrent );
+            ftPgnoFDPLastSet = ftCurrent;
+        }
+
+        if ( NULL != pftPgnoLVFDPLastSet )
+        {
+            *pftPgnoLVFDPLastSet = ftPgnoFDPLastSet;
         }
     }
 
@@ -6749,6 +6985,7 @@ LOCAL ERR ErrCATIInitIDB(
     IDB         * const pidb,
     PGNO        *ppgnoIndexFDP,
     OBJID       *ppgnoObjidFDP,
+    __int64      *pftPgnoFDPLastSet,
     FCB         **ppfcbTemplate,
     __out_bcount(sizeof(JET_SPACEHINTS)) JET_SPACEHINTS * pjsph )
 {
@@ -6759,6 +6996,9 @@ LOCAL ERR ErrCATIInitIDB(
     ULONG   ul;
     WCHAR   wszIndexLocale[NORM_LOCALE_NAME_MAX_LENGTH];
     FCB     *pfcbTemplateIndex = pfcbNil;
+
+    __int64 ftPgnoFDPLastSet = 0;
+    __int64 ftCurrent        = UtilGetCurrentFileTime();
 
     Assert( ptdbNil != ptdb );
     Assert( pidbNil != pidb );
@@ -6846,6 +7086,27 @@ LOCAL ERR ErrCATIInitIDB(
     Assert( dataField.Cb() == sizeof(OBJID) );
     *ppgnoObjidFDP = *(UnalignedLittleEndian< PGNO > *) dataField.Pv();
 //  UtilMemCpy( ppgnoObjidFDP, dataField.Pv(), sizeof(PGNO) );
+
+    Assert( fidMSO_PgnoFDPLastSetTime.FFixed() );
+    Call( ErrRECIRetrieveFixedColumn(
+        pfcbNil,
+        ptdbCatalog,
+        fidMSO_PgnoFDPLastSetTime,
+        dataRec,
+        &dataField ) );
+
+    if ( dataField.Cb() == sizeof( __int64 ) )
+    {
+        ftPgnoFDPLastSet = *(UnalignedLittleEndian<__int64> *)dataField.Pv();
+        Assert( ftPgnoFDPLastSet <= ftCurrent );
+    }
+    else
+    {
+        Assert( err == JET_wrnColumnNull );
+        Assert( dataField.Cb() == 0 );
+    }
+
+    *pftPgnoFDPLastSet = ftPgnoFDPLastSet;
 
     Assert( fidMSO_Flags.FFixed() );
     Call( ErrRECIRetrieveFixedColumn(
@@ -7329,7 +7590,9 @@ LOCAL ERR ErrCATIInitIndexFCBs(
     const OBJID     objidTable,
     FCB             * const pfcb,
     TDB             * const ptdb,
-    const JET_SPACEHINTS * const pjsphPrimary )
+    const JET_SPACEHINTS * const pjsphPrimary,
+    BOOL            * const pfPrimaryPgnoFDPLastSetRequired,
+    BOOL            * const pfSecondaryPgnoFDPLastSetRequired )
 {
     ERR             err                     = JET_errSuccess;
     const IFMP      ifmp                    = pfcb->Ifmp();
@@ -7348,6 +7611,7 @@ LOCAL ERR ErrCATIInitIndexFCBs(
         IDB         idb( PinstFromIfmp( ifmp ) );
         PGNO        pgnoIndexFDP;
         OBJID       objidIndexFDP;
+        __int64     ftPgnoFDPLastSet = 0;
 
         Call( err );
 
@@ -7413,6 +7677,7 @@ LOCAL ERR ErrCATIInitIndexFCBs(
                     &idb,
                     &pgnoIndexFDP,
                     &objidIndexFDP,
+                    &ftPgnoFDPLastSet,
                     &pfcbTemplate,
                     &jsph );
         Call( err );
@@ -7420,6 +7685,13 @@ LOCAL ERR ErrCATIInitIndexFCBs(
         if ( idb.FPrimary() )
         {
             Assert( !fFoundPrimary );
+
+            // We will also set it on primary index record for consistency purposes.
+            if ( FCATChangePgnoFDPLastSetTime( ftPgnoFDPLastSet, ppib->rgcdbOpen[ g_rgfmp[ ifmp ].Dbid() ], ifmp, PinstFromPpib( ppib ) ) )
+            {
+                *pfPrimaryPgnoFDPLastSetRequired = true;
+            }
+
             fFoundPrimary = fTrue;
             Assert( pgnoIndexFDP == pfcb->PgnoFDP() || g_fRepair );
             Call( ErrFILEIInitializeFCB(
@@ -7441,6 +7713,15 @@ LOCAL ERR ErrCATIInitIndexFCBs(
             FUCB    *pfucbSecondaryIndex;
 
             Assert( pgnoIndexFDP != pfcb->PgnoFDP() || g_fRepair );
+
+            // If for the secondary index catalog record, PgnoFDPSet time is not set, we will have to set it.
+            // We don't have to worry about primary index since it has same root page as the table which should have the time set.
+            // Since the catalog page is already latched here, we will set it in ERRInitFCBs after unlatching.
+            if ( FCATChangePgnoFDPLastSetTime( ftPgnoFDPLastSet, ppib->rgcdbOpen[ g_rgfmp[ ifmp ].Dbid() ], ifmp, PinstFromPpib( ppib ) ) )
+            {
+                *pfSecondaryPgnoFDPLastSetRequired = true;
+            }
+
             Call( ErrDIROpenNoTouch(
                         ppib,
                         ifmp,
@@ -7468,6 +7749,7 @@ LOCAL ERR ErrCATIInitIndexFCBs(
             }
             Assert( pfucbSecondaryIndex->u.pfcb->ObjidFDP() == objidIndexFDP );
 
+            pfucbSecondaryIndex->u.pfcb->SetFileTimePgnoFDPLastSet( ftPgnoFDPLastSet );
             pfucbSecondaryIndex->u.pfcb->SetPfcbNextIndex( pfcbSecondaryIndexes );
             pfcbSecondaryIndexes = pfucbSecondaryIndex->u.pfcb;
 
@@ -7563,6 +7845,39 @@ HandleError:
     Assert( ( err != JET_errNoCurrentRecord ) || ( locOnCurBM == pfucbCatalog->locLogical && Pcsr( pfucbCatalog )->FLatched() ) );
 
     return err;
+}
+
+
+LOCAL VOID CATIInitIndexPgnoFDPLastSetTime(
+    PIB* ppib,
+    IFMP ifmp,
+    const OBJID objidTable,
+    FCB* const pfcb,
+    BOOL fPrimaryPgnoFDPLastSetRequired )
+{
+    __int64 ftCurrent = UtilGetCurrentFileTime();
+
+    // For primary index, lets set it to the same time as the table pgnoFDP.
+    if ( fPrimaryPgnoFDPLastSetRequired && FCATChangePgnoFDPLastSetTime( 0, ppib->rgcdbOpen[ g_rgfmp[ ifmp ].Dbid() ], ifmp, PinstFromPpib( ppib ) ) )
+    {
+        Assert( pfcb->PgnoFDP() > 0 );
+        Assert( pfcb->ObjidFDP() > 0 );
+        Assert( pfcb->FileTimePgnoFDPLastSet() != 0 );
+
+        RegisterPgnoFDPLastSetTimeTask( ifmp, objidTable, objidTable, sysobjIndex, pfcb->FileTimePgnoFDPLastSet() );
+    }
+
+    for ( FCB * pfcbT = pfcb->PfcbNextIndex(); pfcbNil != pfcbT; pfcbT = pfcbT->PfcbNextIndex() )
+    {
+        if ( FCATChangePgnoFDPLastSetTime( pfcbT->FileTimePgnoFDPLastSet(), ppib->rgcdbOpen[ g_rgfmp[ ifmp ].Dbid() ], ifmp, PinstFromPpib( ppib ) ) )
+        {
+            Assert( pfcbT->PgnoFDP() > 0 );
+            Assert( pfcbT->ObjidFDP() > 0 );
+
+            RegisterPgnoFDPLastSetTimeTask( ifmp, objidTable, pfcbT->ObjidFDP(), sysobjIndex, ftCurrent );
+            pfcbT->SetFileTimePgnoFDPLastSet( ftCurrent );
+        }
+    }
 }
 
 
@@ -7863,8 +8178,7 @@ HandleError:
     return err;
 }
 
-
-ERR ErrCATInitFCB( FUCB *pfucbTable, OBJID objidTable )
+ERR ErrCATInitFCB( FUCB *pfucbTable, OBJID objidTable, const BOOL fSkipPgnoFDPLastSetTime )
 {
     ERR         err;
     PIB         *ppib                   = pfucbTable->ppib;
@@ -7881,8 +8195,13 @@ ERR ErrCATInitFCB( FUCB *pfucbTable, OBJID objidTable )
     UnalignedLittleEndian<ULONG> le_ulSeparateLV = 0;
     JET_SPACEHINTS jsphPrimary;
     JET_SPACEHINTS jsphTemplate;
-    JET_SPACEHINTS jsphPrimaryDeferredLV = { 0 };
-    BOOL        fSetDeferredLVSpacehints = fFalse;
+    JET_SPACEHINTS jsphPrimaryDeferredLV            = { 0 };
+    BOOL        fSetDeferredLVSpacehints            = fFalse;
+    BOOL        fPrimaryIndexPgnoFDPLastSetRequired = fFalse;
+    BOOL        fAnySecIndexPgnoFDPLastSetRequired  = fFalse;
+
+    __int64 ftPgnoFDPLastSet = 0;
+    __int64 ftCurrent        = UtilGetCurrentFileTime();
 
     if ( FFMPIsTempDB( ifmp ) )
     {
@@ -8124,6 +8443,25 @@ ERR ErrCATInitFCB( FUCB *pfucbTable, OBJID objidTable )
         cbLVChunkMost = (LONG)UlParam( JET_paramLVChunkSizeMost );
     }
 
+    Assert( fidMSO_PgnoFDPLastSetTime.FFixed() );
+    Call( ErrRECIRetrieveFixedColumn(
+        pfcbNil,
+        pfucbCatalog->u.pfcb->Ptdb(),
+        fidMSO_PgnoFDPLastSetTime,
+        pfucbCatalog->kdfCurr.data,
+        &dataField ) );
+
+    if ( dataField.Cb() == sizeof( __int64 ) )
+    {
+        ftPgnoFDPLastSet = *(UnalignedLittleEndian<__int64> *)dataField.Pv();
+        Assert( ftPgnoFDPLastSet <= ftCurrent );
+    }
+    else
+    {
+        Assert( err == JET_wrnColumnNull );
+        Assert( dataField.Cb() == 0 );
+    }
+
     //  must release page latch at this point for highest columnid
     //  search in ErrCATIInitTDB()
     //  latch will be reobtained in ErrCATIBuildFIELDArray()
@@ -8199,10 +8537,13 @@ ERR ErrCATInitFCB( FUCB *pfucbTable, OBJID objidTable )
                     objidTable,
                     pfcb,
                     ptdb,
-                    &jsphPrimary ) );
+                    &jsphPrimary,
+                    &fPrimaryIndexPgnoFDPLastSetRequired,
+                    &fAnySecIndexPgnoFDPLastSetRequired ) );
         CallSx( err, wrnCATNoMoreRecords );
         fHitEOF = ( wrnCATNoMoreRecords == err );
     }
+
 
     //  even if we got NoCurrentRecord, we are actually
     //  still left on the last node (usually, the DIR
@@ -8233,6 +8574,24 @@ ERR ErrCATInitFCB( FUCB *pfucbTable, OBJID objidTable )
     ptdb->MemPool().FCompact();
 
     pfcb->SetTypeTable();
+
+    // If ftPgnoFDPLastSet is not set, it is probably because the table was created before the column was added and hasn't been opened since it was added.
+    // We will set the column to current time for the first time.
+    if ( !fSkipPgnoFDPLastSetTime && FCATChangePgnoFDPLastSetTime( ftPgnoFDPLastSet, ppib->rgcdbOpen[ g_rgfmp[ ifmp ].Dbid() ], ifmp, PinstFromPpib( ppib ) ) )
+    {
+        Assert( !Pcsr( pfucbCatalog )->FLatched() );
+
+        RegisterPgnoFDPLastSetTimeTask( ifmp, objidTable, objidTable, sysobjTable, ftCurrent );
+        ftPgnoFDPLastSet = ftCurrent;
+    }
+
+    pfcb->SetFileTimePgnoFDPLastSet( ftPgnoFDPLastSet );
+
+    if ( !fSkipPgnoFDPLastSetTime && ( fPrimaryIndexPgnoFDPLastSetRequired || fAnySecIndexPgnoFDPLastSetRequired ) )
+    {
+        Assert( !Pcsr( pfucbCatalog )->FLatched() );
+        CATIInitIndexPgnoFDPLastSetTime( ppib, ifmp, objidTable, pfcb, fPrimaryIndexPgnoFDPLastSetRequired );
+    }
 
     err = JET_errSuccess;
 
@@ -8515,6 +8874,11 @@ ERR ErrCATChangePgnoFDP( PIB * ppib, IFMP ifmp, OBJID objidTable, OBJID objid, S
     BYTE        *pbBookmark     = NULL;
     ULONG       cbBookmark;
 
+    BOOL fUpdatePgnoFDPLastSetTime  = BoolParam( PinstFromPpib( ppib ), JET_paramFlight_EnablePgnoFDPLastSetTime ) &&
+                    g_rgfmp[ ifmp ].ErrDBFormatFeatureEnabled( JET_efvRBSNonRevertableTableDeletes ) >= JET_errSuccess;
+
+    __int64         ftCurrent       = UtilGetCurrentFileTime();
+
     Call( ErrCATOpen( ppib, ifmp, &pfucbCatalog, fFalse ) );
     Call( ErrCATISeekTableObject( ppib, pfucbCatalog, objidTable, sysobj, objid ) );
     Assert( Pcsr( pfucbCatalog )->FLatched() );
@@ -8542,6 +8906,20 @@ ERR ErrCATChangePgnoFDP( PIB * ppib, IFMP ifmp, OBJID objidTable, OBJID objid, S
                 sizeof(PGNO),
                 NO_GRBIT,
                 NULL ) );
+
+    // If pgno fdp is being changed, we will also update pgnofdp last set time.
+    if ( fUpdatePgnoFDPLastSetTime )
+    {
+        Call( ErrIsamSetColumn(
+            ppib,
+            pfucbCatalog,
+            fidMSO_PgnoFDPLastSetTime,
+            (BYTE *)&ftCurrent,
+            sizeof( __int64 ),
+            NO_GRBIT,
+            NULL ) );
+    }
+
     Call( ErrIsamUpdate( ppib, pfucbCatalog, NULL, 0, NULL, NO_GRBIT ) );
 
     CallS( ErrCATClose( ppib, pfucbCatalog ) );
@@ -8560,6 +8938,20 @@ ERR ErrCATChangePgnoFDP( PIB * ppib, IFMP ifmp, OBJID objidTable, OBJID objid, S
                 sizeof(PGNO),
                 NO_GRBIT,
                 NULL ) );
+
+    // If pgno fdp is being changed, we will also update pgnofdp last set time.
+    if ( fUpdatePgnoFDPLastSetTime )
+    {
+        Call( ErrIsamSetColumn(
+            ppib,
+            pfucbCatalog,
+            fidMSO_PgnoFDPLastSetTime,
+            (BYTE *)&ftCurrent,
+            sizeof( __int64 ),
+            NO_GRBIT,
+            NULL ) );
+    }
+
     Call( ErrIsamUpdate( ppib, pfucbCatalog, NULL, 0, NULL, NO_GRBIT ) );
 
 HandleError:
@@ -9028,7 +9420,6 @@ LOCAL ERR ErrCATIDeleteOrUpdateLocalizedIndexesInTable(
     ERR         err;
     FCB         *pfcbIndex;
     CHAR        szIndexName[JET_cbNameMost+1];
-    const WCHAR *rgsz[3];
     BOOL        fInTrx          = fFalse;
     const BOOL fReadOnly = !!( catcifFlags & catcifReadOnly );
     const BOOL fUpdateEmptyIndex = !!( catcifFlags & catcifUpdateEmptyIndices );
@@ -9172,14 +9563,30 @@ LOCAL ERR ErrCATIDeleteOrUpdateLocalizedIndexesInTable(
                 CAutoWSZDDL     lszIndexName;
                 CAutoWSZDDL     lszTableName;
 
-                rgsz[0] = g_rgfmp[ifmp].WszDatabaseName();
-
                 // should not fail as the allocation is made
                 // and the name to convert is checked
                 CallS( lszIndexName.ErrSet( szIndexName ) );
                 CallS( lszTableName.ErrSet( szTableName ) );
+
+                const WCHAR *rgsz[8];
+                QWORD qwVersionCurrent;
+                SORTID sortIdCurrent;
+                WCHAR wszVersionIndex[32], wszVersionCurrent[32], wszSortIDIndex[ PERSISTED_SORTID_MAX_LENGTH ], wszSortIDCurrent[ PERSISTED_SORTID_MAX_LENGTH ];
+
+                (VOID)ErrNORMGetSortVersion( pidb->WszLocaleName(), &qwVersionCurrent, &sortIdCurrent, fFalse );
+
+                rgsz[0] = g_rgfmp[ifmp].WszDatabaseName();
                 rgsz[1] = (WCHAR*)lszIndexName;
                 rgsz[2] = (WCHAR*)lszTableName;
+                rgsz[3] = pidb->WszLocaleName();
+                WszCATFormatSortID( *pidb->PsortidCustomSortVersion(), wszSortIDIndex, _countof( wszSortIDIndex ) );
+                rgsz[4] = wszSortIDIndex;
+                OSStrCbFormatW( wszVersionIndex, sizeof(wszVersionIndex), L"%016I64X", pidb->QwSortVersion() );
+                rgsz[5] = wszVersionIndex;
+                WszCATFormatSortID( sortIdCurrent, wszSortIDCurrent, _countof( wszSortIDCurrent ) );
+                rgsz[6] = wszSortIDCurrent;
+                OSStrCbFormatW( wszVersionCurrent, sizeof(wszVersionCurrent), L"%016I64X", qwVersionCurrent );
+                rgsz[7] = wszVersionCurrent;
 
                 // -------------------------------------------------------------
                 // No entries in index
@@ -9218,7 +9625,7 @@ LOCAL ERR ErrCATIDeleteOrUpdateLocalizedIndexesInTable(
                     UtilReportEvent(
                             eventWarning,
                             DATA_DEFINITION_CATEGORY,
-                            PRIMARY_INDEX_OUT_OF_DATE_ERROR_ID, 3, rgsz, 0, NULL, PinstFromPpib( ppib ) );
+                            PRIMARY_INDEX_OUT_OF_DATE_ERROR_ID, _countof( rgsz ), rgsz, 0, NULL, PinstFromPpib( ppib ) );
 
                     OSUHAPublishEvent(
                         HaDbFailureTagAlertOnly, PinstFromPpib( ppib ), HA_DATA_DEFINITION_CATEGORY,
@@ -9233,7 +9640,7 @@ LOCAL ERR ErrCATIDeleteOrUpdateLocalizedIndexesInTable(
                     UtilReportEvent(
                             eventWarning,
                             DATA_DEFINITION_CATEGORY,
-                            SECONDARY_INDEX_OUT_OF_DATE_ERROR_ID, 3, rgsz, 0, NULL, PinstFromPpib( ppib ) );
+                            SECONDARY_INDEX_OUT_OF_DATE_ERROR_ID, _countof( rgsz ), rgsz, 0, NULL, PinstFromPpib( ppib ) );
 
                     OSUHAPublishEvent(
                         HaDbFailureTagAlertOnly, PinstFromPpib( ppib ), HA_DATA_DEFINITION_CATEGORY,
@@ -9247,7 +9654,7 @@ LOCAL ERR ErrCATIDeleteOrUpdateLocalizedIndexesInTable(
                     UtilReportEvent(
                             eventInformation,
                             DATA_DEFINITION_CATEGORY,
-                            DO_SECONDARY_INDEX_CLEANUP_ID, 3, rgsz, 0, NULL, PinstFromPpib( ppib ) );
+                            DO_SECONDARY_INDEX_CLEANUP_ID, _countof( rgsz ), rgsz, 0, NULL, PinstFromPpib( ppib ) );
                     *pfIndexesDeleted = fTrue;
 
                     //  Ensure that we can always delete the index - same reason as above case.
@@ -13229,88 +13636,88 @@ BOOL FCATIExtentPageCountCacheCacheableObject(
 
     switch ( objid )
     {
-        case objidSystemRoot:
-            // We don't track the System Root in the ExtentPageCountCache.  This is because
-            // when we need to split in the ExtentPageCountCache table, we need to get a
-            // secondary extent from the system root and add it to the ExtentPageCountCache table.
-            // This would cause a recursive call back into the ExtentPageCountCache table to track
-            // those extents while we already have various pages latched in the ExtentPageCountCache
-            // table. This is not supported.
-            // However, we have special casing for the root in that we cache values in the FMP
-            // for the database.  It's not persisted, solely volatile in memory.  It's maintained
-            // in the same code that maintains the ExtentPageCountCache.
-            return fTrue;
+    case objidSystemRoot:
+        // We don't track the System Root in the ExtentPageCountCache.  This is because
+        // when we need to split in the ExtentPageCountCache table, we need to get a
+        // secondary extent from the system root and add it to the ExtentPageCountCache table.
+        // This would cause a recursive call back into the ExtentPageCountCache table to track
+        // those extents while we already have various pages latched in the ExtentPageCountCache
+        // table. This is not supported.
+        // However, we have special casing for the root in that we cache values in the FMP
+        // for the database.  It's not persisted, solely volatile in memory.  It's maintained
+        // in the same code that maintains the ExtentPageCountCache.
+        return fTrue;
 
-        case objidFDPMSO:
-            // We don't track the catalog because we need to have the
-            // catalog unlocked and available for ErrFILEOpenTable( szMSExtentPageCountCache ).
-            *ppReasonNotUpdatable = L"CATALOG";
-            return fFalse;
+    case objidFDPMSO:
+        // We don't track the catalog because we need to have the
+        // catalog unlocked and available for ErrFILEOpenTable( szMSExtentPageCountCache ).
+        *ppReasonNotUpdatable = L"CATALOG";
+        return fFalse;
 
-        case objidFDPMSOShadow:
-            // We don't track this because it's not very interesting to know the number of pages it
-            // uses.  Also, in a fresh DB create, we create this before we have the ExtentPageCountCache
-            // table created, so we can't easily track space for this table from the beginning.
-            *ppReasonNotUpdatable = L"SHADOW";
-            return fFalse;
+    case objidFDPMSOShadow:
+        // We don't track this because it's not very interesting to know the number of pages it
+        // uses.  Also, in a fresh DB create, we create this before we have the ExtentPageCountCache
+        // table created, so we can't easily track space for this table from the beginning.
+        *ppReasonNotUpdatable = L"SHADOW";
+        return fFalse;
 
-        case objidFDPMSO_NameIndex:
-            // We don't track this because it's not very interesting to know the number of pages it
-            // uses.  Also, in a fresh DB create, we create this before we have the ExtentPageCountCache
-            // table created, so we can't easily track space for this table from the beginning.
-            *ppReasonNotUpdatable = L"NAME_INDEX";
-            return fFalse;
+    case objidFDPMSO_NameIndex:
+        // We don't track this because it's not very interesting to know the number of pages it
+        // uses.  Also, in a fresh DB create, we create this before we have the ExtentPageCountCache
+        // table created, so we can't easily track space for this table from the beginning.
+        *ppReasonNotUpdatable = L"NAME_INDEX";
+        return fFalse;
 
-        case objidFDPMSO_RootObjectIndex:
-            // We don't track this because it's not very interesting to know the number of pages it
-            // uses.  Also, in a fresh DB create, we create this before we have the ExtentPageCountCache
-            // table created, so we can't easily track space for this table from the beginning.
-            *ppReasonNotUpdatable = L"OBJECT_INDEX";
-            return fFalse;
+    case objidFDPMSO_RootObjectIndex:
+        // We don't track this because it's not very interesting to know the number of pages it
+        // uses.  Also, in a fresh DB create, we create this before we have the ExtentPageCountCache
+        // table created, so we can't easily track space for this table from the beginning.
+        *ppReasonNotUpdatable = L"OBJECT_INDEX";
+        return fFalse;
 
-        default:
-            // Check for the dynamic objids we don't track.
+    default:
+        // Check for the dynamic objids we don't track.
 
-            if ( objidNil == PfmpFromIfmp( ifmp )->ObjidExtentPageCountCacheFDP() )
+        if ( objidNil == PfmpFromIfmp( ifmp )->ObjidExtentPageCountCacheFDP() )
+        {
+            // No ExtentPageCountCache is available yet.
+
+            if ( PfmpFromIfmp( ifmp )->FAttached() )
             {
-                // No ExtentPageCountCache is available yet.
-
-                if ( PfmpFromIfmp( ifmp )->FAttached() )
-                {
-                    // Looks like we're not going to have a ExtentPageCountCache table ever.
-                    *ppReasonNotUpdatable = L"NOT_ENABLED";
-                }
-                else
-                {
-                    // We are still attaching/creating.  The only reason we expect
-                    // to be here in that case is if we're creating the MSObjids
-                    // table or the ExtentPageCountCache table itself, and we don't track
-                    // those tables in the ExtentPageCountCache.
-
-                    // Hardcoded transaction for creating a table in ErrFILECreateTable()
-                    Assert( ppib->TrxidStack().Peek() == 42277 );
-
-                    // Hardcoded transaction for creating MSObjids in ErrCATCreateMSObjids
-                    // or transaction for creating ExtentPageCountCache in ErrCATCreateMSExtentPageCountCache(
-                    Assert( ppib->TrxidStack().Peek0() == 51941 || ppib->TrxidStack().Peek0() == 40670 );
-
-                    *ppReasonNotUpdatable = L"NOT_INITIALIZED";
-                }
-                return fFalse;
+                // Looks like we're not going to have a ExtentPageCountCache table ever.
+                *ppReasonNotUpdatable = L"NOT_ENABLED";
             }
-
-            if ( objid == PfmpFromIfmp( ifmp )->ObjidExtentPageCountCacheFDP() )
+            else
             {
-                // We don't track the ExtentPageCountCache table itself for much the same
-                // reason we don't track the system root; if we need to split the
-                // table while we're updating in the table, we run afoul of
-                // existing latches.
-                //
-                *ppReasonNotUpdatable = L"CACHE";
-                return fFalse;
-            }
+                // We are still attaching/creating.  The only reason we expect
+                // to be here in that case is if we're creating the MSObjids
+                // table or the ExtentPageCountCache table itself, and we don't track
+                // those tables in the ExtentPageCountCache.
 
-            break;
+                // Hardcoded transaction for creating a table in ErrFILECreateTable()
+                Assert( ppib->TrxidStack().Peek() == 42277 );
+
+                // Hardcoded transaction for creating MSObjids in ErrCATCreateMSObjids
+                // or transaction for creating ExtentPageCountCache in ErrCATCreateMSExtentPageCountCache(
+                Assert( ppib->TrxidStack().Peek0() == 51941 || ppib->TrxidStack().Peek0() == 40670 );
+
+                *ppReasonNotUpdatable = L"NOT_INITIALIZED";
+            }
+            return fFalse;
+        }
+
+        if ( objid == PfmpFromIfmp( ifmp )->ObjidExtentPageCountCacheFDP() )
+        {
+            // We don't track the ExtentPageCountCache table itself for much the same
+            // reason we don't track the system root; if we need to split the
+            // table while we're updating in the table, we run afoul of
+            // existing latches.
+            //
+            *ppReasonNotUpdatable = L"CACHE";
+            return fFalse;
+        }
+
+        break;
     }
 
     return fTrue;
@@ -13353,7 +13760,7 @@ VOID CATIPossiblyResetUpdatingExtentPageCountCacheFlag(
         // needing to do DB operations.
         return;
     }
-    
+
     ppib->ResetFUpdatingExtentPageCountCache();
     Assert( !ppib->FUpdatingExtentPageCountCache() );
 #endif
@@ -13510,10 +13917,8 @@ VOID CATSetExtentPageCounts(
     // Special case, we cache the DBRoot in memory only.
     if ( objidSystemRoot == objid )
     {
-        Assert( !pfmp->FCacheAvail() );
         Assert( (CPG)pfmp->PgnoLast() == cpgOE );
         pfmp->SetCpgAvail( cpgAE );
-        pfmp->SetFCacheAvail();
         wszNote = L"DB_ROOT";
         err = JET_errSuccess;
         goto HandleError;
@@ -13558,52 +13963,52 @@ VOID CATSetExtentPageCounts(
 
     switch ( err )
     {
-        case JET_errSuccess:
-            Call( ErrIsamRetrieveColumn(
-                      ppib,
-                      pfucbExtentPageCountCache,
-                      columnidMSExtentPageCountCache_epccesFlag,
-                      &epccesFlag,
-                      sizeof( epccesFlag ),
-                      NULL,
-                      NO_GRBIT,
-                      NULL ) );
-            Assert( JET_errSuccess == err );
-            switch ( epccesFlag )
-            {
-            case epcces::Valid:
-                wszNote = L"DUPLICATE";
-                Error( ErrERRCheck( JET_errObjectDuplicate ) );
-
-            case epcces::Prepared:
-                wszNote = L"PREPARED";
-                fReplace = fTrue;
-                break;
-
-            case epcces::FlagDelete:
-                wszNote = L"FLAG_DELETE";
-                fReplace = fTrue;
-                break;
-
-            default:
-                AssertSz( fFalse, "Unexpected case in switch.");
-                Error( ErrERRCheck( JET_errInternalError ) );
-            }
+    case JET_errSuccess:
+        Call( ErrIsamRetrieveColumn(
+                  ppib,
+                  pfucbExtentPageCountCache,
+                  columnidMSExtentPageCountCache_epccesFlag,
+                  &epccesFlag,
+                  sizeof( epccesFlag ),
+                  NULL,
+                  NO_GRBIT,
+                  NULL ) );
+        Assert( JET_errSuccess == err );
+        switch ( epccesFlag )
+        {
+        case epcces::Valid:
+            wszNote = L"DUPLICATE";
+            Error( ErrERRCheck( JET_errObjectDuplicate ) );
+            
+        case epcces::Prepared:
+            wszNote = L"PREPARED";
+            fReplace = fTrue;
             break;
-
-        case JET_errRecordNotFound:
-            // Expected case.
-            err = JET_errSuccess;
+            
+        case epcces::FlagDelete:
+            wszNote = L"FLAG_DELETE";
+            fReplace = fTrue;
             break;
 
         default:
-            AssertSz( fFalse, "Unexpected case in switch." );
-            wszNote = L"UNEXPECTED";
-            if ( err > JET_errSuccess )
-            {
-                err = ErrERRCheck( JET_errInternalError );
-            }
-            Call( err );
+            AssertSz( fFalse, "Unexpected case in switch.");
+            Error( ErrERRCheck( JET_errInternalError ) );
+        }
+        break;
+
+    case JET_errRecordNotFound:
+        // Expected case.
+        err = JET_errSuccess;
+        break;
+
+    default:
+        AssertSz( fFalse, "Unexpected case in switch." );
+        wszNote = L"UNEXPECTED";
+        if ( err > JET_errSuccess )
+        {
+            err = ErrERRCheck( JET_errInternalError );
+        }
+        Call( err );
     }
 
     epccesFlag = epcces::Valid;
@@ -13717,7 +14122,7 @@ VOID CATResetExtentPageCounts(
     if ( objidSystemRoot == objid )
     {
         AssertSz( fFalse, "Why are you trying to reset the DBRoot value?" );
-        pfmp->ResetFCacheAvail();
+        pfmp->ResetCpgAvail();
         wszNote = L"DELETE_ROOT";
         err = JET_errSuccess;
         goto HandleError;
@@ -13762,25 +14167,29 @@ VOID CATResetExtentPageCounts(
 
     switch ( err )
     {
-        case JET_errSuccess:
-            pfucbExtentPageCountCache->locLogical = locOnCurBM;
-            // Found it to delete.
-            break;
+    case JET_errSuccess:
+        pfucbExtentPageCountCache->locLogical = locOnCurBM;
+        // Found it to delete.
+        break;
 
-        case JET_errRecordNotFound:
-            err = JET_errSuccess;
-            wszNote = L"NOT_FOUND";
-            goto HandleError;
+    case JET_errRecordNotFound:
+        err = JET_errSuccess;
+        wszNote = L"NOT_FOUND";
+        goto HandleError;
 
-        default:
-            AssertSz( fFalse, "Unexpected case in switch." );
-            wszNote = L"UNEXPECTED";
-            if ( err > JET_errSuccess )
-            {
-                err = ErrERRCheck( JET_errInternalError );
-            }
-            Call( err );
+        // Calling out some specific "unexpected" errors we've seen that are actually "normal".
+    case JET_errDiskIO:
+        break;
+
+    default:
+        AssertSz( fFalse, "Unexpected case in switch." );
+        wszNote = L"UNEXPECTED";
+        if ( err > JET_errSuccess )
+        {
+            err = ErrERRCheck( JET_errInternalError );
+        }
     }
+    Call( err );
 
     Call( ErrIsamRetrieveColumns(
               (JET_SESID)ppib,
@@ -13880,17 +14289,10 @@ ERR _ErrCATAdjustExtentPageCountsPrepare(
     // Special case.  This is cached in memory.
     if ( objidSystemRoot == objid )
     {
-        if ( pfmp->FCacheAvail() )
-        {
-            // We don't actually have to mark this as invalid, since the invalid mark is
-            // to maintain consistency in the face of a crash and a log replay.  Since
-            // this is only in-memory, that's not an issue.
-            wszNote = L"NOP_ROOT";
-        }
-        else
-        {
-            wszNote = L"NOT_FOUND_ROOT";
-        }
+        // We don't actually have to mark this as invalid, since the invalid mark is
+        // to maintain consistency in the face of a crash and a log replay.  Since
+        // this is only in-memory, that's not an issue.
+        wszNote = L"NOP_ROOT";
         err = JET_errSuccess;
         goto HandleError;
     }
@@ -13903,13 +14305,14 @@ ERR _ErrCATAdjustExtentPageCountsPrepare(
     //  extent from the system root).  T1 holds that latch, so T2 blocks.
     // T1 finds it needs to update an entry on the root page of the Cache table and tries
     //  to take a latch on that page.  T2 holds that latch, so T1 blocks.
-    //
-    // Turn off temporarily while fixing a known code path that triggers this assert.
-    // Assert ( FBFNotLatched( ifmp, pgnoSystemRoot ) );
+    // None of this matters if this matters if we have exclusive use of the DB so there
+    // won't be anyone else running to deadlock with.
+    Assert( pfmp->FExclusiveBySession( pfucb->ppib ) || FBFNotLatched( ifmp, pgnoSystemRoot ) );
 
     // If we're actually going to do something to the DB, we should be in a transaction.
     Assert( 0 != ppib->Level() );
 
+    // The ExtentPageCountCache needs to be in use (shown by the FDP value being there in pfmp)
     // and the FDP of the ExtentPageCountCache needs to not be latched, since we'll be taking latches here.
     // Again, we don't yet have a CSR that's current for that page so we go directly to
     // FBFNotLatched().
@@ -13947,23 +14350,23 @@ ERR _ErrCATAdjustExtentPageCountsPrepare(
 
     switch ( err )
     {
-        case JET_errSuccess:
-            break;
+    case JET_errSuccess:
+        break;
 
-        case JET_errRecordNotFound:
-            // Didn't find the value to adjust.
-            err = JET_errSuccess;
-            wszNote = L"NOT_FOUND";
-            goto HandleError;
+    case JET_errRecordNotFound:
+        // Didn't find the value to adjust.
+        err = JET_errSuccess;
+        wszNote = L"NOT_FOUND";
+        goto HandleError;
 
-        default:
-            AssertSz( fFalse, "Unexpected case in switch.");
-            wszNote = L"UNEXPECTED";
-            if ( err > JET_errSuccess )
-            {
-                err = ErrERRCheck( JET_errInternalError );
-            }
-            Call( err );
+    default:
+        AssertSz( fFalse, "Unexpected case in switch.");
+        wszNote = L"UNEXPECTED";
+        if ( err > JET_errSuccess )
+        {
+            err = ErrERRCheck( JET_errInternalError );
+        }
+        Call( err );
     }
 
     Call( ErrIsamRetrieveColumn(
@@ -13997,13 +14400,13 @@ ERR _ErrCATAdjustExtentPageCountsPrepare(
         // This entry is permanently invalid until set(), so nothing to do.
         goto HandleError;
     }
-    
+
     Call( ErrIsamPrepareUpdate(
               ppib,
               pfucbExtentPageCountCache,
               JET_prepReplaceNoLock ) );
     Assert( JET_errSuccess == err );
-    
+
     Call( ErrIsamSetColumn(
               ppib,
               pfucbExtentPageCountCache,
@@ -14013,7 +14416,7 @@ ERR _ErrCATAdjustExtentPageCountsPrepare(
               NO_GRBIT,
               NULL ) );
     Assert( JET_errSuccess == err );
-    
+
     Call( ErrIsamUpdate(
               ppib,
               pfucbExtentPageCountCache,
@@ -14120,17 +14523,10 @@ VOID CATAdjustExtentPageCounts(
     // Special case.  This is cached in memory.
     if ( objidSystemRoot == objid )
     {
-        if ( pfmp->FCacheAvail() )
-        {
-            // There's nothing to do with lAddCpgOE.  We don't directly cache that,
-            // we return pfmp->PgnoLast() when someone asks.
-            pfmp->AdjustCpgAvail( lAddCpgAE );
-            wszNote = L"REPLACE_ROOT";
-        }
-        else
-        {
-            wszNote = L"NOT_FOUND_ROOT";
-        }
+        // There's nothing to do with lAddCpgOE.  We don't directly cache that,
+        // we return pfmp->PgnoLast() when someone asks.
+        pfmp->AdjustCpgAvail( lAddCpgAE );
+        wszNote = L"ROOT";
         err = JET_errSuccess;
         goto HandleError;
     }
@@ -14143,9 +14539,9 @@ VOID CATAdjustExtentPageCounts(
     //  extent from the system root).  T1 holds that latch, so T2 blocks.
     // T1 finds it needs to update an entry on the root page of the Cache table and tries
     //  to take a latch on that page.  T2 holds that latch, so T1 blocks.
-    //
-    // Turn off temporarily while fixing a known code path that triggers this assert.
-    // Assert ( FBFNotLatched( ifmp, pgnoSystemRoot ) );
+    // None of this matters if this matters if we have exclusive use of the DB so there
+    // won't be anyone else running to deadlock with.
+    Assert( pfmp->FExclusiveBySession( pfucb->ppib ) || FBFNotLatched( ifmp, pgnoSystemRoot ) );
 
     // If we're actually going to do something to the DB, we should be in a transaction.
     Assert( 0 != ppib->Level() );
@@ -14186,23 +14582,23 @@ VOID CATAdjustExtentPageCounts(
 
     switch ( err )
     {
-        case JET_errSuccess:
-            break;
+    case JET_errSuccess:
+        break;
 
-        case JET_errRecordNotFound:
-            // Didn't find the value to adjust.
-            err = JET_errSuccess;
-            wszNote = L"NOT_FOUND";
-            goto HandleError;
+    case JET_errRecordNotFound:
+        // Didn't find the value to adjust.
+        err = JET_errSuccess;
+        wszNote = L"NOT_FOUND";
+        goto HandleError;
 
-        default:
-            AssertSz( fFalse, "Unexpected case in switch.");
-            wszNote = L"UNEXPECTED";
-            if ( err > JET_errSuccess )
-            {
-                err = ErrERRCheck( JET_errInternalError );
-            }
-            Call( err );
+    default:
+        AssertSz( fFalse, "Unexpected case in switch.");
+        wszNote = L"UNEXPECTED";
+        if ( err > JET_errSuccess )
+        {
+            err = ErrERRCheck( JET_errInternalError );
+        }
+        Call( err );
     }
 
     Call( ErrIsamRetrieveColumns(
@@ -14226,10 +14622,10 @@ VOID CATAdjustExtentPageCounts(
         wszNote = L"REPLACE";
         epccesFlag = epcces::Valid;
         Assert( cpgOEBefore >= cpgAEBefore );
-        
+
         cpgOEAfter = cpgOEBefore + lAddCpgOE;
         cpgAEAfter = cpgAEBefore + lAddCpgAE;
-        
+
         Assert( cpgOEAfter >= cpgAEAfter );
 
         break;
@@ -14334,11 +14730,6 @@ ERR ErrCATGetExtentPageCounts(
             { columnidMSExtentPageCountCache_epccesFlag, &epccesFlag, sizeof( epccesFlag ), 0, NO_GRBIT, 0, 1, 0, JET_errSuccess },
         };
 
-    if( pgnoNull == pfmp->PgnoExtentPageCountCacheFDP() )
-    {
-        Error( ErrERRCheck( JET_errNotInitialized ) );
-    }
-
     if( !FCATIExtentPageCountCacheCacheableObject( ppib, ifmp, objid, &wszNote ) )
     {
         Error( ErrERRCheck( JET_errNotInitialized ) );
@@ -14347,10 +14738,9 @@ ERR ErrCATGetExtentPageCounts(
     // Special case.  This is cached in memory.
     if ( objidSystemRoot == objid )
     {
-        if ( pfmp->FCacheAvail() )
+        if ( pfmp->FGetCpgAvail( pcpgAE ) )
         {
             *pcpgOE = pfmp->PgnoLast();
-            *pcpgAE = pfmp->CpgAvail();
             err = JET_errSuccess;
             goto HandleError;
         }
@@ -14390,19 +14780,19 @@ ERR ErrCATGetExtentPageCounts(
 
     switch ( err )
     {
-        case JET_errSuccess:
-            break;
+    case JET_errSuccess:
+        break;
 
-        case JET_errRecordNotFound:
-            break;
+    case JET_errRecordNotFound:
+        break;
 
-        default:
-            AssertSz( fFalse, "Unexpected case in switch.");
-            if ( err > JET_errSuccess )
-            {
-                err = ErrERRCheck( JET_errInternalError );
-            }
-            break;
+    default:
+        AssertSz( fFalse, "Unexpected case in switch.");
+        if ( err > JET_errSuccess )
+        {
+            err = ErrERRCheck( JET_errInternalError );
+        }
+        break;
     }
     Call( err );
 
@@ -14466,7 +14856,7 @@ HandleError:
     CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib );
 
     Assert( pfucbNil == pfucbExtentPageCountCache );
-    
+
     return err;
 }
 
@@ -14625,8 +15015,6 @@ ERR ErrCATDeleteMSExtentPageCountCache(
         *pfTableExisted = fFalse;
     }
 
-    pfmp->ResetFCacheAvail();
-
     Call( ErrDBOpenDatabase( ppib, pfmp->WszDatabaseName(), &ifmpT, NO_GRBIT ) );
     Assert( ifmp == ifmpT );
     fDatabaseOpen = fTrue;
@@ -14636,19 +15024,19 @@ ERR ErrCATDeleteMSExtentPageCountCache(
 
     switch ( err )
     {
-        case JET_errSuccess:
-            break;
+    case JET_errSuccess:
+        break;
 
-        case JET_errObjectNotFound:
-            err = JET_errSuccess;
-            goto HandleError;
+    case JET_errObjectNotFound:
+        err = JET_errSuccess;
+        goto HandleError;
 
-        default:
-            AssertSz( fFalse, "Unexpected case in switch");
-            Call( err );
-            // Got a warning.  Didn't expect one, not sure what happened, but presumably the
-            // table is there.
-            break;
+    default:
+        AssertSz( fFalse, "Unexpected case in switch");
+        Call( err );
+        // Got a warning.  Didn't expect one, not sure what happened, but presumably the
+        // table is there.
+        break;
     }
 
     // Table exists
@@ -14672,18 +15060,18 @@ ERR ErrCATDeleteMSExtentPageCountCache(
 
     switch ( ecdrReason )
     {
-        case EXTENT_CACHE_DELETE_REASON::FeatureOff:
-            pwszReason = L"FEATURE_OFF";
-            break;
+    case EXTENT_CACHE_DELETE_REASON::FeatureOff:
+        pwszReason = L"FEATURE_OFF";
+        break;
 
-        case EXTENT_CACHE_DELETE_REASON::Repair:
-            pwszReason = L"DATABASE_REPAIR";
-            break;
+    case EXTENT_CACHE_DELETE_REASON::Repair:
+        pwszReason = L"DATABASE_REPAIR";
+        break;
 
-        default:
-            OSStrCbFormatW( rgwReason, sizeof(rgwReason), L"REASON_%d", ecdrReason );
-            pwszReason = rgwReason;
-            break;
+    default:
+        OSStrCbFormatW( rgwReason, sizeof(rgwReason), L"REASON_%d", ecdrReason );
+        pwszReason = rgwReason;
+        break;
     }
 
     const WCHAR * rgwsz[] = { pfmp->WszDatabaseName(), pwszReason };

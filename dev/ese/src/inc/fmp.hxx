@@ -247,8 +247,6 @@ class FMP
 
                 UINT        m_fDontRegisterOLD2Tasks:1; /*  f ErrOLDRegisterTableForOLD2() shouldn't register tasks on this FMP */
 
-                UINT        m_fCacheAvail:1;    /*  f Is FMP tracking database Avail space */
-
                 UINT        m_fMaintainMSObjids:1;  /*  f Update MSObjids when creating or destroying b-trees */
                 UINT        m_fNoWaypointLatency:1; /* allow waypoint to advance to current position */
                 UINT        m_fAttachedForRecovery:1; /* attached for recovery */
@@ -267,7 +265,7 @@ class FMP
                 //
                 UINT        m_fOlderDemandExtendDb:1;
 
-                // 30 bits used.
+                // 29 bits used.
                 // Don't forget to update edbg.cxx!
             };
         };
@@ -378,7 +376,7 @@ class FMP
         // a count of asynch IO that are pending to this ifmp without taking a BF lock (ViewCache case)
         volatile LONG       m_cAsyncIOForViewCachePending;
 
-        //  cached value for owned space; only valid if m_fCacheAvail true
+        //  cached value for available space.  -1 indicates no value is cached.
         //
         CPG                 m_cpgAvail;
 
@@ -461,6 +459,8 @@ class FMP
         BOOL                m_fLeakReclaimerEnabled;
         LONG                m_dtickLeakReclaimerTimeQuota;
 
+        BOOL                m_fSelfAllocSpBufReservationEnabled;
+
         CIoStats *          m_rgpiostats[iotypeMax];
 
         CSXWLatch           m_sxwlRedoMaps;
@@ -493,6 +493,12 @@ class FMP
         // This implies that there is a log record later in the required range which frees up 
         // this erroneous page.
         CLogRedoMap *       m_pLogRedoMapDbtimeRevert;
+
+        // Keeps track of which pages have a dbtime equal to dbtimerevert but should be ignored while reconciling.
+        // dbtimerevert indicates a page which was reverted back to a new page using revert snapshot.
+        // This map implies that any page in this should be skipped for redo and won't be reconciled in required range.
+        // This can happen when we do a non-revertable delete outside the required range.
+        CLogRedoMap *       m_pLogRedoMapDbtimeRevertIgnore;
 
     // =====================================================================
     // Member retrieval..
@@ -658,7 +664,8 @@ public:
                                     const LONG dtickShrinkDatabaseTimeQuota,
                                     const CPG cpgShrinkDatabaseSizeLimit,
                                     const BOOL fLeakReclaimerEnabled,
-                                    const LONG dtickLeakReclaimerTimeQuota );
+                                    const LONG dtickLeakReclaimerTimeQuota,
+                                    const BOOL fSelfAllocSpBufReservationEnabled );
 
         // Max DB size.
         UINT CpgDatabaseSizeMax() const;
@@ -682,12 +689,16 @@ public:
         VOID SetLeakReclaimerTimeQuota( const LONG dtickLeakReclaimerTimeQuota );
         BOOL FLeakReclaimerEnabled() const;
         LONG DtickLeakReclaimerTimeQuota() const;
+        // Self-alloc split-buffer reservation.
+        VOID SetSelfAllocSpBufReservationEnabled( const BOOL fSelfAllocSpBufReservationEnabled );
+        BOOL FSelfAllocSpBufReservationEnabled() const;
 
         // Redo maps.
         //
-        CLogRedoMap* PLogRedoMapZeroed() const        { return m_pLogRedoMapZeroed; };
-        CLogRedoMap* PLogRedoMapBadDbTime() const     { return m_pLogRedoMapBadDbtime; };
-        CLogRedoMap* PLogRedoMapDbtimeRevert() const  { return m_pLogRedoMapDbtimeRevert; };
+        CLogRedoMap* PLogRedoMapZeroed() const              { return m_pLogRedoMapZeroed; };
+        CLogRedoMap* PLogRedoMapBadDbTime() const           { return m_pLogRedoMapBadDbtime; };
+        CLogRedoMap* PLogRedoMapDbtimeRevert() const        { return m_pLogRedoMapDbtimeRevert; };
+        CLogRedoMap* PLogRedoMapDbtimeRevertIgnore() const  { return m_pLogRedoMapDbtimeRevertIgnore; };
 
     // =====================================================================
     // Member manipulation.
@@ -854,10 +865,6 @@ public:
         BOOL FDontStartTrimTask() const     { return m_fDontStartTrimTask; }
         VOID SetFDontStartTrimTask()        { m_fDontStartTrimTask = fTrue; }
         VOID ResetFDontStartTrimTask()      { m_fDontStartTrimTask = fFalse; }
-
-        BOOL FCacheAvail() const                    { return m_fCacheAvail; }
-        VOID SetFCacheAvail()                   { m_fCacheAvail = fTrue; }
-        VOID ResetFCacheAvail()                 { m_fCacheAvail = fFalse; }
 
         BOOL FMaintainMSObjids() const      { return m_fMaintainMSObjids; }
         VOID SetFMaintainMSObjids()         { m_fMaintainMSObjids = fTrue; }
@@ -1031,28 +1038,63 @@ public:
         VOID FreeHeaderSignature();
         VOID SnapshotHeaderSignature();
 
-    CPG CpgAvail() const
+    BOOL FGetCpgAvail( CPG *pcpgAvail ) const
     {
-        Assert( FCacheAvail() );
-        return m_cpgAvail;
+        // m_cpgAvail uses the value '-1' to indicate no value is cached.
+        CPG cpgAvailStored;
+
+        cpgAvailStored = AtomicRead( (ULONG *)&m_cpgAvail );
+        if ( -1 == cpgAvailStored )
+        {
+            return fFalse;
+        }
+
+        *pcpgAvail = cpgAvailStored;
+        return fTrue;
     }
     
     VOID SetCpgAvail( CPG cpgAvail )
     {
-        m_cpgAvail = cpgAvail;
-        SetFCacheAvail();
+        // m_cpgAvail uses the value '-1' to indicate no value is cached.
+        CPG cpgAvailStored;
+
+        cpgAvailStored = AtomicCompareExchange( &m_cpgAvail, -1, cpgAvail );
+
+        Assert( -1 == cpgAvailStored || cpgAvail == cpgAvailStored );
     }
     
     VOID ResetCpgAvail()
     {
-        ResetFCacheAvail();
-        m_cpgAvail = 0;
+        // m_cpgAvail uses the value '-1' to indicate no value is cached.
+        AtomicExchange( &m_cpgAvail, -1 );
     }
-    
-    void AdjustCpgAvail( LONG lAvailAdd )
+
+    VOID AdjustCpgAvail( LONG lAvailAdd )
     {
-        Assert( FCacheAvail() );
-        (void)AtomicExchangeAdd( &m_cpgAvail, lAvailAdd );
+        // m_cpgAvail uses the value '-1' to indicate no value is cached.
+        CPG cpgAvailStoredInitial;
+        CPG cpgAvailStoredFinal;
+        CPG cpgAvailToStore;
+
+        // Apply lAvailAdd unless -1 is stored.
+        for (;;)
+        {
+            cpgAvailStoredInitial = AtomicRead( &m_cpgAvail );
+
+            if ( -1 == cpgAvailStoredInitial )
+            {
+                return;
+            }
+
+            cpgAvailToStore = cpgAvailStoredInitial + lAvailAdd;
+
+            cpgAvailStoredFinal = AtomicCompareExchange( &m_cpgAvail, cpgAvailStoredInitial, cpgAvailToStore );
+
+            if (cpgAvailStoredFinal == cpgAvailStoredInitial || cpgAvailStoredFinal == -1 )
+            {
+                return;
+            }
+        }
     }
 
     VOID SetPgnoShrinkTarget( const PGNO pgnoShrinkTarget )
@@ -1438,7 +1480,8 @@ INLINE VOID FMP::SetRuntimeDbParams( const CPG cpgDatabaseSizeMax,
                                         const LONG dtickShrinkDatabaseTimeQuota,
                                         const CPG cpgShrinkDatabaseSizeLimit,
                                         const BOOL fLeakReclaimerEnabled,
-                                        const LONG dtickLeakReclaimerTimeQuota )
+                                        const LONG dtickLeakReclaimerTimeQuota,
+                                        const BOOL fSelfAllocSpBufReservationEnabled )
 {
     SetDatabaseSizeMax( cpgDatabaseSizeMax );
     SetPctCachePriorityFmp( pctCachePriority );
@@ -1447,6 +1490,7 @@ INLINE VOID FMP::SetRuntimeDbParams( const CPG cpgDatabaseSizeMax,
     SetShrinkDatabaseSizeLimit( cpgShrinkDatabaseSizeLimit );
     SetLeakReclaimerEnabled( fLeakReclaimerEnabled );
     SetLeakReclaimerTimeQuota( dtickLeakReclaimerTimeQuota );
+    SetSelfAllocSpBufReservationEnabled( fSelfAllocSpBufReservationEnabled );
 }
 
 INLINE UINT FMP::CpgDatabaseSizeMax() const     { return m_cpgDatabaseSizeMax; }
@@ -1541,6 +1585,16 @@ INLINE BOOL FMP::FLeakReclaimerEnabled() const
 INLINE LONG FMP::DtickLeakReclaimerTimeQuota() const
 {
     return m_dtickLeakReclaimerTimeQuota;
+}
+
+INLINE VOID FMP::SetSelfAllocSpBufReservationEnabled( const BOOL fSelfAllocSpBufReservationEnabled )
+{
+    m_fSelfAllocSpBufReservationEnabled = fSelfAllocSpBufReservationEnabled;
+}
+
+INLINE BOOL FMP::FSelfAllocSpBufReservationEnabled() const
+{
+    return m_fSelfAllocSpBufReservationEnabled;
 }
 
 // =====================================================================

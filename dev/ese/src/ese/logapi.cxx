@@ -3229,8 +3229,7 @@ VOID LGICompressPreImage(
         compressFlags = CompressFlags( compressFlags | compressXpress10 );
     }
     // If lz4 is enabled, use that.
-    if ( BoolParam( pinst, JET_paramFlight_EnableLz4Compression ) &&
-         pinst->m_plog->ErrLGFormatFeatureEnabled( JET_efvLz4Compression ) >= JET_errSuccess )
+    if ( pinst->m_plog->ErrLGFormatFeatureEnabled( JET_efvLz4Compression ) >= JET_errSuccess )
     {
         compressFlags = CompressFlags( compressFlags | compressLz4 );
     }
@@ -4850,7 +4849,7 @@ HandleError:
     return err;
 }
 
-ERR ErrLGExtentFreed( LOG * const plog, const IFMP ifmp, const PGNO pgnoFirst, const CPG cpgExtent )
+ERR ErrLGExtentFreed( LOG * const plog, const IFMP ifmp, const PGNO pgnoFirst, const CPG cpgExtent, const BOOL fTableRootPage, const BOOL fEmptyPageFDPDeleted )
 {
     // This is not logged for all free extent operations, only for those related to deleting a whole space tree.
     DATA                rgdata[1];
@@ -4869,6 +4868,16 @@ ERR ErrLGExtentFreed( LOG * const plog, const IFMP ifmp, const PGNO pgnoFirst, c
     lr.SetDbid( g_rgfmp[ifmp].Dbid() );
     lr.SetPgnoFirst( pgnoFirst );
     lr.SetCpgExtent( cpgExtent );
+
+    if ( fTableRootPage )
+    {
+        lr.SetTableRootPage();
+    }
+
+    if ( fEmptyPageFDPDeleted )
+    {
+        lr.SetEmptyPageFDPDeleted();
+    }
 
     rgdata[0].SetPv( (BYTE *)&lr );
     rgdata[0].SetCb( sizeof(lr) );
@@ -7189,7 +7198,7 @@ VOID LrToSz(
                     (OBJID) plrinsert->le_objidFDP );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
 
-            DataToSz( pb, cb, plog->IDumpVerbosityLevel(), rgchBuf, cbLRBuf );
+            DataToSz( pb, cb, iVerbosityLevel, rgchBuf, cbLRBuf );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
             break;
         }
@@ -7254,7 +7263,7 @@ VOID LrToSz(
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
             if ( lrtypReplace == plr->lrtyp )
             {
-                DataToSz( pb, cb, plog->IDumpVerbosityLevel(), rgchBuf, cbLRBuf );
+                DataToSz( pb, cb, iVerbosityLevel, rgchBuf, cbLRBuf );
                 OSStrCbAppendA( szLR, cbLR, rgchBuf );
             }
             else
@@ -7297,7 +7306,7 @@ VOID LrToSz(
                 (OBJID) plrfiard->le_objidFDP );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
 
-            DataToSz( pb, cb, plog->IDumpVerbosityLevel(), rgchBuf, cbLRBuf );
+            DataToSz( pb, cb, iVerbosityLevel, rgchBuf, cbLRBuf );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
             break;
         }
@@ -7367,7 +7376,7 @@ VOID LrToSz(
                 );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
 
-            DataToSz( plrundoinfo->rgbData, plrundoinfo->CbBookmarkKey() + plrundoinfo->CbBookmarkData() + plrundoinfo->le_cbData, plog->IDumpVerbosityLevel(), rgchBuf, cbLRBuf );
+            DataToSz( plrundoinfo->rgbData, plrundoinfo->CbBookmarkKey() + plrundoinfo->CbBookmarkData() + plrundoinfo->le_cbData, iVerbosityLevel, rgchBuf, cbLRBuf );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
             break;
         }
@@ -7893,7 +7902,7 @@ VOID LrToSz(
                 szXpress);
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
 
-            DataToSz( pb, cb, plog->IDumpVerbosityLevel(), rgchBuf, cbLRBuf );
+            DataToSz( pb, cb, iVerbosityLevel, rgchBuf, cbLRBuf );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
 
             break;
@@ -7991,7 +8000,7 @@ VOID LrToSz(
                 plremptytree->CbEmptyPageList() );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
 
-            DataToSz( plremptytree->rgb, plremptytree->CbEmptyPageList(), plog->IDumpVerbosityLevel(), rgchBuf, cbLRBuf );
+            DataToSz( plremptytree->rgb, plremptytree->CbEmptyPageList(), iVerbosityLevel, rgchBuf, cbLRBuf );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
             break;
         }
@@ -8016,7 +8025,7 @@ VOID LrToSz(
                         plrsetexternalheader->CbData() );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
 
-            DataToSz( pb, cb, plog->IDumpVerbosityLevel(), rgchBuf, cbLRBuf );
+            DataToSz( pb, cb, iVerbosityLevel, rgchBuf, cbLRBuf );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
             break;
         }
@@ -8042,7 +8051,7 @@ VOID LrToSz(
                         plrscrub->CscrubOper(),
                         plrscrub->CbData() );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
-            DataToSz( pb, cb, plog->IDumpVerbosityLevel(), rgchBuf, cbLRBuf );
+            DataToSz( pb, cb, iVerbosityLevel, rgchBuf, cbLRBuf );
             OSStrCbAppendA( szLR, cbLR, rgchBuf );
             break;
         }
@@ -8455,7 +8464,7 @@ VOID LrToSz(
                 const LRCOMMITCTX * const plrcommitctx = (LRCOMMITCTX *) plr;
                 OSStrCbFormatA( rgchBuf, sizeof(rgchBuf), " (%x) [%s%s%s]", plrcommitctx->ProcID(), plrcommitctx->FCallbackNeeded() ? "C" : "", plrcommitctx->FPreCommitCallbackNeeded() ? "R" : "", plrcommitctx->FContainsCustomerData() ? "P" : "" );
                 OSStrCbAppendA( szLR, cbLR, rgchBuf );
-                DataToSz( plrcommitctx->PbCommitCtx(), plrcommitctx->CbCommitCtx(), plrcommitctx->FContainsCustomerData() ? plog->IDumpVerbosityLevel() : LOG::ldvlData, rgchBuf, cbLRBuf );
+                DataToSz( plrcommitctx->PbCommitCtx(), plrcommitctx->CbCommitCtx(), plrcommitctx->FContainsCustomerData() ? iVerbosityLevel : LOG::ldvlData, rgchBuf, cbLRBuf );
                 OSStrCbAppendA( szLR, cbLR, rgchBuf );
             }
             else
@@ -8463,7 +8472,7 @@ VOID LrToSz(
                 const LRCOMMITCTXOLD * const plrcommitctx = (LRCOMMITCTXOLD *) plr;
                 OSStrCbFormatA( rgchBuf, sizeof(rgchBuf), " (%x) ", plrcommitctx->ProcID() );
                 OSStrCbAppendA( szLR, cbLR, rgchBuf );
-                DataToSz( plrcommitctx->PbCommitCtx(), plrcommitctx->CbCommitCtx(), plog->IDumpVerbosityLevel(), rgchBuf, cbLRBuf );
+                DataToSz( plrcommitctx->PbCommitCtx(), plrcommitctx->CbCommitCtx(), iVerbosityLevel, rgchBuf, cbLRBuf );
                 OSStrCbAppendA( szLR, cbLR, rgchBuf );
             }
             break;
@@ -8649,7 +8658,12 @@ VOID LrToSz(
         {
             const LREXTENTFREED * const plrextentfreed = (LREXTENTFREED*)plr;
 
-            OSStrCbFormatA( rgchBuf, sizeof(rgchBuf), " [%u:%lu+%ld] (", plrextentfreed->Dbid(), plrextentfreed->PgnoFirst(), plrextentfreed->CpgExtent() );
+            OSStrCbFormatA( rgchBuf, sizeof(rgchBuf), " [%u:%lu+%ld],[%s%s] (",
+                plrextentfreed->Dbid(),
+                plrextentfreed->PgnoFirst(),
+                plrextentfreed->CpgExtent(),
+                ( plrextentfreed->FTableRootPage() ? "R" : "" ),
+                ( plrextentfreed->FEmptyPageFDPDeleted() ? "E" : "" ) );
 
             // Append the first few (32) pages explicitly.
             for ( INT i = 1; i < plrextentfreed->CpgExtent() && i < 32; ++i )

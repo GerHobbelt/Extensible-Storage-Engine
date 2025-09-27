@@ -2132,13 +2132,6 @@ class LRCOMMITCTX
     public:
         LRCOMMITCTX( const INT cbClientCommitContext ) : LRIGNORED( lrtypCommitCtx )
         {
-            // By setting this CB just so, we trick new and old
-            // versions of ESE to correctly both understand that 
-            // this is a variable length structure and keeps the code
-            // simple by looking like a fixed length structure.
-
-            Expected( cbClientCommitContext < 80 ); // just a reasonable limit
-
             SetCb( sizeof(LRCOMMITCTX) - sizeof(LRIGNORED) + cbClientCommitContext );
             m_fCtxFlags = 0;
         }
@@ -2465,21 +2458,29 @@ class LREXTENTFREED
             m_fFlags = 0;
         }
 
+        enum Flags
+        {
+            fTableRootPage = 0x1,
+            fEmptyPageFDPDeleted = 0x2,
+        };
+
     private:
         UnalignedLittleEndian< DBID >       le_dbid;            // dbid.
         UnalignedLittleEndian< PGNO >       le_pgnoFirst;       // First Pgno of the extent.
         UnalignedLittleEndian< CPG >        le_cpgExtent;       // Count of pages in the freed extent.
-        BYTE                                m_fFlags;           // Flags (for future use)
+        BYTE                                m_fFlags;           // Flags
 
     public:
         VOID InitExtentFreed(
                 const DBID  dbid,
                 const PGNO  pgno,
-                const CPG   cpgExtent )
+                const CPG   cpgExtent,
+                const BYTE  fFlags )
         {
             le_dbid         = dbid;
             le_pgnoFirst    = pgno;
             le_cpgExtent    = cpgExtent;
+            m_fFlags        = fFlags;
         }
 
         VOID InitExtentFreed( const LR* const plr )
@@ -2496,6 +2497,12 @@ class LREXTENTFREED
 
         CPG  CpgExtent( ) const                     { return le_cpgExtent; }
         void SetCpgExtent( const CPG cpgExtent)     { le_cpgExtent = cpgExtent; }
+
+        BOOL FTableRootPage( void ) const           { return m_fFlags & Flags::fTableRootPage; }
+        void SetTableRootPage( void )               { m_fFlags |= ( BYTE ) Flags::fTableRootPage; }
+
+        BOOL FEmptyPageFDPDeleted( void ) const     { return m_fFlags & Flags::fEmptyPageFDPDeleted; }
+        void SetEmptyPageFDPDeleted( void )         { m_fFlags |= ( BYTE ) Flags::fEmptyPageFDPDeleted; }
 };
 
 #include <poppack.h>
@@ -2887,7 +2894,7 @@ ERR ErrLGExtendDatabase( LOG * const plog, const IFMP ifmp, PGNO pgnoLast, LGPOS
 ERR ErrLGShrinkDatabase( LOG * const plog, const IFMP ifmp, const PGNO pgnoLast, const CPG cpgShrunk, LGPOS* const plgposShrink );
 ERR ErrLGTrimDatabase( _In_ LOG * const plog, _In_ const IFMP ifmp, _In_ PIB* const ppib, _In_ const PGNO pgnoStartZeroes, _In_ const CPG cpgZeroLength );
 ERR ErrLGIgnoredRecord( LOG * const plog, const IFMP ifmp, const INT cb );
-ERR ErrLGExtentFreed( LOG * const plog, const IFMP ifmp, const PGNO pgnoFirst, const CPG cpgExtent );
+ERR ErrLGExtentFreed( LOG * const plog, const IFMP ifmp, const PGNO pgnoFirst, const CPG cpgExtent, const BOOL fTableRootPage = fFalse, const BOOL fEmptyPageFDPDeleted = fFalse );
 
 ERR ErrLGWaitForWrite( PIB* const ppib, const LGPOS* const plgposLogRec );
 ERR ErrLGWrite( PIB* const ppib );

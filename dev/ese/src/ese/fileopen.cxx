@@ -1709,7 +1709,7 @@ ERR ErrFILEIOpenTable(
                 
                 //  initialize the table's FCB
                 //
-                Call( ErrCATInitFCB( pfucb, objidTable ) );
+                Call( ErrCATInitFCB( pfucb, objidTable, !( grbit & JET_bitAllowPgnoFDPLastSetTime ) ) );
                 
                 const ULONG cPageReadAfter = Ptls()->threadstats.cPageRead;
                 const ULONG cPagePrereadAfter = Ptls()->threadstats.cPagePreread;

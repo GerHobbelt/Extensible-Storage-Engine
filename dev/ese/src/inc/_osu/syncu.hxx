@@ -353,7 +353,6 @@ INLINE CCriticalSection& CRITPOOL<T>::Crit( const T* const pt )
 
 //  Reader Writer lock Pool
 
-template<class T>
 class RWLPOOL
 {
     public:
@@ -361,22 +360,22 @@ class RWLPOOL
         ~RWLPOOL( void );
         RWLPOOL& operator=( RWLPOOL& );  //  disallowed
 
-        BOOL FInit( const LONG cThread, const INT rank, const _TCHAR* szName );
+        BOOL FInit( const LONG cThread, const LONG cbObjectSize, const INT rank, const _TCHAR* szName );
         void Term( void );
 
-        CReaderWriterLock& Rwl( const T* const pt );
+        CReaderWriterLock& Rwl( const VOID* const pObj );
 
     private:
         LONG                m_crwl;
         CReaderWriterLock*  m_rgrwl;
         LONG                m_cShift;
         LONG                m_mask;
+        LONG                m_cMaskShift;
 };
     
 //  constructor
 
-template<class T>
-RWLPOOL<T>::RWLPOOL( void )
+INLINE RWLPOOL::RWLPOOL( void )
 {
     //  reset all members
 
@@ -384,12 +383,12 @@ RWLPOOL<T>::RWLPOOL( void )
     m_rgrwl = NULL;
     m_cShift = 0;
     m_mask = 0;
+    m_cMaskShift = 0;
 }
 
 //  destructor
 
-template<class T>
-RWLPOOL<T>::~RWLPOOL( void )
+INLINE RWLPOOL::~RWLPOOL( void )
 {
     //  ensure that we have freed our resources
 
@@ -399,8 +398,7 @@ RWLPOOL<T>::~RWLPOOL( void )
 //  initializes the reader writer lock pool for use by cThread threads, returning
 //  fTrue on success or fFalse on failure
 
-template<class T>
-BOOL RWLPOOL<T>::FInit( const LONG cThread, const INT rank, const _TCHAR* szName )
+INLINE BOOL RWLPOOL::FInit( const LONG cThread, const LONG cbObjectSize, const INT rank, const _TCHAR* szName )
 {
     //  ensure that Term() was called or ErrInit() was never called
 
@@ -408,28 +406,30 @@ BOOL RWLPOOL<T>::FInit( const LONG cThread, const INT rank, const _TCHAR* szName
     Assert( m_rgrwl == NULL );
     Assert( m_cShift == 0 );
     Assert( m_mask == 0 );
+    Assert( m_cMaskShift == 0 );
 
     //  ensure that we have a valid number of threads
 
     Assert( cThread > 0 );
 
-    //  we will use the next higher power of two than two times the number of
+    //  we will use the next higher power of two than the number of
     //  threads that will use the reader writer lock pool
 
-    m_crwl = LNextPowerOf2( cThread * 2 + 1 );
+    m_crwl = LNextPowerOf2( cThread );
 
     //  the mask is one less ( x & ( n - 1 ) is cheaper than x % n if n
     //  is a power of two )
     
     m_mask = m_crwl - 1;
+    m_cMaskShift = Log2( m_crwl );
 
     //  the hash shift const is the largest power of two that can divide the
-    //  size of a <T> evenly so that the step we use through the RWL array
+    //  size of object evenly so that the step we use through the RWL array
     //  and the size of the array are relatively prime, ensuring that we use
     //  all the RWLs
 
     LONG n;
-    for ( m_cShift = -1, n = 1; sizeof( T ) % n == 0; m_cShift++, n *= 2 );
+    for ( m_cShift = -1, n = 1; cbObjectSize % n == 0; m_cShift++, n *= 2 );
 
     //  allocate RWL storage, but not as RWLs (no default initializer)
 
@@ -455,8 +455,7 @@ HandleError:
 
 //  terminates the reader writer lock pool
 
-template<class T>
-void RWLPOOL<T>::Term( void )
+INLINE void RWLPOOL::Term( void )
 {
     //  we must explicitly call each CReaderWriterLock's destructor due to use of placement new
 
@@ -480,14 +479,22 @@ void RWLPOOL<T>::Term( void )
     m_rgrwl = NULL;
     m_cShift = 0;
     m_mask = 0;
+    m_cMaskShift = 0;
 }
 
 //  returns the reader write lock associated with the given instance of T
 
-template<class T>
-INLINE CReaderWriterLock& RWLPOOL<T>::Rwl( const T* const pt )
+INLINE CReaderWriterLock& RWLPOOL::Rwl( const VOID* const pObj )
 {
-    return m_rgrwl[( LONG_PTR( pt ) >> m_cShift ) & m_mask];
+    LONG_PTR dwValue = LONG_PTR( pObj ) >> m_cShift;
+    LONG dwHash = 0;
+    while ( dwValue != 0 )
+    {
+        dwHash = dwHash ^ (dwValue & m_mask);
+        dwValue = dwValue >> m_cMaskShift;
+    }
+    Assert( dwHash < m_crwl );
+    return m_rgrwl[ dwHash ];
 }
 
 

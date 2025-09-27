@@ -80,9 +80,10 @@ const ULONG iMSO_SpaceHint              = 24;
 const ULONG iMSO_SpaceLVDeferredHints   = 25;
 const ULONG iMSO_LocaleName             = 26;
 const ULONG iMSO_LVChunkMax             = 27;
+const ULONG iMSO_PgnoFDPLastSetTime     = 28;
 
 //  max number of columns to set when inserting a record into the catalog
-const ULONG idataMSOMax                 = 28;
+const ULONG idataMSOMax                 = 29;
 
 
 const FID   fidMSO_ObjidTable           = FID( fidtypFixed, 0 );
@@ -99,8 +100,9 @@ const FID   fidMSO_RecordOffset         = FID( fidtypFixed, 8 );
 const FID   fidMSO_LCMapFlags           = FID( fidtypFixed, 9 );
 const FID   fidMSO_KeyMost              = FID( fidtypFixed, 10 );
 const FID   fidMSO_LVChunkMax           = FID( fidtypFixed, 11 );
+const FID   fidMSO_PgnoFDPLastSetTime   = FID( fidtypFixed, 12 );
 
-const FID   fidMSO_FixedLast            = fidMSO_LVChunkMax;
+const FID   fidMSO_FixedLast            = fidMSO_PgnoFDPLastSetTime;
 
 const FID   fidMSO_Name                 = FID( fidtypVar, 0 );
 const FID   fidMSO_Stats                = FID( fidtypVar, 1 );
@@ -703,7 +705,9 @@ ERR ErrCATAccessTableLV(
     const IFMP      ifmp,
     const OBJID     objidTable,
     PGNO            *ppgnoLVFDP,
-    OBJID           *pobjidLV = NULL );
+    OBJID           *pobjidLV = NULL,
+    __int64         *pftPgnoLVFDPLastSet = NULL,
+    const BOOL      fSkipPgnoFDPLastSetTime = fFalse );
 
 ERR ErrCATGetTableInfoCursor(
     PIB             *ppib,
@@ -805,7 +809,7 @@ ERR ErrCATGetColumnCallbackInfo(
 
 ERR ErrCATInitCatalogFCB( FUCB *pfucbTable );
 ERR ErrCATInitTempFCB( FUCB *pfucbTable );
-ERR ErrCATInitFCB( FUCB *pfucbTable, OBJID objidTable );
+ERR ErrCATInitFCB( FUCB *pfucbTable, OBJID objidTable, const BOOL fSkipPgnoFDPLastSetTime );
 
 enum CATCheckIndicesFlags : ULONG  //  catcif
 {
@@ -1252,26 +1256,36 @@ ERR ErrCATGetExtentPageCounts(
     CPG * const pcpgOE,
     CPG * const pcpgAE );
 
-INLINE BOOL FCATExtentPageCountsCached( const FUCB * const pfucb )
+INLINE ERR ErrCATExtentPageCountsCached( const FUCB * const pfucb )
 {
-    switch ( ErrCATGetExtentPageCounts(
-                 pfucb->ppib,
-                 pfucb->ifmp,
-                 pfucb->u.pfcb->ObjidFDP(),
-                 NULL,
-                 NULL ) )
+    ERR err;
+    err = ErrCATGetExtentPageCounts(
+        pfucb->ppib,
+        pfucb->ifmp,
+        pfucb->u.pfcb->ObjidFDP(),
+        NULL,
+        NULL );
 
+    switch ( err )
     {
-        case JET_errRecordNotFound:
-        case JET_errNotInitialized:
-            return fFalse;
+    case JET_errSuccess:
+        // Definitively know the value is there.
+        return JET_errSuccess;
 
-        case JET_errSuccess:
-            return fTrue;
+    case JET_errRecordNotFound:
+    case JET_errNotInitialized:
+        // Definitively know the value is not there.
+        return ErrERRCheck( JET_errRecordNotFound );
 
-        default:
-            AssertSz( fFalse, "Failed to find object in cache in unepxected way.");
-            return fFalse;
+        // Don't definitively know anything.
+        // Explicitly listing the error values we've seen just to aid in finding
+        // unexpected conditions.
+    case JET_errOutOfCursors:          // Low resource condition.
+        return ErrERRCheck( JET_errInternalError );
+        
+    default:
+        AssertSz( fFalse, "Unexpected case in switch." );
+        return ErrERRCheck( JET_errInternalError );
     }
 }
 
@@ -1399,3 +1413,10 @@ INLINE VOID WszCATFormatSortID(
     __out_ecount( cch ) WCHAR * wsz,
     _In_ INT cch );
 
+ERR ErrCATChangePgnoFDPLastSetTime( 
+    _In_ PIB* const         ppib,
+    _In_ const IFMP         ifmp,
+    _In_ const OBJID        objidTable,
+    _In_ const OBJID        objid,
+    _In_ const SYSOBJ       sysobj,
+    _In_ const __int64      ftCurrent );

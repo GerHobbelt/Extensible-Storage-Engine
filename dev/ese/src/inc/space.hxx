@@ -8,13 +8,16 @@
 #define fSPExtentList           (1<<2)
 #define fSPReservedExtent       (1<<3)
 #define fSPShelvedExtent        (1<<4)
+#define fSPSplitBuffers         (1<<5)
 
 #define FSPOwnedExtent( fSPExtents )        ( (fSPExtents) & fSPOwnedExtent )
 #define FSPAvailExtent( fSPExtents )        ( (fSPExtents) & fSPAvailExtent )
 #define FSPExtentList( fSPExtents )         ( (fSPExtents) & fSPExtentList )
 #define FSPReservedExtent( fSPExtents )     ( (fSPExtents) & fSPReservedExtent )
 #define FSPShelvedExtent( fSPExtents )      ( (fSPExtents) & fSPShelvedExtent )
+#define FSPSplitBuffers( fSPExtents )       ( (fSPExtents) & fSPSplitBuffers )
 
+#define FSPOnlyCachedExtents( fSPExtents )  ( ( (fSPExtents) & ~( fSPOwnedExtent | fSPAvailExtent ) ) == 0 )
 //  structure of SPACE external header
 //
 
@@ -198,7 +201,14 @@ ERR ErrSPGetPage(
 ERR ErrSPCaptureSnapshot(
     FUCB* const pfucb,
     const PGNO pgnoFirst,
-    const CPG cpgSize );
+    const CPG cpgSize,
+    const BOOL fMarkExtentEmpty );
+
+ERR ErrSPCaptureNonRevertableFDPRootPage(
+    PIB* ppib,
+    FCB* pfcbFDPToFree,
+    const PGNO pgnoLVRoot,
+    CPG* const pcpgCaptured = NULL );
 
 ERR ErrSPFreeExt(
     FUCB* const pfucb,
@@ -218,16 +228,9 @@ ERR ErrSPFreeFDP(
     PIB         *ppib,
     FCB         *pfcbFDPToFree,
     const PGNO  pgnoFDPParent,
-    const BOOL  fPreservePrimaryExtent = fFalse );
-
-ERR ErrSPGetDatabaseInfo(
-    PIB         *ppib,
-    const IFMP  ifmp,
-    __out_bcount(cbMax) BYTE        *pbResult,
-    const ULONG cbMax,
-    const ULONG fSPExtents,
-    bool fUseCachedResult,
-    CPRINTF * const pcprintf = NULL );
+    const BOOL  fPreservePrimaryExtent = fFalse,
+    const BOOL  fRevertableFDP = fTrue,
+    const PGNO  pgnoLVRoot = 0 );
 
 typedef enum class GET_CACHED_INFO {
     Allow,
@@ -365,8 +368,6 @@ ERR ErrSPCreateMultiple(
     const CPG   cpgPrimary,
     const BOOL  fUnique,
     const ULONG fPageFlags );
-ERR ErrSPIOpenAvailExt( PIB *ppib, FCB *pfcb, FUCB **ppfucbAE );
-ERR ErrSPIOpenOwnExt( PIB *ppib, FCB *pfcb, FUCB **ppfucbOE );
 ERR ErrSPReserveSPBufPagesForSpaceTree( FUCB *pfucb, FUCB *pfucbSpace, FUCB *pfucbParent );
 ERR ErrSPReserveSPBufPages(
     FUCB* const pfucbSpace,
