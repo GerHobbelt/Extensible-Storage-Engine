@@ -109,7 +109,8 @@ namespace Internal
                         Int64 cachedBlockWriteCountNumberBase,
                         ClusterNumber clusterNumberMin,
                         ClusterNumber clusterNumberMax,
-                        bool ignoreVerificationErrors );
+                        bool ignoreVerificationErrors,
+                        [Out] EsentErrorException^% ex );
 
                     CachedBlockSlab^ CreateCachedBlockSlabWrapper( ICachedBlockSlab^ icbsInner );
 
@@ -147,6 +148,10 @@ namespace Internal
                         bool isSlotUpdated,
                         bool isClusterUpdated,
                         bool isSuperceded );
+
+                    delegate void DetachFileStatus( int i, int c );
+
+                    void DetachFile( String^ path, DetachFileStatus^ status );
                 };
             }
         }

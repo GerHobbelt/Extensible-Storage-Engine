@@ -388,10 +388,13 @@ namespace Internal
                             Int64 cachedBlockWriteCountNumberBase,
                             ClusterNumber clusterNumberMin,
                             ClusterNumber clusterNumberMax,
-                            bool ignoreVerificationErrors )
+                            bool ignoreVerificationErrors,
+                            [Out] EsentErrorException^% ex )
                         {
                             ERR                 err     = JET_errSuccess;
                             ::ICachedBlockSlab* pcbs    = NULL;
+
+                            ex = nullptr;
 
                             Call( Pi->ErrLoadCachedBlockSlab(   ff->Pi,
                                                                 offsetInBytes,
@@ -403,11 +406,19 @@ namespace Internal
                                                                 ignoreVerificationErrors ? fTrue : fFalse,
                                                                 &pcbs ) );
 
-                            return gcnew CachedBlockSlab( &pcbs );
-
                         HandleError:
-                            delete pcbs;
-                            throw EseException( err );
+                            if ( err < JET_errSuccess )
+                            {
+                                if ( !pcbs )
+                                {
+                                    throw EseException( err );
+                                }
+                                else
+                                {
+                                    ex = EseException( err );
+                                }
+                            }
+                            return pcbs ? gcnew CachedBlockSlab( &pcbs ) : nullptr;
                         }
 
                         virtual CachedBlockSlab^ CreateCachedBlockSlabWrapper( ICachedBlockSlab^ icbsInner )
@@ -542,6 +553,33 @@ namespace Internal
                         HandleError:
                             delete pslotst;
                             throw EseException( err );
+                        }
+
+                        virtual void DetachFile( String^ path, IBlockCacheFactory::DetachFileStatus^ status )
+                        {
+                            ERR                         err                     = JET_errSuccess;
+                            DetachFileStatusInverse^    detachFileStatusInverse = nullptr;
+
+                            if ( status != nullptr )
+                            {
+                                detachFileStatusInverse = gcnew DetachFileStatusInverse( status );
+                            }
+
+                            pin_ptr<const Char> wszPath = PtrToStringChars( path );
+                            Call( Pi->ErrDetachFile(    (const WCHAR*)wszPath,
+                                                        detachFileStatusInverse == nullptr ?
+                                                            NULL :
+                                                            detachFileStatusInverse->PfnDetachFileStatus,
+                                                        detachFileStatusInverse == nullptr ?
+                                                            NULL :
+                                                            detachFileStatusInverse->KeyDetachFileStatus ) );
+
+                        HandleError:
+                            delete detachFileStatusInverse;
+                            if ( err < JET_errSuccess )
+                            {
+                                throw EseException( err );
+                            }
                         }
                 };
             }

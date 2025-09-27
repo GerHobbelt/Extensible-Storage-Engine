@@ -4086,7 +4086,7 @@ VOID DBMScanObserverCleanup::RedeleteRevertedFDP_( CSR* const pcsr, DBMObjectCac
     Assert( pcsr->Cpage().FPrimaryPage() );
     Assert( !FCATSystemTableByObjid( pcsr->Cpage().ObjidFDP() ) );
 
-    Assert( FPIBSessionSystemCleanup( m_ppib ) );
+    Assert( FPIBSessionSystemInternal( m_ppib ) );
 
     BOOL fFDPExists     = fTrue;
     BOOL fInTransaction = fFalse;
@@ -4130,6 +4130,13 @@ VOID DBMScanObserverCleanup::RedeleteRevertedFDP_( CSR* const pcsr, DBMObjectCac
         err = JET_errSuccess;
         goto HandleError;
     }
+    else if ( err >= JET_errSuccess && BoolParam( PinstFromPpib( m_ppib ), JET_paramFlight_RBSDbScanRaiseCorruptionRevertedFDP ) )
+    {
+        err = ErrERRCheck( JET_errRBSRedeleteFDPUnexpected );
+        goto HandleError;
+    }
+
+    Call( err );
 
     // Re-deleting table.
     const JET_SESID sesid = (JET_SESID) m_ppib;
@@ -4157,17 +4164,38 @@ HandleError:
             wszPgnoTable,
             wszObjidTable,
             wszErr
-        }; 
+        };
 
-        UtilReportEvent(
-            fSuccess ? eventInformation : eventError,
-            GENERAL_CATEGORY,
-            fSuccess ? DBSCAN_REDELETE_REVERTED_TABLE_SUCCESS : DBSCAN_REDELETE_REVERTED_TABLE_FAILURE,
-            3,
-            rgcwsz,
-            0,
-            NULL,
-            m_ppib->m_pinst );
+        // Raise corruption event and fail the attempt to redelete reverted FDP.
+        if ( err == JET_errRBSRedeleteFDPUnexpected )
+        {
+            UtilReportEvent(
+                eventError,
+                DATABASE_CORRUPTION_CATEGORY,
+                DBSCAN_REDELETE_REVERTED_TABLE_UNEXPECTED,
+                2,
+                rgcwsz,
+                0,
+                NULL,
+                PinstFromPpib( m_ppib ) );
+
+            OSUHAPublishEvent(
+                HaDbFailureTagCorruption, PinstFromPpib( m_ppib ), HA_DATABASE_CORRUPTION_CATEGORY,
+                HaDbIoErrorNone, g_rgfmp[ m_ifmp ].WszDatabaseName(), 0, 0,
+                HA_DBSCAN_REDELETE_REVERTED_TABLE_UNEXPECTED, 2, rgcwsz );
+        }
+        else
+        {
+            UtilReportEvent(
+                fSuccess ? eventInformation : eventError,
+                GENERAL_CATEGORY,
+                fSuccess ? DBSCAN_REDELETE_REVERTED_TABLE_SUCCESS : DBSCAN_REDELETE_REVERTED_TABLE_FAILURE,
+                3,
+                rgcwsz,
+                0,
+                NULL,
+                PinstFromPpib( m_ppib ) );
+        }
     }
 
     if( fInTransaction )
@@ -4236,7 +4264,7 @@ ERR DBMScanObserverCleanup::ErrOpenTableGetFucb_( const OBJID objid, BOOL* const
 
     // If the PIB isn't marked as a system cleanup session then we will conflict with
     // JetDeleteTable.
-    Assert( FPIBSessionSystemCleanup( m_ppib ) );
+    Assert( FPIBSessionSystemInternal( m_ppib ) );
     Call( ErrDIRBeginTransaction( m_ppib, 54683, JET_bitTransactionReadOnly ) );
 
     err = ErrCATSeekTableByObjid(
@@ -5610,6 +5638,7 @@ ERR ErrDBMEmitDivergenceCheck(
 
     const DBTIME dbtimePage = pcpage->Dbtime();
     const BOOL fEmptyPage   = pcpage->FEmptyPage();
+    const BOOL fPageFDPDelete = pcpage->FPageFDPDelete();
     Assert( ( dbtimePage == 0 && pcpage->ObjidFDP() == 0 ) || /* zero'd page */
             ( pcpage->PgnoThis() == pgno ) /* or the pgno should match */ );
     Assert( ( dbtimePage != dbtimeShrunk ) || ( pcpage->ObjidFDP() == 0 ) );
@@ -5624,6 +5653,7 @@ ERR ErrDBMEmitDivergenceCheck(
                         ulChecksum,
                         objidState == ObjidState::Invalid,
                         fEmptyPage,
+                        fPageFDPDelete,
                         &lgposLogRec );
 
     // Check if the persisted dbtime is ahead of the running dbtime.
@@ -5683,6 +5713,7 @@ ERR ErrDBMEmitEndScan( const IFMP ifmp )
             0, // dbtimeCurrent
             0, // ulChecksum
             fFalse,     // objidInvalid
+            fFalse,
             fFalse );   // EmptyPage
 
 }

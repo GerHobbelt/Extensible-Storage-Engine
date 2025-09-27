@@ -5241,7 +5241,7 @@ void BFIBuildReferencedPageListForCrashDump( CReferencedPages * ptableReferenced
                     
                     for ( FUCB * pfucb = ppib->pfucbOfSession; pfucbNil != pfucb; pfucb = pfucb->pfucbNextOfSession )
                     {
-                        void * const    pvPage  = pfucb->csr.PvBufferForCrashDump();
+                        const void * const    pvPage  = pfucb->csr.PvBufferForCrashDump();
 
                         if ( NULL != pvPage )
                         {
@@ -16371,6 +16371,8 @@ void BFIAssertNewlyAllocatedPage( const PBF pbfNew, const BOOL fAvailPoolAdd )
     //  Very definition of an allocated page, is NOT available
     Assert( !pbfNew->fAvailable );
 
+    Assert( !pbfNew->fNewPage );
+
     Assert( FBFIValidPvAllocType( pbfNew ) );
     Assert( pbfNew->bfat == bfatFracCommit || ( UlParam( JET_paramEnableViewCache ) && pbfNew->bfat == bfatNone ) );
     Assert( UlParam( JET_paramEnableViewCache ) || ( pbfNew->pv != NULL ) );
@@ -16905,6 +16907,8 @@ void BFIFreePage( PBF pbf, const BOOL fMRU, const BFFreePageFlags bffpfDangerous
 
     pbf->fSyncRead = fFalse;
 
+    pbf->fNewPage = fFalse;
+
     //  reset the page / buffer size
 
     pbf->icbPage = icbPageInvalid;
@@ -17171,6 +17175,10 @@ ERR ErrBFICachePage(    PBF* const ppbf,
     //  mark this BF as the current version of this IFMP / PGNO
 
     pgnopbf.pbf->fCurrentVersion = fTrue;
+
+    //  mark this BF as a new page if appropriate
+
+    pgnopbf.pbf->fNewPage = fNewPage;
 
     //  return success
 
@@ -18606,6 +18614,12 @@ ERR ErrBFIValidatePageSlowly( PBF pbf, const BFLatchType bflt, const CPageEvents
     BOOL fPageValidated = fFalse;   // Doesn't mean page is valid, means that we fully validated the page to the best
                                     // of our abilities (which cannot always be performed under shared latch).
 
+    PAGEValidationReason pgvr = pgvr::UserReadPageIo;
+    if ( tc.iorReason.Iort() == iortDbScan )
+    {
+        pgvr = pgvr::DbScanReadPageIo;
+    }
+
     while ( !fPageValidated )
     {
         ERR errFault = JET_errSuccess;
@@ -18685,7 +18699,7 @@ ERR ErrBFIValidatePageSlowly( PBF pbf, const BFLatchType bflt, const CPageEvents
 
                 if ( errValidate >= JET_errSuccess )
                 {
-                    errValidate = ErrBFIVerifyPage( pbf, cpe, fTrue );
+                    errValidate = ErrBFIVerifyPage( pbf, pgvr, cpe, fTrue );
                 }
                 if ( errValidate < JET_errSuccess )
                 {
@@ -18900,7 +18914,12 @@ ERR ErrBFIValidatePageSlowly( PBF pbf, const BFLatchType bflt, const CPageEvents
                 //  Important, fFalse controls event and if we update the page, the
                 //  page may or may not be updatable, so it is important 
 
-                errValidate = ErrBFIVerifyPage( pbf, CPageValidationLogEvent::LOG_NONE, fFalse );
+                //  should not happen as main DbScan latches exclusively, but DbScan also comes in for schema lookups to see 
+                //  if table exists.  we suppress the pgvr for this case, it is rare - but the value of knowing non-exclusive 
+                //  is more important
+                Expected( pgvr != pgvr::DbScanReadPageIo || tc.iorReason.Iors() == iorsBTSeek );
+
+                errValidate = ErrBFIVerifyPage( pbf, pgvr::UserReadPageIoNonExcl, CPageValidationLogEvent::LOG_NONE, fFalse );
             }
 
             //  if there is an error in the page then check the status of the page
@@ -19073,7 +19092,7 @@ void BFIPatchRequestIORange( PBF pbf, const CPageEvents cpe, const TraceContext&
     }
 }
 
-ERR ErrBFIVerifyPageSimplyWork( const PBF pbf )
+ERR ErrBFIVerifyPageSimplyWork( const PBF pbf, const PAGEValidationReason pgvr )
 {
     BYTE rgBFLocal[sizeof(BF)];
     CPAGE::PGHDR2 pghdr2;
@@ -19085,7 +19104,7 @@ ERR ErrBFIVerifyPageSimplyWork( const PBF pbf )
         return JET_errSuccess;
     }
     memcpy( rgBFLocal, pbf, sizeof(BF) );           // 1. copy off the BF struct ...
-    CPageValidationNullAction nullaction;
+    CPageValidationNullAction nullaction( pgvr );
     CPAGE cpage;
     Assert( CbBFIBufferSize( pbf ) == CbBFIPageSize( pbf ) );
     cpage.LoadPage( pbf->ifmp, pbf->pgno, pbf->pv, CbBFIBufferSize( pbf ) );
@@ -19118,7 +19137,7 @@ ERR ErrBFIVerifyPageSimplyWork( const PBF pbf )
     return err;
 }
 
-ERR ErrBFIVerifyPage( const PBF pbf, const CPageEvents cpe, const BOOL fFixErrors )
+ERR ErrBFIVerifyPage( const PBF pbf, const PAGEValidationReason pgvr, const CPageEvents cpe, const BOOL fFixErrors )
 {
     ERR err = JET_errSuccess;
     CPageEvents cpeActual = cpe;
@@ -19165,6 +19184,7 @@ ERR ErrBFIVerifyPage( const PBF pbf, const CPageEvents cpe, const BOOL fFixError
     }
 
     CPageValidationLogEvent validationaction(
+        pgvr,
         pbf->ifmp,
         cpeActual,
         BUFFER_MANAGER_CATEGORY );
@@ -19557,6 +19577,7 @@ bool FBFIDestructiveSoftFaultPage( PBF pbf, _In_ const BOOL fNewPage )
             //  validate the page with the Page Manager
 
             const ERR errCheckPage = cpageCheck.ErrCheckPage( CPRINTFDBGOUT::PcprintfInstance(),
+                            pbf->bfdf == bfdfClean ? pgvr::ReclaimCleanFromOsAvail : pgvr::ReclaimUntidyFromOsAvail,
                             OnDebugOrRetail( ( fCorruptOnPageIn ? CPAGE::OnErrorReturnError : CPAGE::OnErrorFireWall ), CPAGE::OnErrorFireWall ),
                             CPAGE::CheckLineBoundedByTag );
 
@@ -19641,6 +19662,8 @@ void BFIReclaimPageFromOS(
     const BOOL  fAttemptDestructiveSoftFault = ( !FNegTest( fStrictIoPerfTesting ) &&
                                                  (DWORD)CbBFIBufferSize( pbf ) >= OSMemoryPageCommitGranularity() &&
                                                  ( pbf->bfdf < bfdfDirty ) );
+
+    PAGEValidationReason pgvr = pgvr::Invalid;
 
     //
     //  First we try to ratchet our latch type as high as possible to use the best reclaim mechanism we can support.
@@ -19756,6 +19779,10 @@ void BFIReclaimPageFromOS(
     {
         //  If we have the write latch, then we will be trying a destructive soft fault, and so
         //  we must make sure the page is not updatable.
+
+        //  FUTURE: We could probably make a small improvement to our fault handling by setting
+        //  fAttemptDestructiveSoftFault = fFalse and continuing on.  These not Updatable (recently
+        //  written) pages are probably rare - as we just checksummed them before the Write IO.
         goto HandleError;
     }
 
@@ -19825,6 +19852,7 @@ void BFIReclaimPageFromOS(
             memset( pbf->pv, 0, sizeof(CPAGE::PGHDR2) );
         }
 
+        pgvr = pbf->bfdf == bfdfClean ? pgvr::ReclaimCleanFromOsAvail : pgvr::ReclaimUntidyFromOsAvail;
     }
     else
 #ifdef EXTRA_LATCHLESS_IO_CHECKS
@@ -19854,8 +19882,19 @@ void BFIReclaimPageFromOS(
             BFITrackCacheMissLatency( pbf, hrtFaultStart, bftcmrReasonPagingFaultOs, qos, tc, JET_errSuccess );
         }
 
+        pgvr = pbf->bfdf < bfdfDirty ? pgvr::ReclaimCleanUntidyFromOs : pgvr::ReclaimDirtyFromOs;
+
         OSTrace( JET_tracetagBufferManager, OSFormat( "BF forced fault (soft or hard fault) from the OS ifmp:pgno %d:%d in %I64d ms", (ULONG)pbf->ifmp, pbf->pgno, cusecFaultTime / 1000 ) );
     }
+#ifdef EXTRA_LATCHLESS_IO_CHECKS
+    else
+    {
+        pgvr = pbf->bfdf < bfdfDirty ? pgvr::ReclaimCleanUntidyFromOs : pgvr::ReclaimDirtyFromOs;
+#ifndef DEBUG
+        AssertTrack( fFalse, "LatchlessIoChecksAreDebugOnly" );  //  should be only debug path
+#endif
+    }
+#endif
 
 
     if ( bfltAchieved >= bfltExclusive && FBFIDatabasePage( pbf ) && pbf->err >= JET_errSuccess && !fNewPage )
@@ -19876,10 +19915,22 @@ void BFIReclaimPageFromOS(
             }
 #endif
 
-            (void)cpageCheck.ErrCheckPage( CPRINTFDBGOUT::PcprintfInstance(),
+            const ERR errCheck = cpageCheck.ErrCheckPage( CPRINTFDBGOUT::PcprintfInstance(),
+                            pgvr,
                             CPAGE::OnErrorFireWall,
                             CPAGE::CheckLineBoundedByTag );
             //  void b/c we shouldn't return from the above call on failure.
+            if ( errCheck < JET_errSuccess )
+            {
+                switch( pgvr )
+                {
+                case pgvr::ReclaimCleanFromOsAvail:  FireWall( "CorruptCleanPageReclaimedFromOSAvail" );  break;
+                case pgvr::ReclaimUntidyFromOsAvail: FireWall( "CorruptUntidyPageReclaimedFromOSAvail" ); break;
+                case pgvr::ReclaimCleanUntidyFromOs: FireWall( "CorruptCleanUntidyPageReclaimedFromOS" ); break;
+                case pgvr::ReclaimDirtyFromOs:       FireWall( "CorruptDirtyPageReclaimedFromOS" );       break;
+                default:                             FireWall( "CorruptHuh" ); // all cases should be covered.
+                }
+            }
         }
     }
 
@@ -20801,7 +20852,7 @@ ERR ErrBFILatchPage(    _Out_ BFLatch* const    pbfl,
                             tcBFLatch->iorReason.Iorf(),
                             tcBFLatch->nParentObjectClass,
                             ppghdr->dbtimeDirtied,
-                            ppghdr->itagMicFree,
+                            ppghdr->itagState,
                             ppghdr->cbFree );
                     }
                 }
@@ -21761,6 +21812,7 @@ ERR ErrBFIPrepareFlushPage(
         {
             pgftPageCurrent = cpage.Pgft();
 
+            Assert( !fIsPagePatching || fIsDirty );
             if ( pbf->bfdf > bfdfClean )
             {
                 //  There is a subtlety in picking the flush map to use as the basis for the next 
@@ -21783,7 +21835,9 @@ ERR ErrBFIPrepareFlushPage(
 
                 if ( fIsPagePatching )
                 {
-                    pgftPageNext = CPAGE::pgftUnknown;
+                    //  Stamp the page with the expected flush state from the map, so we don't lose the ability
+                    //  to detect lost flushes if the patching write doesn't make it.
+                    pgftPageNext = ( pgftMapCurrent != CPAGE::pgftUnknown ) ? pgftMapCurrent : CPAGE::PgftGetNextFlushType( CPAGE::pgftUnknown );
                 }
                 else if ( ( pgftMapCurrent == CPAGE::pgftUnknown ) && ( pgftPageCurrent == CPAGE::pgftUnknown ) )
                 {
@@ -21818,6 +21872,7 @@ ERR ErrBFIPrepareFlushPage(
         }
         else
         {
+            Assert( !fIsPagePatching );
             pgftPageCurrent = CPAGE::pgftUnknown;
             pgftPageNext = CPAGE::pgftUnknown;
         }
@@ -21832,17 +21887,9 @@ ERR ErrBFIPrepareFlushPage(
 
         // Make sure the relevant lgpos's are consistent with the required range stamped in the DB header.
         OnDebug( BFIAssertReqRangeConsistentWithLgpos( pfmp, pbf->lgposOldestBegin0, pbf->lgposModify, "PrepareFlushPage" ) );
-
-        //  Force a sync write of the affected flush map page if required.
-
-        if ( fIsPagePatching && fIsFmRecoverable )
-        {
-            if ( pfm->ErrSetPgnoFlushTypeAndWait( pbf->pgno, CPAGE::pgftUnknown, dbtimeNil ) < JET_errSuccess )
-            {
-                Error( ErrERRCheck( errBFIReqSyncFlushMapWriteFailed ) );
-            }
-        }
     }
+
+    Call( ErrFaultInjection( 117932 ) );
 
     //  prepare to issue I/O against this IFMP for this thread.  if we cannot
     //  do this then release our range lock and fail with the error
@@ -21878,8 +21925,7 @@ HandleError:
             err != errBFIPageFlushPendingSlowIO &&
             err != errBFIPageFlushPendingHungIO &&
             err != errBFLatchConflict &&
-            err != errBFIPageFlushDisallowedOnIOThread &&
-            err != errBFIReqSyncFlushMapWriteFailed )
+            err != errBFIPageFlushDisallowedOnIOThread )
     {
         //  set this BF to the appropriate error state
 
@@ -22230,7 +22276,7 @@ bool CBFOpportuneWriter::FVerifyCleanBFs_()
                 }
             }
 
-            const ERR errReVerify = ErrBFIVerifyPage( pbf, CPageValidationLogEvent::LOG_NONE, fFalse );
+            const ERR errReVerify = ErrBFIVerifyPage( pbf, pgvr::WritePageIo, CPageValidationLogEvent::LOG_NONE, fFalse );
             if ( errPreVerify >= JET_errSuccess && errReVerify == JET_errPageNotInitialized )
             {
                 // We can try and overwrite with the not initialized page, but it happens so
@@ -22454,6 +22500,10 @@ ERR ErrBFIFlushExclusiveLatchedAndPreparedBF(   __inout const PBF       pbf,
     if ( pbf->lrukic.FSuperColded() || pbf->lrukic.PctCachePriority() < 50 )
     {
         tcFlush->iorReason.AddFlag( iorfSuperColdOrLowPriority );
+    }
+    if ( pbf->fNewPage )
+    {
+        tcFlush->iorReason.AddFlag( iorfNewPage );
     }
     if ( pbf->fFlushed )
     {
@@ -24657,12 +24707,11 @@ void BFISyncWriteComplete(  const ERR           err,
     {
         if ( err >= JET_errSuccess )
         {
-            CPAGE::PageFlushType pgft = CPAGE::pgftUnknown;
+            CPAGE::PageFlushType pgftPage = CPAGE::pgftUnknown;
             DBTIME dbtime = dbtimeNil;
             const LONG cbBuffer = g_rgcbPageSize[ pbf->icbBuffer ];
             CFlushMap* const pfm = g_rgfmp[ pbf->ifmp ].PFlushMap();
             const BOOL fIsPagePatching = ( tc.etc.iorReason.Iorp() == IOREASONPRIMARY( iorpPatchFix ) );
-            const BOOL fIsFmRecoverable = pfm->FRecoverable();
 
             CPAGE cpage;
             const LONG cbPage = g_rgcbPageSize[ pbf->icbPage ];
@@ -24671,19 +24720,32 @@ void BFISyncWriteComplete(  const ERR           err,
             dbtime = cpage.Dbtime();
             if ( !FUtilZeroed( (BYTE*)pbf->pv, cbBuffer ) && ( dbtime != dbtimeShrunk ) && !cpage.FRevertedNewPage() )
             {
-                pgft = cpage.Pgft();
+                pgftPage = cpage.Pgft();
             }
             cpage.UnloadPage();
 
-            if ( fIsPagePatching && fIsFmRecoverable )
+            if ( fIsPagePatching )
             {
-                //  OK to ignore errors because the sync write of a patched page can only be initiated once we
-                //  have already synchronously set its flush type to pgftUnknown.
-                (void)pfm->ErrSetPgnoFlushTypeAndWait( pbf->pgno, pgft, dbtime );
+                const CPAGE::PageFlushType pgftMap = pfm->PgftGetPgnoFlushType( pbf->pgno );
+                Assert( pgftPage != CPAGE::pgftUnknown );
+
+                if ( pgftMap == CPAGE::pgftUnknown )
+                {
+                    //  OK to ignore errors in this case because the original map state is pgftUnknown, so
+                    //  we'll just lose the ability to detect a lost flush.
+                    (void)pfm->ErrSetPgnoFlushTypeAndWait( pbf->pgno, pgftPage, dbtime );
+                }
+                else
+                {
+                    //  This is the common case where the previous state of the map is not pgftUnknown, so
+                    //  the new page image will contain that same state, which will be stamped when we
+                    //  prepare the page for the sync write.
+                    Assert( pgftPage == pgftMap );
+                }
             }
             else
             {
-                pfm->SetPgnoFlushType( pbf->pgno, pgft, dbtime );
+                pfm->SetPgnoFlushType( pbf->pgno, pgftPage, dbtime );
             }
         }
     }
@@ -25361,7 +25423,7 @@ BOOL FBFICacheRemapPage( __inout PBF pbf, IFileAPI* const pfapi )
             Assert( CbBFIBufferSize( pbf ) == CbBFIPageSize( pbf ) );
             cpage.ReBufferPage( bfl, pbf->ifmp, pbf->pgno, pbf->pv, g_rgcbPageSize[pbf->icbPage] );
 
-            CPageValidationLogEvent validationaction( pbf->ifmp, CPageValidationLogEvent::LOG_NONE, BUFFER_MANAGER_CATEGORY );
+            CPageValidationLogEvent validationaction( pgvr::RemapPageWriteIoComplete, pbf->ifmp, CPageValidationLogEvent::LOG_NONE, BUFFER_MANAGER_CATEGORY );
 
             errCheckPage = cpage.ErrValidatePage( pgvfExtensiveChecks | pgvfDoNotCheckForLostFlush, &validationaction );
             //  should we check flush map here?
@@ -25406,7 +25468,7 @@ BOOL FBFICacheRemapPage( __inout PBF pbf, IFileAPI* const pfapi )
         FBFIDatabasePage( pbf ) )
     {
         CPAGE cpage;
-        CPageValidationNullAction nullaction;
+        CPageValidationNullAction nullaction( pgvr::DebugCheck );
         cpage.LoadPage( pbf->ifmp, pbf->pgno, pbf->pv, g_rgcbPageSize[pbf->icbPage] );
         CallS( cpage.ErrValidatePage( pgvfDoNotCheckForLostFlush, &nullaction ) );
     }
@@ -25655,7 +25717,12 @@ void BFIFlushComplete( _Inout_ const PBF pbf, _In_ const BFLatchType bfltHave, _
     // for uninitialized pages because we could throw bogus lost flush errors.
     if ( !FBFIBufferIsZeroed( pbf ) )
     {
-        CallS( ErrBFIVerifyPageSimplyWork( pbf ) );
+#ifdef DEBUG
+        // EXTRA_LATCHLESS_IO_CHECKS is only in debug, if someone decides to turn it on for
+        // retail, this will break and they'll give it a real reason.
+        PAGEValidationReason pgvr = pgvr::DebugCheck;
+#endif
+        CallS( ErrBFIVerifyPageSimplyWork( pbf, pgvr ) );
     }
 
     AssertRTL( CbBFIBufferSize( pbf ) == CbBFIPageSize( pbf ) );

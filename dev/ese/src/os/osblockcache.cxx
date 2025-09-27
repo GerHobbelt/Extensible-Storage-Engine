@@ -54,10 +54,12 @@ CDefaultCacheConfiguration::CDefaultCacheConfiguration()
         m_pctJournalSegmentsInUse( 75 ),
         m_cbJournalSegmentsMaximumCacheSize( 1 * 1024 * 1024 ),
         m_cbJournalClustersMaximumSize( 2 * 1024 * 1024 ),
-        m_cbCachingFilePerSlab( 1 * 102 * 4096 ),
+        m_cbCachingFilePerSlab( 1 * 104 * 4096 ),  //  CCachedBlockChunk::Ccbl() == 104
         m_cbCachedFilePerSlab( 0 ),
         m_cbSlabMaximumCacheSize( 1 * 1024 * 1024 ),
-        m_fAsyncWriteBackEnabled( fTrue )
+        m_fAsyncWriteBackEnabled( fTrue ),
+        m_cIOMaxOutstandingDestage( 4 ),
+        m_cbIOMaxOutstandingDestage( (ULONG)( m_cbCachingFilePerSlab / 2 ) )
 {
     memcpy( m_rgbCacheType, CHashedLRUKCache::RgbCacheType(), cbGuid );
 }
@@ -127,7 +129,18 @@ BOOL CDefaultCacheConfiguration::FAsyncWriteBackEnabled()
     return m_fAsyncWriteBackEnabled;
 }
 
+ULONG CDefaultCacheConfiguration::CIOMaxOutstandingDestage()
+{
+    return m_cIOMaxOutstandingDestage;
+}
+
+ULONG CDefaultCacheConfiguration::CbIOMaxOutstandingDestage()
+{
+    return m_cbIOMaxOutstandingDestage;
+}
+
 CDefaultBlockCacheConfiguration::CDefaultBlockCacheConfiguration()
+    :   m_fDetachEnabled( fFalse )
 {
 }
 
@@ -151,6 +164,11 @@ ERR CDefaultBlockCacheConfiguration::ErrGetCacheConfiguration(  _In_z_  const WC
 
 HandleError:
     return err;
+}
+
+BOOL CDefaultBlockCacheConfiguration::FDetachEnabled()
+{
+    return m_fDetachEnabled;
 }
 
 
@@ -230,14 +248,20 @@ const char* OSFormat( _In_ const CCachedBlockSlot& slot )
                         slot.Updno() );
 }
 
-void CCachedBlockSlot::Dump(    _In_ const CCachedBlockSlot&    slot,
-                                _In_ CPRINTF* const             pcprintf,
-                                _In_ IFileIdentification* const pfident )
+const char* OSFormat( _In_ const CCachedBlockSlotState& slotst )
 {
-    OSTraceSuspendGC();
-    (*pcprintf)( OSFormat( slot ) );
-    OSTraceResumeGC();
+    return OSFormat(    "%s %c%c%c%c",
+                        OSFormat( (CCachedBlockSlot&)slotst ),
+                        slotst.FSlotUpdated() ? 'U' : '_',
+                        slotst.FClusterUpdated() ? 'R' : '_',
+                        slotst.FSuperceded() ? 'S' : '_',
+                        slotst.FFirstUpdate() ? 'F' : '_' );
+}
 
+void CCachedBlockSlot::DumpFile(    _In_ const CCachedBlockSlot&    slot,
+                                    _In_ CPRINTF* const             pcprintf,
+                                    _In_ IFileIdentification* const pfident )
+{
     if ( slot.Cbid().Cbno() != cbnoInvalid )
     {
         WCHAR   wszAnyAbsPath[ IFileSystemAPI::cchPathMax ]         = { };
@@ -253,6 +277,28 @@ void CCachedBlockSlot::Dump(    _In_ const CCachedBlockSlot&    slot,
                         (QWORD)slot.Cbid().Cbno() * cbCachedBlock,
                         cbCachedBlock );
     }
+}
+
+void CCachedBlockSlot::Dump(    _In_ const CCachedBlockSlot&    slot,
+                                _In_ CPRINTF* const             pcprintf,
+                                _In_ IFileIdentification* const pfident )
+{
+    OSTraceSuspendGC();
+    (*pcprintf)( OSFormat( slot ) );
+    OSTraceResumeGC();
+
+    DumpFile( slot, pcprintf, pfident );
+}
+
+void CCachedBlockSlotState::Dump(   _In_ const CCachedBlockSlotState&   slotst,
+                                    _In_ CPRINTF* const                 pcprintf,
+                                    _In_ IFileIdentification* const     pfident )
+{
+    OSTraceSuspendGC();
+    (*pcprintf)( OSFormat( slotst ) );
+    OSTraceResumeGC();
+
+    DumpFile( slotst, pcprintf, pfident );
 }
 
 //  Block Cache Factory

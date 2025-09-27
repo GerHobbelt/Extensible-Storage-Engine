@@ -269,6 +269,7 @@ typedef enum
     opDBUTILDumpMetaData,
     opDBUTILDumpPage,
     opDBUTILDumpNode,
+    opDBUTILDumpTag,
     opDBUTILDumpSpace,
     opDBUTILSetHeaderState,
     opDBUTILDumpHeader,
@@ -295,6 +296,7 @@ typedef enum
     opDBUTILDumpCacheFile,
     opDBUTILDumpRBSHeader,
     opDBUTILDumpRBSPages,
+    opDBUTILEstimateRootSpaceLeak,
 } DBUTIL_OP;
 
 typedef enum
@@ -673,6 +675,10 @@ typedef void (JET_API *JET_SPCATCALLBACK)( _In_ const unsigned long pgno, _In_ c
                                                                     //      flag. The next 4 bits are left unused (for now) and the lower 2 bits are used for ScanCheckSource.
 #define JET_efvExtentFreed2                                 9500    //  Adds support for ExtentFreed2 LR which adds dbtime of the database to the existing ExtentFreed LR.
 #define JET_efvKVPStoreV2                                   9520    //  Allows upgrade of KVP stores to version 1.0.2
+#define JET_efvIndexDeferredPopulate                        9540    //  Adds support for deferred population of indices.
+#define JET_efvReservedTags                                 9560    //  Allows adding additional reserved tags to cpage.
+#define JET_efvRBSTooSoonDeletes                            9580    //  Allows to decide if we can now perform non-revertable delete even if root page of table was moved recently by shrink or created recently.
+#define JET_efvOptionallyUniqueIndices                      9600    //  Allows creation of optionally unique indices.
 
 // Special format specifiers here
 #define JET_efvUseEngineDefault             (0x40000001)    //  Instructs the engine to use the maximal default supported Engine Format Version. (default)
@@ -750,7 +756,8 @@ typedef void (JET_API *JET_SPCATCALLBACK)( _In_ const unsigned long pgno, _In_ c
 #define JET_cbtypOnlineDefragProgress           0x00002000  /* online defragmentation has made progress */
 //  callback for JetDefragment2 actions (testing only)
 //  pvArg1 is ptr to table name, pvArg2 is ptr to action code JET_bitOld2Start, etc...
-#define JET_cbtypOld2Action          0x00004000
+#define JET_cbtypOld2Action                     0x00004000
+#define JET_cbtypIndexDeferredPopulateThrottle  0x00008000
 
 // begin_PubEsent
 
@@ -3263,6 +3270,7 @@ typedef struct
     JET_HISTO *                     phistoKeySizes;             // per node
     JET_HISTO *                     phistoDataSizes;            // per node
     JET_HISTO *                     phistoKeyCompression;       // per compressed node
+    JET_HISTO *                     phistoResvTagSizes;         // per reserved tag
     JET_HISTO *                     phistoUnreclaimedBytes;     // per deleted node
 #if ( JET_VERSION >= 0x0602 )
     __int64                         cVersionedNodes;            // node accumulation
@@ -4001,9 +4009,10 @@ typedef enum
 // end_PubEsent
 
 #if ( JET_VERSION >= 0x0A01 )
-
+#define JET_paramFlight_RBSDbScanRaiseCorruptionRevertedFDP     74  // Dbscan normally should redelete reverted FDPs which have the delete flag set. But, we don't expect that unless we delete logs and mount that copy and for automated testing, we don't delete logs. So for the automated testing cases, we will raise a corruption instead, which should avoid any real corruption due to bugs.
+#define JET_paramFlight_RBSAllowTooSoonNonRevertableDelete      75  //  If set, we will do a non-revertable table even if PgnoFDPLastSetTime is null or within the last 7days. Note: Both JET_bitRevertableTableDeleteIfTooSoon and JET_paramFlight_RBSRevertableDeleteIfTooSoonTimeNull will be ignored if this variant is set.
 #define JET_paramFlight_RBSForceRollIntervalSec                 80  // Time after which we should force roll into new revert snapshot by raising failure item and letting HA remount. This is temporary till we have live roll.
-
+#define JET_paramFlight_EnableScanCheckFDPDeleteFlags           83  //  Whether we want to enable logging FDPDelete flags in ScanCheck2 log record.
 #define JET_paramFlight_NewQueueOptions                         84  //  Controls options for new Meted IO Queue
 #define JET_paramFlight_ConcurrentMetedOps                      85  //  Controls how many IOs we leave out at once for the new Meted IO Queue.
 #define JET_paramFlight_LowMetedOpsThreshold                    86  //  Controls the transition from 1 meted op to JET_paramFlight_ConcurrentMetedOps (which is the max).
@@ -4215,9 +4224,16 @@ typedef enum
 #define JET_paramEnableBlockCache               218 //  Indicates that the ESE Block Cache is enabled.  This is sufficient to access files previously attached to the ESE Block Cache but not to attach new files.
 
 #endif // JET_VERSION >= 0x0A01
+// end_PubEsent
 
+#define JET_paramDeferredIndexPopulateRowsPerTransaction 219 // Number of primary index rows to process in a single transaction when processing
+                                                             // a delayed-populate index
 
-#define JET_paramMaxValueInvalid                219 //  This is not a valid parameter. It can change from release to release!
+// begin_PubEsent
+
+#define JET_paramEnableBlockCacheDetach         220 //  Indicates that ESE Block Cache detach is enabled.  This will allow a file cached by the ESE Block Cache to be detached on open.
+
+#define JET_paramMaxValueInvalid                221 //  This is not a valid parameter. It can change from release to release!
 
 // end_PubEsent
 #if ( JET_VERSION >= 0x0A01 )
@@ -4614,6 +4630,11 @@ typedef struct
 
 #define JET_bitReadLock                 0x00000001
 #define JET_bitWriteLock                0x00000002
+// end_PubEsent
+#if ( JET_VERSION >= 0x0A01 )
+#define JET_bitKeyLock                  0x00000004
+#endif // JET_VERSION >= 0x0A01
+// begin_PubEsent
 
     /* Constants for JetMove */
 
@@ -4685,8 +4706,15 @@ typedef struct
 #if ( JET_VERSION >= 0x0A00 )
 #define JET_bitIndexImmutableStructure  0x00080000  // Do not write to the input structures during a JetCreateIndexN call.
 #endif // JET_VERSION >= 0x0A00
-
 // end_PubEsent
+#if ( JET_VERSION >= 0x0A00 )
+#define JET_bitIndexDeferredPopulateCreate  0x00100000  // Only create the index, don't actually populate it.
+#define JET_bitIndexDeferredPopulateProcess 0x00200000  // Populate an index that was previously created with JET_bitIndexDeferredPopulateCreate
+#endif // JET_VERSION >= 0x0A00
+#if ( JET_VERSION >= 0x0A01 )
+#define JET_bitIndexOptionallyUnique    0x00400000  // Index uniqueness is only enforced on updates using JET_bitUpdateEnforceOptionallyUniqueIndices
+#endif // JET_VERSION >= 0x0A01
+
 // These are not persisted anywhere. These are bits used by the 'Isam layer', a simpler C#-based
 // interface to access ESE databases.
 //
@@ -4939,6 +4967,9 @@ typedef struct
 #endif // JET_VERSION >= 0x0502
 // end_PubEsent
 #define JET_bitUpdateNoVersion                  0x00000002  //  do not create rollback or versioning information for update
+#if ( JET_VERSION >= 0x0A01 )
+#define JET_bitUpdateEnforceOptionallyUniqueIndices 0x00000004 // Enforce optionally unique indices.
+#endif // JET_VERSION >= 0x0A01
 // begin_PubEsent
 
     /* Flags for JetEscrowUpdate */
@@ -5478,11 +5509,13 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #if ( JET_VERSION >= 0x0A01 )
 
     /* RBS revert states */
-#define JET_revertstateNone                 0   // Revert has not yet started/default state.
-#define JET_revertstateInProgress           1   // Revert snapshots are currently being applied to the databases.
-#define JET_revertstateCopingLogs           2   // The required logs to bring databases to a clean state are being copied to the log directory after revert.
-#define JET_revertstateBackupSnapshot       3   // Backs up revert snapshots for investigation purposes.
-#define JET_revertstateRemoveSnapshot       4   // Removes the snapshot which have been applied to the databases and backed up.
+#define JET_revertstateNone                     0   // Revert has not yet started/default state.
+#define JET_revertstateInProgress               1   // Revert snapshots are currently being applied to the databases.
+#define JET_revertstateCopingLogs               2   // The required logs to bring databases to a clean state are being copied to the log directory after revert.
+#define JET_revertstateBackupSnapshot           3   // Backs up revert snapshots for investigation purposes.
+#define JET_revertstateRemoveSnapshot           4   // Removes the snapshot which have been applied to the databases and backed up.
+#define JET_revertstateCaptureRootPageRecords   5   // Indicates that we need to capture the root pages records' FDPDeleteFlag state into a temporary file for crash consistency.
+#define JET_revertstateApplyRootPageRecords     6   // Indicates that we need to apply the root page records and update the FDPDeleteFlag state.
 
     /* RBS revert grbits */
 #define JET_bitDeleteAllExistingLogs        0x00000001  /* Delete all the existing log files at the end of revert. */
@@ -5524,17 +5557,24 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_TblInfoSpaceUsage          7U
 #define JET_TblInfoDumpTable           8U
 #define JET_TblInfoSpaceAlloc          9U
-#define JET_TblInfoSpaceOwned         10U         // OwnExt
-#define JET_TblInfoSpaceAvailable     11U         // AvailExt
+#define JET_TblInfoSpaceOwned         10U         // OwnExt for primary, 2ndary indices, and LV
+#define JET_TblInfoSpaceAvailable     11U         // AvailExt for primary, 2ndary indices, and LV
 #define JET_TblInfoTemplateTableName  12U
 // end_PubEsent
 #if ( JET_VERSION >= 0x0A01 )
 #define JET_TblInfoLVChunkMax         13U
 #define JET_TblInfoEncryptionKey      14U
-#define JET_TblInfoSplitBuffers       15U
+//#define JET_TblInfoUnused                       // Skipped during development, may be reused.
 #define JET_TblInfoRetrieveAndReserveAutoIncrement 16U  // Retrieves the current table-wide auto-increment counter and increments its value. Only valid with JetGetTableInfo.
 #endif
 // begin_PubEsent
+#if ( JET_VERSION >= 0x0A01 )
+#define JET_TblInfoSpaceOwnedLV       17U         // OwnExt for LV
+#define JET_TblInfoSpaceAvailableLV   18U         // AvailExt for LV
+// end_PubEsent
+#define JET_TblInfoObjectId           19U
+// begin_PubEsent
+#endif
 
     /* Info levels for JetGetIndexInfo and JetGetTableIndexInfo */
 
@@ -5572,6 +5612,11 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_IdxInfoSortId           17U     //  Returns a Sort ID (GUID) used for sorting Unicode text.
 #endif // JET_VERSION >= 0x0A00
 // begin_PubEsent
+#if ( JET_VERSION >= 0x0A01 )
+#define JET_IdxInfoSpaceOwned       18U    // Space owned exclusively by this index (unlike tables, ignores space from 2ndary indices, even
+                                           //     when inquiring about primary indices
+#define JET_IdxInfoSpaceAvailable   19U    // Space available exclusively for this index
+#endif
 
 
     /* Info levels for JetGetColumnInfo and JetGetTableColumnInfo */
@@ -5941,7 +5986,7 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define errBFIPageTouchTooRecent            -264  /*  the page could not be flushed because a recent page touch would offend the waypoint */
 #define errBFICheckpointWorkRemaining       -266  /*  checkpoint depth maintenance is not finished due to page flushes or dependency flushes remaining */
 #define errBFIPageRemapNotReVerified        -267  /*  page is remapped after a write, which means it needs to be reverified */
-#define errBFIReqSyncFlushMapWriteFailed    -268  /*  required synchronous write to the flush map failed  */
+#define errBFIReqSyncFlushMapWriteFailed    -268  /*  UNUSED: required synchronous write to the flush map failed  */
 #define errBFIPageFlushPendingHungIO        -269  /*  page is currently being written and the write I/O is hung */
 #define errBFIPageFaultPendingHungIO        -270  /*  page is currently being read and the read I/O is hung */
 #define errBFIPageFlushPendingSlowIO        -271  /*  page is currently being written and the write I/O is slow */
@@ -6086,6 +6131,9 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define errRECColumnNotFound                -429  /* Column value not found in record */
 #define errRECNoCurrentColumnValue          -430  /* No current column value in record */
 #define JET_errCompressionIntegrityCheckFailed  -431  /* A compression integrity check failed. Decompressing data failed the integrity checksum indicating a data corruption in the compress/decompress pipeline. */
+#define JET_wrnIndexDeferredPopulateIncomplete   432  /* Populating a deferred populate index did not complete. */
+#define JET_wrnIndexDeferredPopulateHalted   433  /* Populating a deferred populate index was unexpectedly halted. */
+#define JET_errIndexDeferredPopulateCurrentlyUnavailable -434 /* Populating a deferred populate index is not allowed at this time. */
 // begin_PubEsent
 
 /*  LOGGING/RECOVERY errors
@@ -6474,6 +6522,9 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_errInvalidIndexId               -1416 /* Illegal index id */
 #define JET_wrnPrimaryIndexOutOfDate         1417 /* The Primary index is created with an incompatible OS sort version. The table can not be safely modified. */
 #define JET_wrnSecondaryIndexOutOfDate       1418 /* One or more Secondary index is created with an incompatible OS sort version. Any index over Unicode text should be deleted. */
+// end_PubEsent
+#define JET_errCantUseDeferredPopulateIndex -1419 /* A deferred population index may not be used until completely populated */
+// begin_PubEsent
 
 #define JET_errIndexTuplesSecondaryIndexOnly        -1430   //  tuple index can only be on a secondary index
 #define JET_errIndexTuplesTooManyColumns            -1431   //  tuple index may only have eleven columns in the index
@@ -6621,6 +6672,8 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_errRBSRevertableDeleteNotPossible -1944  /* The table being deleted with revertable delete flag is not possible as this table was previously deleted with non-revertable flag and partially reverted by RBS. */
 #define errRBSDeleteTableTooSoonTimeNull     -1945  /* The time the table was created or the time since the root page of table was last moved is not set and hence a non-revertable delete cannot be attempted right now. */
 #define errRBSCorruptUninitializedRBSRemoved -1946  /* The RBS being loaded is either missing or corrupt and uninitialized, so it has been removed. */
+#define JET_errRBSRedeleteFDPUnexpected     -1947  /* Indicates that the reverted table marked with delete flag is unexpected. */
+#define JET_errRBSRCPageFDPDeleteFileCorrupt -1948  /* The database cannot be reverted to the expected time as we are in apply root page records state but the corresponding file to init the page state is corrupt */
 // begin_PubEsent
 
 #define JET_wrnDefragAlreadyRunning          2000 /* Online defrag already running on specified database */
@@ -6632,6 +6685,7 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_errDatabaseAlreadyRunningMaintenance -2004  /* The operation did not complete successfully because the database is already running maintenance on specified database */
 // end_PubEsent
 #define wrnOLD2TaskSlotFull                  2005 /* Online defrag task slots are full */
+#define JET_errRootSpaceLeakEstimationAlreadyRunning -2006  /* The operation did not complete successfully because root space leak estimation is already running on the specified database */
 // begin_PubEsent
 
 
@@ -11582,6 +11636,7 @@ typedef enum
     opTestHookGetTablePgnoFDP,                          //  takes a JET_TABLEID in, returns a pgno
     opTestHookAlterDatabaseFileHeader,                  //  takes a JET_TESTHOOKALTERDBFILEHDR.
     opTestHookGetLogTip,                                //  returns the current log tip LGPOS as a 64 bit integer
+    opTestHookBlockCacheTestEnabled,                    //  takes a BOOL* indicating if the block cache should be forced on for test purposes
 } TESTHOOK_OP;
 
 //  This is the list of "forgiveable" sins that test can commit against ESE:

@@ -5701,7 +5701,9 @@ enum eBFVirtualMembers
     eBFCPAGEcbFree,
     eBFCPAGEcbUncommittedFree,
     eBFCPAGEibMicFree,
+    eBFCPAGEitagState,
     eBFCPAGEitagMicFree,
+    eBFCPAGEctagReserved,
     eBFCPAGEfFlags,
     //  extended (large) page member accessors
     eBFCPAGEpgno,
@@ -5949,7 +5951,20 @@ ERR ErrBFPageElemFromStruct( size_t eBFMember, size_t cbUnused, QwEntryAddr pvDe
         ExtrudeCPAGEElem( cbFree );
         ExtrudeCPAGEElem( cbUncommittedFree );
         ExtrudeCPAGEElem( ibMicFree );
-        ExtrudeCPAGEElem( itagMicFree );
+        ExtrudeCPAGEElem( itagState );
+
+        case eBFCPAGEitagMicFree:
+        {
+            ullValue1 = CPAGE::ITagMicFree( ppghdr );
+        }
+            break;
+
+        case eBFCPAGEctagReserved:
+        {
+            ullValue1 = CPAGE::CTagReserved( ppghdr );
+        }
+            break;
+
         ExtrudeCPAGEElem( fFlags );
 
         //  extended (large) page member accessors
@@ -6351,7 +6366,9 @@ CMemberDescriptor const rgmdBfEntryMembers[] =
     QPG( PAGE, cbFree,              ePerfectHisto,      ShortExprEval, NULL, ShortReadVal, ShortPrintVal )
     QPG( PAGE, cbUncommittedFree,   ePerfectHisto,      ShortExprEval, NULL, ShortReadVal, ShortPrintVal )
     QPG( PAGE, ibMicFree,           ePerfectHisto,      ShortExprEval, NULL, ShortReadVal, ShortPrintVal )
-    QPG( PAGE, itagMicFree,         ePerfectHisto,      ShortExprEval, NULL, ShortReadVal, ShortPrintVal )
+    QPG( PAGE, itagState,           ePerfectHisto,      ShortExprEval, NULL, ShortReadVal, ShortPrintVal )
+         {  "pv->itagMicFree",      ErrBFPageElemFromStruct, eBFCPAGEitagMicFree, 0, ePerfectHisto,    ShortExprEval, NULL, ShortReadVal, ShortPrintVal },
+         {  "pv->ctagReserved",     ErrBFPageElemFromStruct, eBFCPAGEctagReserved, 0, ePerfectHisto,    ShortExprEval, NULL, ShortReadVal, ShortPrintVal },
     QPG( PAGE, fFlags,              ePerfectHisto,      DwordExprEval, NULL, DwordReadVal, DwordPrintVal )
     QPG( PAGE, pgno,                ePartialHisto|1024, UlongExprEval, NULL, UlongReadVal, UlongPrintVal )
     QPG( PAGE, rgChecksum2,         eNoHistoSupport,    QwordExprEval, NULL, QwordReadVal, QwordPrintVal )
@@ -11558,7 +11575,7 @@ DEBUG_EXT( EDBGTid2PIB )
                 }
 
                 // Note this doesn't get the whole TLS, just the OS layer portion, but that is all we need.
-                _TLS* ptlsDebuggee = (_TLS*)ppib->ptlsTrxBeginLast;
+                _TLS* ptlsDebuggee = CONTAINING_RECORD( ppib->ptlsTrxBeginLast, _TLS, rgUserTLS );
 
                 if ( ptlsDebuggee )
                 {
@@ -17307,7 +17324,7 @@ VOID FCB::Dump( CPRINTF * pcprintf, DWORD_PTR dwOffset ) const
 
     (*pcprintf)( FORMAT_INT( FCB, this, m_wRefCount, dwOffset ) );
 
-    (*pcprintf)( FORMAT_INT( FCB, this, m_objidFDP, dwOffset ) );
+    (*pcprintf)( FORMAT_UINT( FCB, this, m_objidFDP, dwOffset ) );
     (*pcprintf)( FORMAT_INT( FCB, this, m_pgnoFDP, dwOffset ) );
     (*pcprintf)( FORMAT_INT( FCB, this, m_pgnoOE, dwOffset ) );
     (*pcprintf)( FORMAT_INT( FCB, this, m_pgnoAE, dwOffset ) );
@@ -18066,7 +18083,7 @@ VOID FMP::Dump( CPRINTF * pcprintf, DWORD_PTR dwOffset ) const
     (*pcprintf)( FORMAT_BOOL_BF( FMP, this, m_fRBSOn, dwOffset ) );
     (*pcprintf)( FORMAT_BOOL_BF( FMP, this, m_fNeedUpdateDbtimeBeginRBS, dwOffset ) );
 
-    (*pcprintf)( FORMAT_INT( FMP, this, m_objidLast, dwOffset ) );
+    (*pcprintf)( FORMAT_UINT( FMP, this, m_objidLast, dwOffset ) );
 
     (*pcprintf)( FORMAT_INT( FMP, this, m_ctasksActive, dwOffset ) );
 
@@ -18217,6 +18234,10 @@ VOID FMP::Dump( CPRINTF * pcprintf, DWORD_PTR dwOffset ) const
     (*pcprintf)( FORMAT_POINTER( FMP, this, m_pLogRedoMapBadDbtime, dwOffset ) );
     (*pcprintf)( FORMAT_POINTER( FMP, this, m_pLogRedoMapDbtimeRevert, dwOffset ) );
     (*pcprintf)( FORMAT_POINTER( FMP, this, m_pLogRedoMapDbtimeRevertIgnore, dwOffset ) );
+
+    (*pcprintf)( FORMAT_VOID( FMP, this, m_rwlLeakEstimation, dwOffset ) );
+    (*pcprintf)( FORMAT_UINT( FMP, this, m_objidLeakEstimation, dwOffset ) );
+    (*pcprintf)( FORMAT_INT( FMP, this, m_cpgLeakEstimationCorrection, dwOffset ) );
 }
 
 INLINE ERR CHECKPOINT::Dump( CPRINTF* pcprintf, DWORD_PTR dwOffset ) const

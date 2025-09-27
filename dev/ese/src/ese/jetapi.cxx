@@ -3043,6 +3043,11 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
         {
         }
 
+        static void SetBlockCacheTestEnabled( _In_ const BOOL fBlockCacheTestEnabled )
+        {
+            s_fBlockCacheTestEnabled = fBlockCacheTestEnabled;
+        }
+
     public:
 
         //ULONG CbZeroExtend() override
@@ -3155,6 +3160,8 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
 
             fBlockCacheEnabled = fBlockCacheEnabled || BoolParam( JET_paramEnableBlockCache );
 
+            fBlockCacheEnabled = fBlockCacheEnabled || BoolParam( JET_paramEnableBlockCacheDetach );
+
             fBlockCacheEnabled = fBlockCacheEnabled || m_pinst != pinstNil && PvParam( m_pinst, JET_paramBlockCacheConfiguration );
 
             fBlockCacheEnabled = fBlockCacheEnabled || FBlockCacheTestEnabled();
@@ -3182,6 +3189,8 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
 
     private:
 
+        static BOOL s_fBlockCacheTestEnabled;
+
         static BOOL FBlockCacheTestEnabled()
         {
             WCHAR wszBuf[16] = { 0 };
@@ -3193,10 +3202,15 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
                 return fTrue;
             }
 
+            if ( s_fBlockCacheTestEnabled )
+            {
+                return fTrue;
+            }
+
             return fFalse;
         }
 
-        class CInstanceBlockCacheConfiguration : public IBlockCacheConfiguration
+        class CInstanceBlockCacheConfiguration : public CDefaultBlockCacheConfiguration
         {
             public:
 
@@ -3228,6 +3242,11 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
 
                 HandleError:
                     return err;
+                }
+
+                BOOL FDetachEnabled() override
+                {
+                    return BoolParam( JET_paramEnableBlockCacheDetach );
                 }
 
             private:
@@ -3296,21 +3315,16 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
 
                     if ( m_fCachingEnabled )
                     {
-                        if (    UtilCmpFileName(    rgwszExt,
-                                                    ( UlParam( pinst, JET_paramLegacyFileNames ) & JET_bitESE98FileNames ) ?
-                                                        wszOldLogExt : 
-                                                        wszNewLogExt ) == 0 ||
-                                UtilCmpFileName( rgwszExt, wszResLogExt ) == 0 ||
+                        if (    UtilCmpFileName( rgwszExt, wszOldLogExt ) == 0 ||
+                                UtilCmpFileName( rgwszExt, wszNewLogExt ) == 0 ||
                                 UtilCmpFileName( rgwszExt, wszSecLogExt ) == 0 ||
                                 UtilCmpFileName( rgwszExt, wszRBSExt ) == 0 )
                         {
                             m_cbBlockSize = cbLogFileHeader;
                             m_ulPinnedHeaderSizeInBytes = 1 * m_cbBlockSize;
                         }
-                        else if ( UtilCmpFileName(  rgwszExt,
-                                                    ( UlParam( pinst, JET_paramLegacyFileNames ) & JET_bitESE98FileNames ) ?
-                                                        wszOldChkExt : 
-                                                        wszNewChkExt ) == 0 )
+                        else if (   UtilCmpFileName( rgwszExt, wszOldChkExt ) == 0 ||
+                                    UtilCmpFileName( rgwszExt, wszNewChkExt ) == 0 )
                         {
                             m_cbBlockSize = cbCheckpoint;
                             m_ulPinnedHeaderSizeInBytes = 2 * m_cbBlockSize;
@@ -3340,6 +3354,8 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
                     m_fCacheEnabled = fBlockCacheTestEnabled && m_wszAbsPathCachingFile[ 0 ] != 0;
 
                     m_cbCachedFilePerSlab = (ULONG)UlParam( JET_paramDatabasePageSize );
+
+                    m_pctWrite = 50;
                 }
         };
 
@@ -3364,6 +3380,11 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
                                                 _Out_   ICacheConfiguration** const ppcconfig ) override
                 {
                     return m_pbcconfig->ErrGetCacheConfiguration( wszKeyPathCachingFile, ppcconfig );
+                }
+
+                BOOL FDetachEnabled() override
+                {
+                    return m_pbcconfig->FDetachEnabled() || BoolParam( JET_paramEnableBlockCacheDetach );
                 }
 
             private:
@@ -3432,6 +3453,8 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
         ULONG       m_cioOutstandingMax;
         ULONG       m_permillageSmoothIo;
 };
+
+BOOL CInstanceFileSystemConfiguration::s_fBlockCacheTestEnabled = fFalse;
 
 CInstanceFileSystemConfiguration g_fsconfigGlobal( pinstNil );
 IFileSystemConfiguration* const g_pfsconfigGlobal = &g_fsconfigGlobal;
@@ -4190,19 +4213,6 @@ class APICALL_SESID : public APICALL
                 m_ppib = (PIB *)sesid;
                 TLS* ptls = Ptls();
 
-                // Do not cache TLS in PIB if this is a callback, either it is already cached
-                // or we do not want to cache it because we are in parallel index rebuild and 
-                // the same PIB will be reused by multiple threads concurrently.
-                //
-                if ( !ptls->fInCallback )
-                {
-                    m_ppib->ptlsApi = ptls;
-                }
-                else
-                {
-                    Assert( m_ppib->ptlsApi == ptls || m_ppib->ptlsApi == NULL );
-                }
-
                 //  if someone else is already in the Jet API with
                 //  this session and this is not a callback, then
                 //  report a session-sharing violation
@@ -4221,7 +4231,10 @@ class APICALL_SESID : public APICALL
                     && !ptls->fInCallback )
                 {
                     PIBReportSessionSharingViolation( m_ppib );
-                    FireWall( "SessionSharingViolationEnterApi" );
+                    if ( !FNegTest( fInvalidAPIUsage ) )
+                    {
+                        FireWall( "SessionSharingViolationEnterApi" );
+                    }
                     AtomicDecrement( &m_ppib->m_cInJetAPI );
                     SetErr( ErrERRCheck( JET_errSessionSharingViolation ) );
                 }
@@ -4236,6 +4249,19 @@ class APICALL_SESID : public APICALL
                 }
                 else
                 {
+                    // Do not cache TLS in PIB if this is a callback, either it is already cached
+                    // or we do not want to cache it because we are in parallel index rebuild and 
+                    // the same PIB will be reused by multiple threads concurrently.
+                    //
+                    if ( !ptls->fInCallback )
+                    {
+                        m_ppib->ptlsApi = ptls;
+                    }
+                    else
+                    {
+                        Assert( m_ppib->ptlsApi == ptls || m_ppib->ptlsApi == NULL );
+                    }
+
                     // The current user context in the TLS is saved in m_putcOuter above in the constructor
                     Assert( m_putcOuter == NULL || ptls->fInCallback );
                     m_ppib->SetUserTraceContextInTls();
@@ -8933,6 +8959,8 @@ LOCAL JET_ERR JetGetTableIndexInfoEx(
         case JET_IdxInfoList:
             cbMin = sizeof(JET_INDEXLIST) - cbIDXLISTNewMembersSinceOriginalFormat;
             break;
+        case JET_IdxInfoSpaceOwned:
+        case JET_IdxInfoSpaceAvailable:
         case JET_IdxInfoSpaceAlloc:
         case JET_IdxInfoCount:
             cbMin = sizeof(ULONG);
@@ -9080,6 +9108,8 @@ LOCAL JET_ERR JetGetIndexInfoEx(
         case JET_IdxInfoList:
             cbMin = sizeof(JET_INDEXLIST) - cbIDXLISTNewMembersSinceOriginalFormat;
             break;
+        case JET_IdxInfoSpaceOwned:
+        case JET_IdxInfoSpaceAvailable:
         case JET_IdxInfoSpaceAlloc:
         case JET_IdxInfoCount:
             cbMin = sizeof(ULONG);
@@ -14202,21 +14232,36 @@ ERR CAutoIDXCREATE2::_ErrSet( JET_INDEXCREATE_W * pindexcreate )
             Error( ErrERRCheck( JET_errInvalidParameter ) );
         }
 
-        if ( pindexcreate->cbKey == 0 )
+        if ( pindexcreate->grbit & JET_bitIndexDeferredPopulateProcess )
         {
-            CallR( ErrERRCheck( JET_errInvalidParameter ) );
-        }
+            if ( pindexcreate->cbKey != 0 )
+            {
+                CallR( ErrERRCheck( JET_errInvalidParameter ) );
+            }
 
-        if ( pindexcreate->cbKey < sizeof( WCHAR ) * ( LOSStrLengthMW( pindexcreate->szKey ) + 1 ) )
-        {
-            CallR( ErrERRCheck( JET_errIndexInvalidDef ) );
+            if ( pindexcreate->cConditionalColumn != 0 )
+            {
+                CallR( ErrERRCheck( JET_errInvalidParameter ) );
+            }
         }
-
-        if ( ( pindexcreate->szKey[0] != L'+' && pindexcreate->szKey[0] != L'-' ) ||
-            pindexcreate->szKey[ ( pindexcreate->cbKey / sizeof( WCHAR ) ) - 1] != L'\0' ||
-            pindexcreate->szKey[ ( pindexcreate->cbKey / sizeof( WCHAR ) ) - 2] != L'\0' )
+        else
         {
-            CallR( ErrERRCheck( JET_errIndexInvalidDef ) );
+            if ( pindexcreate->cbKey == 0 )
+            {
+                CallR( ErrERRCheck( JET_errInvalidParameter ) );
+            }
+
+            if ( pindexcreate->cbKey < sizeof( WCHAR ) * ( LOSStrLengthMW( pindexcreate->szKey ) + 1 ) )
+            {
+                CallR( ErrERRCheck( JET_errIndexInvalidDef ) );
+            }
+
+            if ( ( pindexcreate->szKey[0] != L'+' && pindexcreate->szKey[0] != L'-' ) ||
+                 pindexcreate->szKey[ ( pindexcreate->cbKey / sizeof( WCHAR ) ) - 1] != L'\0' ||
+                 pindexcreate->szKey[ ( pindexcreate->cbKey / sizeof( WCHAR ) ) - 2] != L'\0' )
+            {
+                CallR( ErrERRCheck( JET_errIndexInvalidDef ) );
+            }
         }
     }
 
@@ -14253,54 +14298,57 @@ ERR CAutoIDXCREATE2::_ErrSet( JET_INDEXCREATE_W * pindexcreate )
     m_pindexcreate->szKey = m_szKey;
     m_pindexcreate->cbKey = cchActual * sizeof( char );
 
-    // we may have a LANGID or LANGID+CbVarSegMac at the end
-    //
-    Assert ( pindexcreate->cbKey >= sizeof( WCHAR ) * ( LOSStrLengthMW( pindexcreate->szKey ) + 1 ) );
-
     // we are in the limits of allocation
     //
     Assert( cbAllocateMax >= m_pindexcreate->cbKey );
 
-    ULONG cbPastStringKey = pindexcreate->cbKey - sizeof( WCHAR ) * ( LOSStrLengthMW( pindexcreate->szKey ) + 1 );
-    if ( cbPastStringKey > 0 )
+    if ( pindexcreate->cbKey != 0 )
     {
-        if ( cbPastStringKey == ( sizeof(LANGID) + ( sizeof(WCHAR) * 2 ) ) )
+        // we may have a LANGID or LANGID+CbVarSegMac at the end
+        //
+        Assert ( pindexcreate->cbKey >= sizeof( WCHAR ) * ( LOSStrLengthMW( pindexcreate->szKey ) + 1 ) );
+
+        ULONG cbPastStringKey = pindexcreate->cbKey - sizeof( WCHAR ) * ( LOSStrLengthMW( pindexcreate->szKey ) + 1 );
+        if ( cbPastStringKey > 0 )
         {
+            if ( cbPastStringKey == ( sizeof(LANGID) + ( sizeof(WCHAR) * 2 ) ) )
+            {
 
-            LANGID * pLangId = (LANGID *)( pindexcreate->szKey + LOSStrLengthMW( pindexcreate->szKey ) + 1 );
+                LANGID * pLangId = (LANGID *)( pindexcreate->szKey + LOSStrLengthMW( pindexcreate->szKey ) + 1 );
 
-            memcpy( m_pindexcreate->szKey + m_pindexcreate->cbKey, pLangId, sizeof(LANGID) );
-            m_pindexcreate->cbKey += sizeof(LANGID);
+                memcpy( m_pindexcreate->szKey + m_pindexcreate->cbKey, pLangId, sizeof(LANGID) );
+                m_pindexcreate->cbKey += sizeof(LANGID);
 
-            memset( m_pindexcreate->szKey + m_pindexcreate->cbKey, '\0', 2 * sizeof(char) );
-            m_pindexcreate->cbKey += 2 * sizeof(char);
+                memset( m_pindexcreate->szKey + m_pindexcreate->cbKey, '\0', 2 * sizeof(char) );
+                m_pindexcreate->cbKey += 2 * sizeof(char);
 
+            }
+            else if ( cbPastStringKey == ( sizeof(LANGID) + ( sizeof(WCHAR) * 2 ) + sizeof( BYTE ) + ( sizeof(WCHAR) * 2 ) ) )
+            {
+                LANGID * pLangId = (LANGID *)( pindexcreate->szKey + LOSStrLengthMW( pindexcreate->szKey ) + 1 );
+
+                memcpy( m_pindexcreate->szKey + m_pindexcreate->cbKey, pLangId, sizeof(LANGID) );
+                m_pindexcreate->cbKey += sizeof(LANGID);
+
+                memset( m_pindexcreate->szKey + m_pindexcreate->cbKey, '\0', 2 * sizeof(char) );
+                m_pindexcreate->cbKey += 2 * sizeof(char);
+
+                BYTE * pcbVarMac = ( (BYTE*) pLangId ) + ( sizeof(WCHAR) * 2 );
+
+                memcpy( m_pindexcreate->szKey + m_pindexcreate->cbKey, pcbVarMac, sizeof(BYTE) );
+                m_pindexcreate->cbKey += sizeof(BYTE);
+
+                memset( m_pindexcreate->szKey + m_pindexcreate->cbKey, '\0', 2 * sizeof(char) );
+                m_pindexcreate->cbKey += 2 * sizeof(char);
+
+            }
+            else
+            {
+                CallR( ErrERRCheck( JET_errIndexInvalidDef ) );
+            }
         }
-        else if ( cbPastStringKey == ( sizeof(LANGID) + ( sizeof(WCHAR) * 2 ) + sizeof( BYTE ) + ( sizeof(WCHAR) * 2 ) ) )
-        {
-            LANGID * pLangId = (LANGID *)( pindexcreate->szKey + LOSStrLengthMW( pindexcreate->szKey ) + 1 );
-
-            memcpy( m_pindexcreate->szKey + m_pindexcreate->cbKey, pLangId, sizeof(LANGID) );
-            m_pindexcreate->cbKey += sizeof(LANGID);
-
-            memset( m_pindexcreate->szKey + m_pindexcreate->cbKey, '\0', 2 * sizeof(char) );
-            m_pindexcreate->cbKey += 2 * sizeof(char);
-
-            BYTE * pcbVarMac = ( (BYTE*) pLangId ) + ( sizeof(WCHAR) * 2 );
-
-            memcpy( m_pindexcreate->szKey + m_pindexcreate->cbKey, pcbVarMac, sizeof(BYTE) );
-            m_pindexcreate->cbKey += sizeof(BYTE);
-
-            memset( m_pindexcreate->szKey + m_pindexcreate->cbKey, '\0', 2 * sizeof(char) );
-            m_pindexcreate->cbKey += 2 * sizeof(char);
-
-        }
-        else
-        {
-            CallR( ErrERRCheck( JET_errIndexInvalidDef ) );
-        }
-
     }
+
     // we are in the limits of allocation
     //
     Assert( cbAllocateMax >= m_pindexcreate->cbKey );
@@ -19805,6 +19853,7 @@ LOCAL JET_ERR JetDBUtilitiesEx( JET_DBUTIL_W *pdbutilW )
         case opDBUTILDumpLogfileTrackNode:
         case opDBUTILDumpPage:
         case opDBUTILDumpNode:
+        case opDBUTILDumpTag:
         case opDBUTILDumpData:
         case opDBUTILDumpSpace:
         case opDBUTILDumpSpaceCategory:
@@ -23813,6 +23862,10 @@ JET_ERR JET_API JetTestHook(
             const LGPOS lgposNewest = pinst->m_plog->LgposLGLogTipNoLock();
             *((__int64*)pv) = lgposNewest.qw;
         }
+            break;
+
+        case opTestHookBlockCacheTestEnabled:
+            CInstanceFileSystemConfiguration::SetBlockCacheTestEnabled( *( (BOOL*)pv ) );
             break;
 
         default:

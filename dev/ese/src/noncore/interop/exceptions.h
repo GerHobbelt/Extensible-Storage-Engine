@@ -1176,6 +1176,30 @@ namespace Isam
     };
 
     [Serializable]
+    public ref class IsamIndexDeferredPopulateCurrentlyUnavailableException : public IsamStateException
+    {
+    public:
+        IsamIndexDeferredPopulateCurrentlyUnavailableException() : IsamStateException( "Populating a deferred populate index is not allowed at this time.", JET_errIndexDeferredPopulateCurrentlyUnavailable)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamIndexDeferredPopulateCurrentlyUnavailableException( String ^ description, Exception^ innerException ) :
+            IsamStateException( description, innerException )
+        {
+        }
+
+        IsamIndexDeferredPopulateCurrentlyUnavailableException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamStateException( info, context )
+        {
+        }
+
+    };
+
+    [Serializable]
     public ref class IsamLogFileCorruptException : public IsamCorruptionException
     {
     public:
@@ -6480,6 +6504,30 @@ namespace Isam
     };
 
     [Serializable]
+    public ref class IsamCantUseDeferredPopulateIndexException : public IsamUsageException
+    {
+    public:
+        IsamCantUseDeferredPopulateIndexException() : IsamUsageException( "A deferred population index may not be used until completely populated", JET_errCantUseDeferredPopulateIndex)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamCantUseDeferredPopulateIndexException( String ^ description, Exception^ innerException ) :
+            IsamUsageException( description, innerException )
+        {
+        }
+
+        IsamCantUseDeferredPopulateIndexException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamUsageException( info, context )
+        {
+        }
+
+    };
+
+    [Serializable]
     public ref class IsamIndexTuplesSecondaryIndexOnlyException : public IsamUsageException
     {
     public:
@@ -8592,6 +8640,54 @@ namespace Isam
     };
 
     [Serializable]
+    public ref class IsamRBSRedeleteFDPUnexpectedException : public IsamCorruptionException
+    {
+    public:
+        IsamRBSRedeleteFDPUnexpectedException() : IsamCorruptionException( "Indicates that the reverted table marked with delete flag is unexpected.", JET_errRBSRedeleteFDPUnexpected)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamRBSRedeleteFDPUnexpectedException( String ^ description, Exception^ innerException ) :
+            IsamCorruptionException( description, innerException )
+        {
+        }
+
+        IsamRBSRedeleteFDPUnexpectedException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamCorruptionException( info, context )
+        {
+        }
+
+    };
+
+    [Serializable]
+    public ref class IsamRBSRCPageFDPDeleteFileCorruptException : public IsamCorruptionException
+    {
+    public:
+        IsamRBSRCPageFDPDeleteFileCorruptException() : IsamCorruptionException( "The database cannot be reverted to the expected time as we are in apply root page records state but the corresponding file to init the page state is corrupt", JET_errRBSRCPageFDPDeleteFileCorrupt)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamRBSRCPageFDPDeleteFileCorruptException( String ^ description, Exception^ innerException ) :
+            IsamCorruptionException( description, innerException )
+        {
+        }
+
+        IsamRBSRCPageFDPDeleteFileCorruptException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamCorruptionException( info, context )
+        {
+        }
+
+    };
+
+    [Serializable]
     public ref class IsamDatabaseAlreadyRunningMaintenanceException : public IsamUsageException
     {
     public:
@@ -8606,6 +8702,30 @@ namespace Isam
         }
 
         IsamDatabaseAlreadyRunningMaintenanceException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamUsageException( info, context )
+        {
+        }
+
+    };
+
+    [Serializable]
+    public ref class IsamRootSpaceLeakEstimationAlreadyRunningException : public IsamUsageException
+    {
+    public:
+        IsamRootSpaceLeakEstimationAlreadyRunningException() : IsamUsageException( "The operation did not complete successfully because root space leak estimation is already running on the specified database", JET_errRootSpaceLeakEstimationAlreadyRunning)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamRootSpaceLeakEstimationAlreadyRunningException( String ^ description, Exception^ innerException ) :
+            IsamUsageException( description, innerException )
+        {
+        }
+
+        IsamRootSpaceLeakEstimationAlreadyRunningException(
             System::Runtime::Serialization::SerializationInfo^ info,
             System::Runtime::Serialization::StreamingContext context
         )
@@ -9089,6 +9209,8 @@ static IsamErrorException^ JetErrToException( const JET_ERR err )
             return gcnew IsamStaleColumnReferenceException;
         case JET_errCompressionIntegrityCheckFailed:
             return gcnew IsamCompressionIntegrityCheckFailedException;
+        case JET_errIndexDeferredPopulateCurrentlyUnavailable:
+            return gcnew IsamIndexDeferredPopulateCurrentlyUnavailableException;
         case JET_errLogFileCorrupt:
             return gcnew IsamLogFileCorruptException;
         case JET_errNoBackupDirectory:
@@ -9531,6 +9653,8 @@ static IsamErrorException^ JetErrToException( const JET_ERR err )
             return gcnew IsamSecondaryIndexCorruptedException;
         case JET_errInvalidIndexId:
             return gcnew IsamInvalidIndexIdException;
+        case JET_errCantUseDeferredPopulateIndex:
+            return gcnew IsamCantUseDeferredPopulateIndexException;
         case JET_errIndexTuplesSecondaryIndexOnly:
             return gcnew IsamIndexTuplesSecondaryIndexOnlyException;
         case JET_errIndexTuplesNonUniqueOnly:
@@ -9707,8 +9831,14 @@ static IsamErrorException^ JetErrToException( const JET_ERR err )
             return gcnew IsamRBSFDPToBeDeletedException;
         case JET_errRBSRevertableDeleteNotPossible:
             return gcnew IsamRBSRevertableDeleteNotPossibleException;
+        case JET_errRBSRedeleteFDPUnexpected:
+            return gcnew IsamRBSRedeleteFDPUnexpectedException;
+        case JET_errRBSRCPageFDPDeleteFileCorrupt:
+            return gcnew IsamRBSRCPageFDPDeleteFileCorruptException;
         case JET_errDatabaseAlreadyRunningMaintenance:
             return gcnew IsamDatabaseAlreadyRunningMaintenanceException;
+        case JET_errRootSpaceLeakEstimationAlreadyRunning:
+            return gcnew IsamRootSpaceLeakEstimationAlreadyRunningException;
         case JET_errCallbackFailed:
             return gcnew IsamCallbackFailedException;
         case JET_errCallbackNotResolved:

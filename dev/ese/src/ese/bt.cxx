@@ -5028,6 +5028,129 @@ HandleError:
 }
 
 
+//  counts how many pages are reachable in a given tree.
+//
+ERR ErrBTIIGetReachablePageCount( FUCB* const pfucb, CSR* pcsr, CPG* const pcpg )
+{
+    ERR err = JET_errSuccess;
+    const INT clines = pcsr->Cpage().Clines();
+    CSR csrChild;
+
+    Expected( FFUCBSpace( pfucb ) );  // Calling this on a large tree might be too expensive.
+    Assert( pcsr->FLatched() );
+    Assert( !pcsr->Cpage().FEmptyPage() );
+    Assert( !pcsr->Cpage().FLeafPage() );
+    Assert( clines > 0 );
+
+    // Accumulate the number of children.
+    ( *pcpg ) += clines;
+
+    if ( pcsr->Cpage().FParentOfLeaf() )
+    {
+        goto HandleError;
+    }
+
+    const CPG cpgSubtreePrereadMax = 16;
+    PGNO rgpgnoSubtree[ cpgSubtreePrereadMax + 1 ] = { pgnoNull };
+
+    // Preread and process each child.
+    for ( INT ilineToProcess = 0, ilinePrereadFirst = -1, ilinePrereadLast = -1;
+            ilineToProcess < clines;
+            ilineToProcess++ )
+    {
+        // Check if we need to preread.
+        if ( ilineToProcess > ilinePrereadLast )
+        {
+            Assert( ilineToProcess == ( ilinePrereadLast + 1 ) );
+
+            ilinePrereadFirst = ilineToProcess;
+            ilinePrereadLast = min( ilinePrereadFirst + cpgSubtreePrereadMax - 1, clines - 1 );
+            Assert( ilinePrereadFirst <= ilinePrereadLast );
+            Assert( ilinePrereadLast < clines );
+
+            // Accumulate pgnos to preread.
+            for ( INT ilineToPreread = ilinePrereadFirst; ilineToPreread <= ilinePrereadLast; ilineToPreread++ )
+            {
+                pcsr->SetILine( ilineToPreread );
+                NDGet( pfucb, pcsr );
+                const PGNO pgnoToPreread = *( (UnalignedLittleEndian<PGNO>*)pfucb->kdfCurr.data.Pv() );
+                Assert( pgnoToPreread != pgnoNull );
+                rgpgnoSubtree[ ilineToPreread - ilinePrereadFirst ] = pgnoToPreread;
+            }
+            rgpgnoSubtree[ ilinePrereadLast - ilinePrereadFirst + 1 ] = pgnoNull;   // Terminator.
+
+            // Issue preread.
+            BFPrereadPageList( pfucb->ifmp, rgpgnoSubtree, bfprfDefault, pfucb->ppib->BfpriPriority( pfucb->ifmp ), TcCurr() );
+        }
+
+        Assert( ilinePrereadFirst >= 0 );
+        Assert( ilineToProcess >= ilinePrereadFirst );
+        Assert( ilineToProcess <= ilinePrereadLast );
+        Assert( ( ilineToProcess - ilinePrereadFirst ) < cpgSubtreePrereadMax );
+
+        // Latch and process the page.
+        const PGNO pgnoToProcess = rgpgnoSubtree[ ilineToProcess - ilinePrereadFirst ];
+        Assert( pgnoToProcess != pgnoNull );
+        Call( csrChild.ErrGetReadPage( pfucb->ppib, pfucb->ifmp, pgnoToProcess, BFLatchFlags( bflfNoTouch ) ) );
+        Call( ErrBTIIGetReachablePageCount( pfucb, &csrChild, pcpg ) );
+        csrChild.ReleasePage();
+        csrChild.Reset();
+    }
+
+HandleError:
+    if ( csrChild.FLatched() )
+    {
+        csrChild.ReleasePage();
+        csrChild.Reset();
+    }
+
+    if ( err >= JET_errSuccess )
+    {
+        err = JET_errSuccess;
+    }
+
+    Assert( pcsr->FLatched() );
+
+    return err;
+}
+
+
+//  counts how many pages are reachable in a given tree.
+//
+ERR ErrBTIGetReachablePageCount( FUCB* const pfucb, CPG* const pcpg )
+{
+    ERR err = JET_errSuccess;
+    CSR* pcsr = Pcsr( pfucb );
+    PIBTraceContextScope tcScope = TcBTICreateCtxScope( pfucb, iorsBTUtility );
+
+    Expected( FFUCBSpace( pfucb ) || ( ObjidFDP( pfucb ) == objidSystemRoot ) );  // Calling this on a large tree might be too expensive.
+    Assert( pcsr->FLatched() );
+    Assert( pcsr == pfucb->pcsrRoot );
+    Assert( pcsr->Cpage().FRootPage() );
+
+    *pcpg = 1;
+
+    // Only proceed if we haven't reached the leaf level yet.
+    if ( pcsr->Cpage().FLeafPage() )
+    {
+        goto HandleError;
+    }
+
+    // We are already positioned at the root. Proceed with recursion.
+    Call( ErrBTIIGetReachablePageCount( pfucb, pcsr, pcpg ) );
+
+HandleError:
+    if ( err >= JET_errSuccess )
+    {
+        err = JET_errSuccess;
+    }
+
+    Assert( pcsr->FLatched() );
+
+    return err;
+}
+
+
 //  ******************************************************
 //  UPDATE OPERATIONS
 //
@@ -5038,7 +5161,7 @@ HandleError:
 //  UNDONE: we don't need to latch the page at all. just create
 //          the version using the bookmark in the FUCB
 //
-ERR ErrBTLock( FUCB *pfucb, DIRLOCK dirlock )
+ERR ErrBTLock( FUCB *pfucb, DIRLOCK dirlock, BOOKMARK &bm )
 {
     Assert( dirlock == writeLock
             || dirlock == readLock );
@@ -5071,7 +5194,7 @@ ERR ErrBTLock( FUCB *pfucb, DIRLOCK dirlock )
         Call( pver->ErrVERCheckTransactionSize( pfucb->ppib ) );
         Call( pver->ErrVERModify(
                 pfucb,
-                pfucb->bmCurr,
+                bm,
                 oper,
                 &prce,
                 NULL ) );
@@ -7655,7 +7778,7 @@ ERR ErrBTIOpen(
 {
     ERR             err;
     FCB             *pfcb;
-    INT             fState;
+    FCBStateFlags   fcbsf;
     ULONG           cRetries = 0;
     PIBTraceContextScope tcScope = ppib->InitTraceContextScope( );
     tcScope->iorReason.SetIors( iorsBTOpen );
@@ -7665,13 +7788,13 @@ RetrieveFCB:
 
     //  get the FCB for the given ifmp/pgnoFDP
 
-    pfcb = FCB::PfcbFCBGet( ifmp, pgnoFDP, &fState, fTrue, !fWillInitFCB );
+    pfcb = FCB::PfcbFCBGet( ifmp, pgnoFDP, &fcbsf, fTrue, !fWillInitFCB );
     if ( pfcb == pfcbNil )
     {
 
         //  the FCB does not exist
 
-        Assert( fFCBStateNull == fState );
+        Assert( fcbsfNone == fcbsf );
 
         //  try to create a new B-tree which will cause the creation of the new FCB
 
@@ -7698,7 +7821,7 @@ RetrieveFCB:
     {
         tcScope->nParentObjectClass = pfcb->TCE();
 
-        if ( fFCBStateInitialized == fState )
+        if ( fcbsf & fcbsfInitialized )
         {
             Assert( pfcb->WRefCount() >= 1);
             err = ErrBTOpen( ppib, pfcb, ppfucb );
@@ -7738,7 +7861,12 @@ HandleError:
 ERR ErrBTIGotoRoot( FUCB *pfucb, LATCH latch )
 {
     ERR     err;
-    PIBTraceContextScope tcScope = TcBTICreateCtxScope( pfucb, iorsBTOpen );
+
+    //  this is a utility function used not only in BTOpen, but many places, we should inherit 
+    //  the iors from whom called us.  there are many SP functions calling this, it may be some
+    //  could use enhancement setting a more contextually correct iors.
+    auto tc = TcCurr();
+    PIBTraceContextScope tcScope = TcBTICreateCtxScope( pfucb, tc.iorReason.Iors() != iorsNone ? tc.iorReason.Iors() : iorsBTOpen );
 
     //  should have no page latched
     //
@@ -7763,7 +7891,7 @@ ERR ErrBTIGotoRoot( FUCB *pfucb, LATCH latch )
         {
             pfucb->u.pfcb->SetRevertedFDPToDelete();
         }
-        else
+        else if ( !pfucb->ppib->FSessionLeakReport() )
         {
             const OBJID objidFDP = pfucb->u.pfcb->ObjidFDP();
             FUCBIllegalOperationFDPToBeDeleted( pfucb, objidFDP == 0 ? Pcsr( pfucb )->Cpage().ObjidFDP() : objidFDP );
@@ -15859,17 +15987,20 @@ VOID BTPerformPageMove( _In_ MERGEPATH * const pmergePath )
 
     const PGNO pgnoOld = pmergePath->csr.Pgno();
     const PGNO pgnoNew = pmergePath->pmerge->csrNew.Pgno();
+    const DBTIME dbtimeNew = pmergePath->pmerge->csrNew.Dbtime();
 
     // copy the data
     if( FBTIUpdatablePage( pmergePath->pmerge->csrNew ) )
     {
         Assert( pmergePath->csr.Cpage().CbPage() == pmergePath->pmerge->csrNew.Cpage().CbPage() );
-        UtilMemCpy(
-            pmergePath->pmerge->csrNew.Cpage().PvBuffer(),  // destination
+        pmergePath->pmerge->csrNew.Cpage().CopyPage(
             pmergePath->csr.Cpage().PvBuffer(),             // source
             pmergePath->csr.Cpage().CbPage() );             // length
-        pmergePath->pmerge->csrNew.Cpage().SetPgno( pgnoNew );
+
         pmergePath->pmerge->csrNew.FinalizePreInitPage();
+
+        Assert( pmergePath->pmerge->csrNew.Cpage().PgnoThis() == pgnoNew );
+        Assert( pmergePath->pmerge->csrNew.Dbtime() == dbtimeNew );
     }
 
     // set the source page as empty
@@ -17315,24 +17446,27 @@ class CBTAcrossQueue {
             return JET_errSuccess;
         }
 
-        Assert( pkdf->key.Cb() == ( pkdf->key.prefix.Cb() + pkdf->key.suffix.Cb() ) );  // I assumed this...
+        if ( itag >= CPAGE::CTagReserved( ppghdr ) )
+        {
+            Assert( pkdf->key.Cb() == ( pkdf->key.prefix.Cb() + pkdf->key.suffix.Cb() ) );  // I assumed this...
 
-        PGNO pgnoLeaf;
-        Assert( pkdf->data.Cb() == sizeof(PGNO) );
-        pgnoLeaf = *((UnalignedLittleEndian<ULONG>*)pkdf->data.Pv());
-        CStupidQueue::ERR errQueue = pThisCtx->ErrEnqueuePage( pgnoLeaf );
-        if ( errQueue == CStupidQueue::ERR::errSuccess )
-        {
-            err = JET_errSuccess;
-        }
-        else if ( errQueue == CStupidQueue::ERR::errOutOfMemory )
-        {
-            err = ErrERRCheck( JET_errOutOfMemory );
-        }
-        else
-        {
-            AssertSz( fFalse, "Unexpected error out of ErrEnqueuePage()" );
-            err = ErrERRCheck( JET_errInvalidParameter );
+            PGNO pgnoLeaf;
+            Assert( pkdf->data.Cb() == sizeof( PGNO ) );
+            pgnoLeaf = *( ( UnalignedLittleEndian<ULONG>* )pkdf->data.Pv() );
+            CStupidQueue::ERR errQueue = pThisCtx->ErrEnqueuePage( pgnoLeaf );
+            if ( errQueue == CStupidQueue::ERR::errSuccess )
+            {
+                err = JET_errSuccess;
+            }
+            else if ( errQueue == CStupidQueue::ERR::errOutOfMemory )
+            {
+                err = ErrERRCheck( JET_errOutOfMemory );
+            }
+            else
+            {
+                AssertSz( fFalse, "Unexpected error out of ErrEnqueuePage()" );
+                err = ErrERRCheck( JET_errInvalidParameter );
+            }
         }
 
         return err;

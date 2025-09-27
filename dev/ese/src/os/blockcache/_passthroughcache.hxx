@@ -25,11 +25,19 @@ class TPassThroughCache
 
         ERR ErrMount() override;
 
+        ERR ErrPrepareToDismount() override;
+
         ERR ErrDump( _In_ CPRINTF* const pcprintf ) override;
 
         ERR ErrFlush(   _In_ const VolumeId     volumeid,
                         _In_ const FileId       fileid,
                         _In_ const FileSerial   fileserial ) override;
+
+        ERR ErrDestage( _In_        const VolumeId                  volumeid,
+                        _In_        const FileId                    fileid,
+                        _In_        const FileSerial                fileserial,
+                        _In_opt_    const ICache::PfnDestageStatus  pfnDestageStatus,
+                        _In_opt_    const DWORD_PTR                 keyDestageStatus ) override;
 
         ERR ErrInvalidate(  _In_ const VolumeId     volumeid,
                             _In_ const FileId       fileid,
@@ -104,6 +112,14 @@ ERR TPassThroughCache<I>::ErrMount()
 }
 
 template< class I >
+ERR TPassThroughCache<I>::ErrPrepareToDismount()
+{
+    //  trivial implementation:  nothing to do
+
+    return JET_errSuccess;
+}
+
+template< class I >
 ERR TPassThroughCache<I>::ErrDump( _In_ CPRINTF* const pcprintf )
 {
     //  trivial implementation:  nothing to do
@@ -115,6 +131,27 @@ template< class I >
 ERR TPassThroughCache<I>::ErrFlush( _In_ const VolumeId     volumeid,
                                     _In_ const FileId       fileid,
                                     _In_ const FileSerial   fileserial )
+{
+    ERR                                 err     = JET_errSuccess;
+    CPassThroughCachedFileTableEntry*   pcfte   = NULL;
+
+    //  get the cached file
+
+    Call( ErrGetCachedFile( volumeid, fileid, fileserial, fFalse, &pcfte ) );
+
+    //  trivial implementation:  nothing to do
+
+HandleError:
+    ReleaseCachedFile( &pcfte );
+    return err;
+}
+
+template< class I >
+ERR TPassThroughCache<I>::ErrDestage(   _In_        const VolumeId                  volumeid,
+                                        _In_        const FileId                    fileid,
+                                        _In_        const FileSerial                fileserial,
+                                        _In_opt_    const ICache::PfnDestageStatus  pfnDestageStatus,
+                                        _In_opt_    const DWORD_PTR                 keyDestageStatus )
 {
     ERR                                 err     = JET_errSuccess;
     CPassThroughCachedFileTableEntry*   pcfte   = NULL;

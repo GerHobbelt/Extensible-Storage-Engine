@@ -496,6 +496,15 @@ public:
 // use it here.  Declare a global function that wraps FUCB::OffsetOfIAE.
 SIZE_T FUCBOffsetOfIAE();
 
+// FCB state flags.
+enum FCBStateFlags : BYTE //  fcbsf
+{
+    fcbsfNone           = 0x00,
+    fcbsfInitialized    = 0x01,     // FCB is initialized.
+    fcbsfDeletePending  = 0x02,     // FCB has its FDeletePending() flag set.
+};
+DEFINE_ENUM_FLAG_OPERATORS_BASIC( FCBStateFlags );
+
 // File Control Block
 //
 class FCB
@@ -655,6 +664,8 @@ private:
         static const ULONG mskFCBVersioningOff = 0x2000000;
         // The table FDP represented by the FCB was reverted partially by RBS and is to be deleted.
         static const ULONG mskFCBRevertedFDPToDelete = 0x4000000;
+        // This FCB is undergoing delayed-population (and therefore must be a secondary index ).
+        static const ULONG mskFCBPopulating = 0x8000000;
 
 
         TABLECLASS  m_tableclass;
@@ -957,6 +968,10 @@ private:
         VOID SetNoMoreTasks();
         VOID ResetNoMoreTasks();
 
+        BOOL FPopulating() const;
+        VOID SetFPopulating();
+        VOID ResetFPopulating();
+
         BOOL FUtilizeParentSpace() const;
         BOOL FUtilizeExactExtents() const;
         INT PctMaintenanceDensity() const;
@@ -1049,7 +1064,7 @@ private:
     // =====================================================================
     // FCB creation/deletion.
     public:
-        static FCB *PfcbFCBGet( IFMP ifmp, PGNO pgnoFDP, INT *pfState, const BOOL fIncrementRefCount = fTrue, const BOOL fInitForRecovery = fFalse );
+        static FCB *PfcbFCBGet( const IFMP ifmp, const PGNO pgnoFDP, FCBStateFlags* const pfcbsf = NULL, const BOOL fIncrementRefCount = fTrue, const BOOL fInitForRecovery = fFalse );
         static ERR ErrCreate( PIB *ppib, IFMP ifmp, PGNO pgnoFDP, FCB **ppfcb );
         VOID CreateComplete_( ERR err, PCSTR szFile, const LONG lLine );
         VOID PrepareForPurge( const BOOL fPrepareChildren = fTrue );
@@ -1328,20 +1343,22 @@ INLINE VOID FCB::VerifyOptimalPacking()
     //
     // Also note that we keep track of 64 byte boundaries as a cache line mark.
     //
-#define NoWastedSpaceAround(TYPE, FIELDFIRST, FIELDLAST)                \
+#define sizeofField( TYPE, FIELD ) ( sizeof( (( TYPE * ) 0 )->FIELD) )
+
+#define NoWastedSpaceAround(TYPE, FIELDFIRST, FIELDLAST)               \
     (                                                                   \
         ( OffsetOf( TYPE, FIELDFIRST ) == 0 ) &&                        \
-        ( OffsetOf( TYPE, FIELDLAST ) + sizeof( (( TYPE * ) 0 )->FIELDLAST) == sizeof( TYPE ) ) && \
-        ( ( sizeof( TYPE ) % 32 ) == 0 )                                \
+        ( OffsetOf( TYPE, FIELDLAST ) + sizeofField( TYPE, FIELDLAST )  == sizeof( TYPE ) ) && \
+        ( ( sizeof( TYPE ) % 32) == 0 )                                 \
         ),                                                              \
         "Unexpected padding around " #TYPE
 
 #define NoWastedSpace(TYPE, FIELD1, FIELD2)                             \
-    ( OffsetOf( TYPE, FIELD1) + sizeof(((TYPE *)0)->FIELD1) == OffsetOf( TYPE, FIELD2 ) ), \
+    ( OffsetOf( TYPE, FIELD1) + sizeofField( TYPE, FIELD1 ) == OffsetOf( TYPE, FIELD2 ) ), \
         "Unexpected padding between " #FIELD1 " and " #FIELD2
 
-#define CacheLineMark(TYPE, FIELD, NUM)                                     \
-     ( OffsetOf( TYPE, FIELD ) == ( 64 * NUM ) ), "Cache line marker"
+#define CacheLineMark(TYPE, FIELD, NUM)                                 \
+    ( OffsetOf( TYPE, FIELD ) == ( 64 * NUM ) ), "Cache line marker"
 
     static_assert( sizeof( FCB ) == 384, "Current size" );
     
@@ -1621,11 +1638,7 @@ INLINE BOOL FCB::FTryPurgeOnClose() const       { return !!(m_ulFCBFlags & mskFC
 INLINE VOID FCB::SetTryPurgeOnClose()           { Assert( IsLocked() ); AtomicExchangeSet( &m_ulFCBFlags, mskFCBTryPurgeOnClose ); }
 INLINE VOID FCB::ResetTryPurgeOnClose()         { Assert( IsLocked() ); AtomicExchangeReset( &m_ulFCBFlags, mskFCBTryPurgeOnClose ); }
 
-#ifdef DONT_LOG_BATCH_INDEX_BUILD
 INLINE BOOL FCB::FDontLogSpaceOps() const       { return !!(m_ulFCBFlags & mskFCBDontLogSpaceOps ); }
-#else
-INLINE BOOL FCB::FDontLogSpaceOps() const       { return fFalse; }
-#endif
 INLINE VOID FCB::SetDontLogSpaceOps()           { Assert( IsLocked() ); AtomicExchangeSet( &m_ulFCBFlags, mskFCBDontLogSpaceOps ); }
 INLINE VOID FCB::ResetDontLogSpaceOps()         { Assert( IsLocked() ); AtomicExchangeReset( &m_ulFCBFlags, mskFCBDontLogSpaceOps ); }
 
@@ -1680,6 +1693,10 @@ INLINE VOID FCB::ResetPpibAllowRBSFDPDeleteRead()                               
 
 INLINE BOOL FCB::FRevertedFDPToDelete() const   { return !!(m_ulFCBFlags & mskFCBRevertedFDPToDelete ); }
 INLINE VOID FCB::SetRevertedFDPToDelete()       { AtomicExchangeSet( &m_ulFCBFlags, mskFCBRevertedFDPToDelete ); }
+
+INLINE BOOL FCB::FPopulating() const            { return !!(m_ulFCBFlags & mskFCBPopulating ); }
+INLINE VOID FCB::SetFPopulating()                { Assert( IsLocked() ); AtomicExchangeSet( &m_ulFCBFlags, mskFCBPopulating ); }
+INLINE VOID FCB::ResetFPopulating()              { Assert( IsLocked() ); AtomicExchangeReset( &m_ulFCBFlags, mskFCBPopulating ); }
 
 #ifdef DEBUG
 INLINE BOOL FCB::FWRefCountOK_()
@@ -1927,9 +1944,6 @@ INLINE VOID FCB::AssertDDL()
 
 // =========================================================================
 // Hashing.
-
-const INT fFCBStateNull             = 0;    // FCB does not exist in global hash table
-const INT fFCBStateInitialized      = 1;
 
 INLINE VOID FCB::Release()
 {

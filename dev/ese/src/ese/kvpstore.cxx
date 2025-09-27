@@ -677,7 +677,11 @@ VOID CKVPStore::KVPICloseGlobalPibAndFucb()
     }
 }
 
-ERR CKVPStore::ErrKVPInitStore( PIB * const ppibProvided, const TrxUpdate eTrxUpd, const ULONG ulMajorVersionExpected )
+ERR CKVPStore::ErrKVPInitStore(
+    PIB * const ppibProvided,
+    const TrxUpdate eTrxUpd,
+    const ULONG ulMajorVersionExpected,
+    BOOL fAllowCreation )
 {
     ERR err = JET_errSuccess;
     IFMP ifmp = g_ifmpMax;
@@ -728,9 +732,11 @@ ERR CKVPStore::ErrKVPInitStore( PIB * const ppibProvided, const TrxUpdate eTrxUp
     //  check if the table exists
     err = ErrFILEOpenTable( m_ppibGlobalLock, m_ifmp, &m_pfucbGlobalLock, (CHAR*)szTableName );
 
-    if ( JET_errObjectNotFound == err && !fReadOnly )
+    if ( JET_errObjectNotFound == err && !fReadOnly && fAllowCreation )
     {
-        //  if it does not exist, create the table
+        //  if it does not exist and we're allowed to create the table, do so.  This inits
+        // the needed Column IDs from the table (as is done in the other branch of this if)
+        // as a side-effect.
 
         Call( ErrKVPIInitICreateTable( m_ppibGlobalLock, m_ifmp, (CHAR*)szTableName, ulMajorVersionExpected ) );
 
@@ -1383,7 +1389,7 @@ ERR CKVPStore::ErrKVPIGetValue(
     const TrxPosition eTrxPos,
     const WCHAR * const wszKey,
     const KVPIValueType kvpvt,
-    _Out_writes_bytes_to_( cbValue, *pcbActual ) BYTE * const pbValue,
+    _Out_writes_bytes_to_( cbValue, min( cbValue, *pcbActual ) ) BYTE * const pbValue,
     const ULONG cbValue,
     _Out_opt_ ULONG *pcbActual )
 {
@@ -1608,7 +1614,7 @@ ERR CKVPStore::ErrKVPGetValue( const WCHAR * const wszKey, _Out_ INT64 * pi64Val
 
 // Retrieves variable size binary buffer from KVP store.
 // Note:  If a value was set as INT or INT64, this routine will not retrieve it.  Keep the same typed routines for Set/Get.
-ERR CKVPStore::ErrKVPGetValue( const WCHAR * const wszKey, _Out_writes_bytes_to_( cbValueMax, *pcbValueActual ) BYTE * const pbValue, const ULONG cbValueMax, _Out_opt_ ULONG *pcbValueActual )
+ERR CKVPStore::ErrKVPGetValue( const WCHAR * const wszKey, _Out_writes_bytes_to_( cbValueMax, min( cbValueMax, *pcbValueActual ) ) BYTE * const pbValue, const ULONG cbValueMax, _Out_opt_ ULONG *pcbValueActual )
 {
     return ErrKVPIGetValue( eNewTrx, wszKey, kvpvtLongBinaryValueType, (BYTE*)pbValue, cbValueMax, pcbValueActual );
 }

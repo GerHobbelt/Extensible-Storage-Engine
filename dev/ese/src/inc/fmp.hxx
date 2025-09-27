@@ -176,6 +176,7 @@ class FMP
 #ifdef ENABLE_JET_UNIT_TEST
         friend class TestFMPRangeStructAssignment;
         friend class TestFMPRangeStructComparisons;
+        friend class TestFMPNewAndWriteLatch;
 #endif  // ENABLE_JET_UNIT_TEST
 
         struct RANGE
@@ -427,6 +428,19 @@ class FMP
         //  KVPStore of index locales/LCIDs
         CKVPStore *         m_pkvpsMSysLocales;
         
+        //  KVPStore of keys used by deferred-populate indices.  The store is created on-demand
+        //  the first time a deferred-populate index is created, so this may be NULL, even if
+        //  we're running at an EFV that supports deferred-populate indices.
+        CKVPStore *         m_pkvpsMSysDeferredPopulateKeys;
+
+        // Static member function to initialize the KVP store for MSysDeferredPopulateKeys
+        // Needs to be declared early so we can use it in a template used to create a member variable
+        // in this "private" section.
+        // Use a static function to avoid the need to specialize CInitOnce<> for pointer-to-member types,
+        // or to use a functor.  In practice, the passed FMP * as the first parameter is an ersatz "this" pointer.
+        static ERR ErrInitMSysDeferredPopulateKeys_( FMP * pfmp, PIB * const ppib, BOOL );
+        CInitOnce< ERR, decltype(&FMP::ErrInitMSysDeferredPopulateKeys_), FMP *, PIB * const, BOOL> m_initOnceMSysDeferredPopulateKeys;
+
         // a count of asynch IO that are pending to this ifmp without taking a BF lock (ViewCache case)
         volatile LONG       m_cAsyncIOForViewCachePending;
 
@@ -496,6 +510,8 @@ class FMP
         DWORD                m_cBFContextPinned;
 
     public:
+        ERR ErrInitMSysDeferredPopulateKeys( PIB * const ppib, BOOL fAllowCreation );
+
         //  timing sequence for create, attach, and detach
         //
         CIsamSequenceDiagLog    m_isdlCreate;
@@ -519,6 +535,8 @@ class FMP
         LONG                m_dtickLeakReclaimerTimeQuota;
 
         BOOL                m_fSelfAllocSpBufReservationEnabled;
+
+        volatile JET_ENGINEFORMATVERSION m_efvHighestSupported;
 
         CIoStats *          m_rgpiostats[iotypeMax];
 
@@ -559,8 +577,14 @@ class FMP
         // This can happen when we do a non-revertable delete outside the required range.
         CLogRedoMap *       m_pLogRedoMapDbtimeRevertIgnore;
 
+        // Leaked space estimation.
+        //
+        CReaderWriterLock   m_rwlLeakEstimation;            // Reader/writer lock.
+        volatile OBJID      m_objidLeakEstimation;          // OBJID which has already been processed (objidFDPOverMax means it is not running).
+        volatile CPG        m_cpgLeakEstimationCorrection;  // Accumulated correction.
+
     // =====================================================================
-    // Member retrieval..
+    // Member retrieval.
     public:
 
         IFMP Ifmp() const;
@@ -638,11 +662,13 @@ class FMP
         ULONG_PTR UlDiskId() const;
         BOOL FSeekPenalty() const;
         ERR ErrDBFormatFeatureEnabled( const DBFILEHDR* const pdbfilehdr, const JET_ENGINEFORMATVERSION efvFormatFeature );
-        ERR ErrDBFormatFeatureEnabled( const JET_ENGINEFORMATVERSION efvFormatFeature );
         BOOL FScheduledPeriodicTrim() const;
         BOOL FTrimSupported() const;
-        BOOL FEfvSupported( const JET_ENGINEFORMATVERSION efvFormatFeature );
         CIoStats * Piostats( const IOTYPE iotype ) const;
+
+        // Feature checks using cached efv value
+        ERR ErrDBFormatFeatureEnabled( const JET_ENGINEFORMATVERSION efvFormatFeature );
+        BOOL FEfvSupported( const JET_ENGINEFORMATVERSION efvFormatFeature );
 
         BOOL FContainsDataFromFutureLogs() const;
         VOID SetContainsDataFromFutureLogs();
@@ -696,6 +722,8 @@ public:
         CDBMScanFollower * PdbmFollower() const;
 
         CKVPStore * PkvpsMSysLocales() const;
+
+        CKVPStore * PkvpsMSysDeferredPopulateKeys() const;
 
         CFlushMapForAttachedDb * PFlushMap() const;
     
@@ -753,6 +781,9 @@ public:
         // Self-alloc split-buffer reservation.
         VOID SetSelfAllocSpBufReservationEnabled( const BOOL fSelfAllocSpBufReservationEnabled );
         BOOL FSelfAllocSpBufReservationEnabled() const;
+        VOID SetEfvHighestSupported( JET_ENGINEFORMATVERSION efv );
+        VOID ResetEfvHighestSupported();
+        JET_ENGINEFORMATVERSION EfvHighestSupported() const;
 
         // Redo maps.
         //
@@ -760,6 +791,18 @@ public:
         CLogRedoMap* PLogRedoMapBadDbTime() const           { return m_pLogRedoMapBadDbtime; };
         CLogRedoMap* PLogRedoMapDbtimeRevert() const        { return m_pLogRedoMapDbtimeRevert; };
         CLogRedoMap* PLogRedoMapDbtimeRevertIgnore() const  { return m_pLogRedoMapDbtimeRevertIgnore; };
+
+        // Space leak estimation.
+        //
+        ERR ErrStartRootSpaceLeakEstimation();                                              // Starts estimation. Returns JET_errRootSpaceLeakEstimationAlreadyRunning is already running.
+        VOID StopRootSpaceLeakEstimation();                                                 // Stops estimation. Only valid when already running.
+        VOID SetOjidLeakEstimation( const OBJID objid );                                    // Sets the OBJID which has already been processed.
+        CPG CpgLeakEstimationCorrection() const;                                            // The leak estimate correction.
+        VOID AccumulateCorrectionForLeakEstimation( const OBJID objid, const CPG cpg );     // Accumulates space change to estimate the correction.
+    private:
+        OBJID OjidLeakEstimation() const;                                                   // Returns the highest OBJID which has been processed.
+        VOID InitLeakEstimation();                                                          // Initializes leak estimation variables.
+
 
     // =====================================================================
     // Member manipulation.
@@ -816,6 +859,7 @@ public:
         VOID SetDataHeaderSignature( DBFILEHDR_FIX* const pdbhdrsig, const ULONG cbdbhdrsig );
         VOID SetLGenMaxCommittedAttachedDuringRecovery( const LONG lGenMaxCommittedAttachedDuringRecovery );
         VOID SetKVPMSysLocales( CKVPStore * const pkvpsMSysLocales );
+        VOID SetKVPMSysDeferredPopulateKeys( CKVPStore * const pkvpsMSysDeferredPopulateKeys );
         VOID UpdatePgnoHighestWriteLatched( const PGNO pgnoHighestCandidate );
         VOID UpdatePgnoDirtiedMax( const PGNO pgnoHighestCandidate );
         VOID UpdatePgnoWriteLatchedNonScanMax( const PGNO pgnoHighestCandidate );
@@ -945,8 +989,9 @@ public:
     // Physical File I/O Conversions
     public:
 
-       CPG CpgOfCb( const QWORD cb ) const        { return (CPG) ( cb / CbPage() ); }
-       QWORD CbOfCpg( const CPG cpg ) const       { return ( QWORD( cpg ) * CbPage() ); }
+       CPG CpgOfCb( const QWORD cb ) const          { return (CPG) ( cb / CbPage() ); }
+       QWORD CbOfCpg( const CPG cpg ) const         { return ( QWORD( cpg ) * CbPage() ); }
+       __int64 CbOfCpgSigned( const CPG cpg ) const { return ( __int64( cpg ) * CbPage() ); }
 
     // =====================================================================
     // Initialize/terminate FMP array
@@ -1495,6 +1540,8 @@ INLINE LONG FMP::LGenMaxCommittedAttachedDuringRecovery() const { return m_lGenM
 
 INLINE CKVPStore * FMP::PkvpsMSysLocales() const { return m_pkvpsMSysLocales; }
 
+INLINE CKVPStore * FMP::PkvpsMSysDeferredPopulateKeys() const { return m_pkvpsMSysDeferredPopulateKeys; }
+
 INLINE CFlushMapForAttachedDb * FMP::PFlushMap() const  { return m_pflushmap; }
 
 inline IFileAPI::FileModeFlags FMP::FmfDbDefault() const
@@ -1674,6 +1721,25 @@ INLINE BOOL FMP::FSelfAllocSpBufReservationEnabled() const
     return m_fSelfAllocSpBufReservationEnabled;
 }
 
+INLINE VOID FMP::SetEfvHighestSupported( JET_ENGINEFORMATVERSION efv )
+{
+    m_efvHighestSupported = efv;
+}
+
+INLINE VOID FMP::ResetEfvHighestSupported()
+{
+    // Must reset under db header write lock. We reset the cached value in case the efv is being upgraded.
+    // A competing thread may perform an efv check, and may end up caching a stale efv before the db header is upgraded.
+    // The db header lock protects ErrDBFormatFeatureEnabled() from reading stale values from the db header.
+    Assert( m_dbfilehdrLock.m_rwl.FWriter() || m_critLatch.FOwner() );
+    m_efvHighestSupported = 0;
+}
+
+INLINE JET_ENGINEFORMATVERSION FMP::EfvHighestSupported() const
+{
+    return m_efvHighestSupported;
+}
+
 // =====================================================================
 // Member manipulation.
 
@@ -1845,6 +1911,12 @@ INLINE VOID FMP::SetKVPMSysLocales( CKVPStore * const pkvpsMSysLocales )
 {
     Assert( NULL == m_pkvpsMSysLocales || NULL == pkvpsMSysLocales );
     m_pkvpsMSysLocales = pkvpsMSysLocales;
+}
+
+INLINE VOID FMP::SetKVPMSysDeferredPopulateKeys( CKVPStore * const pkvpsMSysDeferredPopulateKeys )
+{
+    Assert( NULL == m_pkvpsMSysDeferredPopulateKeys || NULL == pkvpsMSysDeferredPopulateKeys );
+    m_pkvpsMSysDeferredPopulateKeys = pkvpsMSysDeferredPopulateKeys;
 }
 
 INLINE VOID FMP::SetLidmap( LIDMAP * const plidmap )

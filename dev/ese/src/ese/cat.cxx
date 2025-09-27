@@ -3967,6 +3967,9 @@ ERR ErrCATDeleteTableIndex(
 
     CATResetExtentPageCounts( ppib, ifmp, objidIndex );
 
+    // Best effort.  Downside is leaking a single row in the DeferredPopulateKey store.
+    (VOID)ErrCATSetDeferredPopulateKey( ifmp, objidIndex, NULL, 0 );
+
     return JET_errSuccess;
 }
 
@@ -6812,6 +6815,7 @@ INLINE ERR ErrCATIInitTDB(
                         MSysDBM::FIsSystemTable( szTableName ) ||
                         FSCANSystemTable( szTableName ) ||
                         FCATObjidsTable( szTableName ) ||
+                        FCATDeferredPopulateKeysTable( szTableName ) ||
                         FCATLocalesTable( szTableName ) );
 
     Call( ErrTDBCreate( pinst, pfucbCatalog->ifmp, &ptdb, &tcib, fSystemTable, pfcbTemplateTable, fTrue ) );
@@ -10175,7 +10179,7 @@ ERR ErrCATRenameTable(
 //  ================================================================
 {
     ERR             err;
-    INT             fState              = fFCBStateNull;
+    FCBStateFlags   fcbsf               = fcbsfNone;
     FCB             * pfcbTable         = pfcbNil;
     OBJID           objidTable;
     PGNO            pgnoFDPTable;
@@ -10188,10 +10192,10 @@ ERR ErrCATRenameTable(
     //  check to see if the FCB is present and initialized
     //  if its not present we can just update the catalog
 
-    pfcbTable = FCB::PfcbFCBGet( ifmp, pgnoFDPTable, &fState );
+    pfcbTable = FCB::PfcbFCBGet( ifmp, pgnoFDPTable, &fcbsf );
     if( pfcbNil != pfcbTable )
     {
-        if( fFCBStateInitialized != fState )
+        if( !( fcbsf & fcbsfInitialized ) )
         {
 
             //  this should only happen if this is called in a multi-threaded scenario
@@ -11055,6 +11059,85 @@ HandleError:
     {
         CallSx( ErrDIRRollback( ppib ), JET_errRollbackError );
     }
+    return err;
+}
+
+ERR ErrCATGetDeferredPopulateKey(
+    const IFMP          ifmp,
+    const OBJID         objidIndex,
+    BYTE                *pbDeferredPopulateKey,
+    const ULONG         cbDeferredPopulateKeyMax,
+    ULONG               *pcbDeferredPopulateKeyActual)
+{
+    ERR   err             = JET_errSuccess;
+    WCHAR wszEntryKey[9];
+
+    AssertSz( NULL != g_rgfmp[ifmp].PkvpsMSysDeferredPopulateKeys(), "FMP should have this store by the time you're here" );
+    C_ASSERT( 4 == sizeof( objidIndex ) );
+    OSStrCbFormatW( wszEntryKey, sizeof( wszEntryKey ), L"%08X", objidIndex );
+
+    err = g_rgfmp[ifmp].PkvpsMSysDeferredPopulateKeys()->ErrKVPGetValue(
+        wszEntryKey,
+        pbDeferredPopulateKey,
+        cbDeferredPopulateKeyMax,
+        pcbDeferredPopulateKeyActual);
+
+    switch ( err)
+    {
+        case JET_errSuccess:
+            break;
+
+        case JET_errRecordNotFound:
+            *pcbDeferredPopulateKeyActual = 0;
+            err = JET_errSuccess;
+            break;
+
+        default:
+            Call( err );
+            break;
+    }
+
+HandleError:
+
+    return err;
+}
+
+ERR ErrCATSetDeferredPopulateKey(
+    const IFMP          ifmp,
+    const OBJID         objidIndex,
+    const BYTE          *pbDeferredPopulateKey,
+    const ULONG         cbDeferredPopulateKey )
+{
+    ERR  err             = JET_errSuccess;
+    WCHAR wszEntryKey[9];
+
+    if ( NULL == g_rgfmp[ifmp].PkvpsMSysDeferredPopulateKeys() )
+    {
+        // If we don't have a KVP store for deferred populate keys for this FMP,
+        // then we should only be trying to set a 0 length value (i.e. deleting
+        // any existing values.  We should have successfully created the KVP store
+        // before we did anything that may need to set actual bytes.
+        AssertTrack( 0 == cbDeferredPopulateKey, "No table, should not be trying to set a value" );
+        goto HandleError;
+    }
+
+    C_ASSERT( 4 == sizeof( objidIndex ) );
+    OSStrCbFormatW( wszEntryKey, sizeof( wszEntryKey ), L"%08X", objidIndex );
+
+    if ( cbDeferredPopulateKey )
+    {
+        Call( g_rgfmp[ifmp].PkvpsMSysDeferredPopulateKeys()->ErrKVPSetValue(
+                  wszEntryKey,
+                  pbDeferredPopulateKey,
+                  cbDeferredPopulateKey ) );
+    }
+    else
+    {
+        Call( g_rgfmp[ifmp].PkvpsMSysDeferredPopulateKeys()->ErrKVPDeleteKey( wszEntryKey ) );
+    }
+
+HandleError:
+
     return err;
 }
 
@@ -14786,7 +14869,7 @@ ERR ErrCATGetExtentPageCounts(
 
     fdpinfo.pgnoFDP  = pfmp->PgnoExtentPageCountCacheFDP();
     fdpinfo.objidFDP = pfmp->ObjidExtentPageCountCacheFDP();
-    Call( ErrFILEOpenTable( ppib, ifmp, &pfucbExtentPageCountCache, szMSExtentPageCountCache, 0, &fdpinfo) );
+    Call( ErrFILEOpenTable( ppib, ifmp, &pfucbExtentPageCountCache, szMSExtentPageCountCache, 0, &fdpinfo ) );
     Assert( pfucbExtentPageCountCache->u.pfcb->FInitialized() );
 
     // This only ever gets set on the FCB for the ExtentPageCountCache and it never gets unset,
@@ -15155,8 +15238,11 @@ HandleError:
 ERR ErrCATGetNextRootObject(
     _In_ PIB* const         ppib,
     _In_ const IFMP         ifmp,
+    _In_ const BOOL         fSortedByObjId,
     _Inout_ FUCB** const    ppfucbCatalog,
-    _Out_ OBJID* const      pobjid )
+    _Out_ OBJID* const      pobjid,
+    _Out_ PGNO* const       ppgnoFDP,
+    _Out_writes_opt_z_( JET_cbNameMost + 1 ) CHAR* const szObjectName )
 //  ================================================================
 {
     Assert( ppib != NULL );
@@ -15165,12 +15251,15 @@ ERR ErrCATGetNextRootObject(
     Assert( pobjid != NULL );
 
     ERR err = JET_errSuccess;
+    OBJID objid = objidNil;
+    PGNO pgnoFDP = pgnoNull;
     FUCB* pfucbCatalog = *ppfucbCatalog;
     BOOL fInitilializedFucb = fFalse;
     BOOL fCatalogLatched = fFalse;
+    BOOL fCursorPositionedOnPrev = fTrue;
+    BOOL fCursorPositioned = fFalse;
     DATA dataField;
-
-    *pobjid = objidNil;
+    CHAR szObjectNameT[ JET_cbNameMost + 1 ];
 
     // Should we open the catalog or continue from where we left off?
     if ( pfucbCatalog == pfucbNil )
@@ -15178,73 +15267,179 @@ ERR ErrCATGetNextRootObject(
         Call( ErrCATOpen( ppib, ifmp, &pfucbCatalog ) );
         fInitilializedFucb = fTrue;
 
-        // Set the "RootObjects" secondary index and sets the search to root objects.
-        Call( ErrIsamSetCurrentIndex( ppib, pfucbCatalog, szMSORootObjectsIndex ) );
-
-        const BYTE bTrue = 0xff;
-
-        // Preread records.
-        JET_INDEX_COLUMN indexColumn;
-        indexColumn.columnid = fidMSO_RootFlag;
-        indexColumn.relop = JET_relopEquals;
-        indexColumn.pv = (void*)&bTrue;
-        indexColumn.cb = sizeof( bTrue );
-        indexColumn.grbit = NO_GRBIT;
-        JET_INDEX_RANGE indexRange;
-        indexRange.rgStartColumns = &indexColumn;
-        indexRange.cStartColumns = 1;
-        indexRange.rgEndColumns = NULL;
-        indexRange.cEndColumns = 0;
-        Call( ErrIsamPrereadIndexRange( (JET_SESID)ppib, (JET_TABLEID)pfucbCatalog, &indexRange, 0, lMax, JET_bitPrereadForward, NULL ) );
-
-        // Go to the first record.
-        Call( ErrIsamMakeKey( ppib, pfucbCatalog, &bTrue, sizeof( bTrue ), JET_bitNewKey | JET_bitFullColumnStartLimit ) );
-        err = ErrIsamSeek( ppib, pfucbCatalog, JET_bitSeekGE );
-        if ( err == JET_errRecordNotFound )
+        if ( !fSortedByObjId )
         {
-            Assert( fFalse );   //  We should have at least the catalog itself.
-            Error( ErrERRCheck( JET_errObjectNotFound ) );
-        }
-        Call( err );
-        err = JET_errSuccess;
+            // Set the "RootObjects" secondary index and sets the search to root objects.
+            Call( ErrIsamSetCurrentIndex( ppib, pfucbCatalog, szMSORootObjectsIndex ) );
 
-        // Set index range (just to be safe, since we expect bTrue to be at the end of the index anyways).
-        Call( ErrIsamMakeKey( ppib, pfucbCatalog, &bTrue, sizeof( bTrue ), JET_bitNewKey | JET_bitFullColumnEndLimit ) );
-        err = ErrIsamSetIndexRange( ppib, pfucbCatalog, JET_bitRangeInclusive | JET_bitRangeUpperLimit );
-        if ( err == JET_errNoCurrentRecord )
-        {
-            Assert( fFalse );   //  We should have at least the catalog itself.
-            Error( ErrERRCheck( JET_errObjectNotFound ) );
-        }
-        Call( err );
-        err = JET_errSuccess;
-    }
-    else
-    {
-        err = ErrIsamMove( ppib, pfucbCatalog, JET_MoveNext, NO_GRBIT );
-        if ( err == JET_errNoCurrentRecord )
-        {
+            const BYTE bTrue = 0xff;
+
+            // Preread records.
+            JET_INDEX_COLUMN indexColumn;
+            indexColumn.columnid = fidMSO_RootFlag;
+            indexColumn.relop = JET_relopEquals;
+            indexColumn.pv = (void*)&bTrue;
+            indexColumn.cb = sizeof( bTrue );
+            indexColumn.grbit = NO_GRBIT;
+            JET_INDEX_RANGE indexRange;
+            indexRange.rgStartColumns = &indexColumn;
+            indexRange.cStartColumns = 1;
+            indexRange.rgEndColumns = NULL;
+            indexRange.cEndColumns = 0;
+            Call( ErrIsamPrereadIndexRange( (JET_SESID)ppib, (JET_TABLEID)pfucbCatalog, &indexRange, 0, lMax, JET_bitPrereadForward, NULL ) );
+
+            // Go to the first record.
+            Call( ErrIsamMakeKey( ppib, pfucbCatalog, &bTrue, sizeof( bTrue ), JET_bitNewKey | JET_bitFullColumnStartLimit ) );
+            err = ErrIsamSeek( ppib, pfucbCatalog, JET_bitSeekGE );
+            if ( err == JET_errRecordNotFound )
+            {
+                Assert( fFalse );   //  We should have at least the catalog itself.
+                Error( ErrERRCheck( JET_errObjectNotFound ) );
+            }
+            Call( err );
             err = JET_errSuccess;
-            goto HandleError;
+
+            // Set index range (just to be safe, since we expect bTrue to be at the end of the index anyways).
+            Call( ErrIsamMakeKey( ppib, pfucbCatalog, &bTrue, sizeof( bTrue ), JET_bitNewKey | JET_bitFullColumnEndLimit ) );
+            err = ErrIsamSetIndexRange( ppib, pfucbCatalog, JET_bitRangeInclusive | JET_bitRangeUpperLimit );
+            if ( err == JET_errNoCurrentRecord )
+            {
+                Assert( fFalse );   //  We should have at least the catalog itself.
+                Error( ErrERRCheck( JET_errObjectNotFound ) );
+            }
+
+            Call( err );
+            err = JET_errSuccess;
+
+            fCursorPositioned = fTrue;
         }
-        Call( err );
-        err = JET_errSuccess;
+        else
+        {
+            // Just in case: set the primary index as the current index.
+            Call( ErrIsamSetCurrentIndex( ppib, pfucbCatalog, szMSOIdIndex ) );
+
+            // Go to the first record.
+            err = ErrIsamMove( ppib, pfucbCatalog, JET_MoveFirst, JET_bitNil );
+            if ( err == JET_errRecordNotFound )
+            {
+                Assert( fFalse );   //  We should have at least the catalog itself.
+                Error( ErrERRCheck( JET_errObjectNotFound ) );
+            }
+
+            Call( err );
+            err = JET_errSuccess;
+
+            fCursorPositionedOnPrev = fFalse;
+        }
     }
 
-    Call( ErrDIRGet( pfucbCatalog ) );
-    fCatalogLatched = fTrue;
+    while ( !fCursorPositioned )
+    {
+        if ( fCursorPositionedOnPrev )
+        {
+            err = ErrIsamMove( ppib, pfucbCatalog, JET_MoveNext, NO_GRBIT );
+            if ( err == JET_errNoCurrentRecord )
+            {
+                err = JET_errSuccess;
+                goto HandleError;
+            }
+            Call( err );
+            err = JET_errSuccess;
+        }
 
-    // We're correctly positioned at the record, retrieve the objid.
+        if ( !fSortedByObjId )
+        {
+            // We've positioned the cursor.
+            fCursorPositioned = fTrue;
+        }
+        else
+        {
+            Assert( !fCatalogLatched );
+            Call( ErrDIRGet( pfucbCatalog ) );
+            fCatalogLatched = fTrue;
+
+            // Retrieve the object type.
+            Call( ErrRECIRetrieveFixedColumn( pfcbNil, pfucbCatalog->u.pfcb->Ptdb(), fidMSO_Type, pfucbCatalog->kdfCurr.data, &dataField ) );
+            Assert( dataField.Cb() == sizeof( SYSOBJ ) );
+
+            const SYSOBJ sysobj = *( (UnalignedLittleEndian<SYSOBJ>*)dataField.Pv() );
+            Assert( sysobj != sysobjNil );
+            if ( sysobj == sysobjTable )
+            {
+                // We've positioned the cursor.
+                fCursorPositioned = fTrue;
+            }
+            else
+            {
+                Call( ErrDIRRelease( pfucbCatalog ) );
+                fCatalogLatched = fFalse;
+            }
+        }
+    }
+
+    if ( !fCatalogLatched )
+    {
+        Call( ErrDIRGet( pfucbCatalog ) );
+        fCatalogLatched = fTrue;
+    }
+
+    // Retrieve the object ID.
     Call( ErrRECIRetrieveFixedColumn( pfcbNil, pfucbCatalog->u.pfcb->Ptdb(), fidMSO_Id, pfucbCatalog->kdfCurr.data, &dataField ) );
-    *pobjid = *( (UnalignedLittleEndian<OBJID>*)dataField.Pv() );
+    Assert( dataField.Cb() == sizeof( objid ) );
+    objid = *( (UnalignedLittleEndian<OBJID>*)dataField.Pv() );
+    Assert( objid != objidNil );
+
+    if ( ppgnoFDP != NULL )
+    {
+        // Retrieve the pgnoFDP.
+        Call( ErrRECIRetrieveFixedColumn( pfcbNil, pfucbCatalog->u.pfcb->Ptdb(), fidMSO_PgnoFDP, pfucbCatalog->kdfCurr.data, &dataField ) );
+        Assert( dataField.Cb() == sizeof( pgnoFDP ) );
+        pgnoFDP = *( ( UnalignedLittleEndian<PGNO>* )dataField.Pv() );
+        Assert( pgnoFDP != pgnoNull );
+    }
+
+    if ( szObjectName != NULL )
+    {
+        // Retrieve the object name.
+        Call( ErrRECIRetrieveVarColumn( pfcbNil, pfucbCatalog->u.pfcb->Ptdb(), fidMSO_Name, pfucbCatalog->kdfCurr.data, &dataField ) );
+        Assert( ( dataField.Cb() / sizeof( szObjectNameT[ 0 ] ) ) < _countof( szObjectNameT ) );
+        UtilMemCpy( szObjectNameT, dataField.Pv(), dataField.Cb() );
+        szObjectNameT[ dataField.Cb() / sizeof( szObjectNameT[0] ) ] = '\0';
+    }
 
 HandleError:
     Assert( ( err < JET_errSuccess ) || ( pfucbCatalog != pfucbNil ) );
+
+    if ( err >= JET_errSuccess )
+    {
+        *pobjid = objid;
+        if ( szObjectName != NULL )
+        {
+            OSStrCbCopyA( szObjectName, sizeof( szObjectNameT ), szObjectNameT );
+        }
+        if ( ppgnoFDP != NULL )
+        {
+            *ppgnoFDP = pgnoFDP;
+        }
+    }
+    else
+    {
+        *pobjid = objidNil;
+        if ( szObjectName != NULL )
+        {
+            *szObjectName = '\0';
+        }
+        if ( ppgnoFDP != NULL )
+        {
+            *ppgnoFDP = pgnoNull;
+        }
+    }
 
     if ( fCatalogLatched )
     {
         Assert( pfucbCatalog != pfucbNil );
         CallS( ErrDIRRelease( pfucbCatalog ) );
+        fCatalogLatched = fFalse;
     }
 
     if ( ( err < JET_errSuccess ) && fInitilializedFucb )
@@ -15876,6 +16071,7 @@ PERSISTED const QWORD g_qwUpgradedLocalesTable = 0xFFFFFFFFFFFFFFFF;
 //  Major Version of the MSysLocales KVP-Store ...
 
 PERSISTED const ULONG g_dwMSLocalesMajorVersions = 1;   // endianness taken care of by KVPStore
+PERSISTED const ULONG g_dwMSDeferredPopulateKeysVersions = 1;
 
 //  The key format we use for the MSysLocales KVP-Store ... old lcid based format "LCID=%d,Ver=%I64x";
 
@@ -15914,6 +16110,53 @@ JETUNITTEST( CATMSysLocales, TestFCATIsMSLocalesConsistencyMarker )
     CHECK( fFalse == FCATIIsMSLocalesConsistencyMarker( g_wszMSLocalesConsistencyMarkerKey, g_cMSLocalesConsistencyMarkerValue + 1 ) );
     CHECK( fFalse == FCATIIsMSLocalesConsistencyMarker( NULL, g_cMSLocalesConsistencyMarkerValue ) );
     CHECK( fFalse == FCATIIsMSLocalesConsistencyMarker( L"NotAGoodMarker", g_cMSLocalesConsistencyMarkerValue ) );
+}
+
+//  Inits MSDeferredPopulateKeys facility (and creates the table if allowed and necessary).
+
+ERR ErrCATIInitMSDeferredPopulateKeys(
+    _In_ PIB * const ppib,
+    const IFMP ifmp,
+    BOOL fAllowCreation )
+{
+    ERR err = JET_errSuccess;
+    CKVPStore * pkvps = NULL;
+    IFMP ifmpOpen = ifmpNil;
+
+    Assert( ppib != ppibNil );  //  This function assumes a valid session.
+
+    Call( ErrDBOpenDatabase( ppib, g_rgfmp[ifmp].WszDatabaseName(), &ifmpOpen, NO_GRBIT ) );
+    Assert( ifmpOpen == ifmp );
+
+    Assert( fAllowCreation ? ( JET_wrnFileOpenReadOnly != err ) : fTrue );
+    // We shouldn't be RO if caller is allowing creation.  We MIGHT be RO if, for example,
+    // we're being run under eseutil, in which case we need to try to open the KVP store
+    // to read the progress key to do a proper integrity check.
+    
+    Alloc( pkvps = new CKVPStore( ifmp, wszMSDeferredPopulateKeys ) );
+
+    Call( pkvps->ErrKVPInitStore( ppib, CKVPStore::eReadWrite, 2, fAllowCreation ) );
+
+    //  set the MSysDeferredPopulateKeys store value in the FMP
+
+    g_rgfmp[ ifmp ].SetKVPMSysDeferredPopulateKeys( pkvps );
+    pkvps = NULL;   // owned by FMP now ...
+    Assert( g_rgfmp[ ifmp ].PkvpsMSysDeferredPopulateKeys() );
+
+HandleError:
+
+    Assert( g_rgfmp[ ifmp ].PkvpsMSysDeferredPopulateKeys() != NULL || err < JET_errSuccess );
+
+    //  do not need to KVPTermStore() because we used an external PIB / IFMP ...
+
+    delete pkvps;
+
+    if ( ifmpOpen != ifmpNil )
+    {
+        CallS( ErrDBCloseDatabase( ppib, ifmpOpen, 0 ) );
+    }
+
+    return err;
 }
 
 //  Init's MSLocales facility (and creates the table if necessary).
@@ -16027,6 +16270,67 @@ HandleError:
     return err;
 }
 
+//  Deletes the MSysDeferredPopulateKeys table.
+
+//  ================================================================
+ERR ErrCATDeleteMSDeferredPopulateKeys(
+        _In_ PIB * const ppibProvided,
+        _In_ const IFMP ifmp )
+//  ================================================================
+{
+    ERR     err             = JET_errSuccess;
+    BOOL    fDatabaseOpen   = fFalse;
+    BOOL    fInTransaction  = fFalse;
+    PIB *   ppib            = NULL;
+    IFMP    ifmpT           = ifmpNil;
+
+    if ( NULL == ppibProvided )
+    {
+        Call( ErrPIBBeginSession( PinstFromIfmp( ifmp ), &ppib, procidNil, fFalse ) );
+    }
+    else
+    {
+        ppib = ppibProvided;
+    }
+
+    Call( ErrDBOpenDatabase( ppib, g_rgfmp[ifmp].WszDatabaseName(), &ifmpT, NO_GRBIT ) );
+    Assert( ifmp == ifmpT );
+    fDatabaseOpen = fTrue;
+
+    Assert( !fInTransaction );
+    Call( ErrDIRBeginTransaction( ppib, 70316, NO_GRBIT ) );
+    fInTransaction = fTrue;
+
+    //  Now delete the actual table.
+    Call( ErrIsamDeleteTable( (JET_SESID)ppib, (JET_DBID)ifmp, szMSDeferredPopulateKeys ) )
+
+    Assert( fInTransaction );
+    Call( ErrDIRCommitTransaction( ppib, NO_GRBIT ) );
+    fInTransaction = fFalse;
+
+HandleError:
+    if( fInTransaction )
+    {
+        (void)ErrDIRRollback( ppib );
+        fInTransaction = fFalse;
+    }
+
+    if( fDatabaseOpen )
+    {
+        Assert( ifmpNil != ifmpT );
+        CallS( ErrDBCloseDatabase( ppib, ifmpT, NO_GRBIT ) );
+    }
+
+    if ( NULL == ppibProvided )
+    {
+        PIBEndSession( ppib );
+    }
+
+    Assert( !fInTransaction );
+
+    return err;
+}
+
 //  Stamps the consistency marker to the MSysLocales table.
 
 //  ================================================================
@@ -16133,6 +16437,19 @@ VOID CATTermMSLocales( FMP * const pfmp )
     {
         CKVPStore * pkvps = pfmp->PkvpsMSysLocales();
         pfmp->SetKVPMSysLocales( NULL );
+        pkvps->KVPTermStore();
+        delete pkvps;
+    }
+}
+
+//  Terms's MSDeferredPopulateKeys facility (must be done before tearing down PIBs and FUCBs).
+
+VOID CATTermMSDeferredPopulateKeys( FMP * const pfmp )
+{
+    if ( pfmp->PkvpsMSysDeferredPopulateKeys() )
+    {
+        CKVPStore * pkvps = pfmp->PkvpsMSysDeferredPopulateKeys();
+        pfmp->SetKVPMSysDeferredPopulateKeys( NULL );
         pkvps->KVPTermStore();
         delete pkvps;
     }
@@ -16366,6 +16683,33 @@ HandleError:
     Assert( !Pcsr( pfucbCatalog )->FLatched() );
 
     CallS( ErrCATClose( ppib, pfucbCatalog ) );
+
+    return err;
+}
+
+//  ================================================================
+ERR ErrCATInitMSDeferredPopulateKeys(
+        _In_ PIB * const ppib,
+        const IFMP ifmp,
+        BOOL fAllowCreation )
+{
+    ERR err = JET_errSuccess;
+    FMP * const pfmp = &g_rgfmp[ifmp];
+
+    if ( !pfmp->FEfvSupported( JET_efvIndexDeferredPopulate ) )
+    {
+        Assert( NULL == pfmp->PkvpsMSysDeferredPopulateKeys() );
+        Error( ErrERRCheck( JET_errEngineFormatVersionParamTooLowForRequestedFeature ) );
+    }
+
+    if( NULL == pfmp->PkvpsMSysDeferredPopulateKeys() )
+    {
+        // No KVPStore has been located or created yet.  Try now.
+        Call( ErrCATIInitMSDeferredPopulateKeys( ppib, ifmp, fAllowCreation ) );
+    }
+    Assert( pfmp->PkvpsMSysDeferredPopulateKeys() );
+
+HandleError:
 
     return err;
 }

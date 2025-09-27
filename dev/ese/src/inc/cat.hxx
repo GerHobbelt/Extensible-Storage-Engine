@@ -19,6 +19,7 @@ extern const CHAR   szMSExtentPageCountCache[];
 
 extern const CHAR   szMSLocales[];
 
+extern const CHAR   szMSDeferredPopulateKeys[];
 
 //  WARNING: Don't change the order of these constants.  There are implicit assumptions that
 //  for a particular table, the table record comes first, followed by the column records,
@@ -261,6 +262,11 @@ INLINE BOOL FCATExtentPageCountCacheTable( const CHAR * const szTableName )
 INLINE BOOL FCATObjidsTable( const CHAR * const szTableName )
 {
     return ( 0 == UtilCmpName( szTableName, szMSObjids ) );
+}
+
+INLINE BOOL FCATDeferredPopulateKeysTable( const CHAR * const szTableName )
+{
+    return ( 0 == UtilCmpName( szTableName, szMSDeferredPopulateKeys ) );
 }
 
 INLINE BOOL FCATLocalesTable( const CHAR * const szTableName )
@@ -629,8 +635,11 @@ ERR ErrCATGetObjidMetadata(
 ERR ErrCATGetNextRootObject(
     _In_ PIB* const         ppib,
     _In_ const IFMP         ifmp,
+    _In_ const BOOL         fSortedByObjId,
     _Inout_ FUCB** const    ppfucbCatalog,
-    _Out_ OBJID* const      pobjid );
+    _Out_ OBJID* const      pobjid,
+    _Out_ PGNO* const       ppgnoFDP = NULL,
+    _Out_writes_opt_z_( JET_cbNameMost + 1 ) CHAR* const szObjectName = NULL );
 
 ERR ErrCATGetNextNonRootObject(
     _In_ PIB* const         ppib,
@@ -914,6 +923,19 @@ ERR ErrCATChangeIndexDensity(
     const CHAR * const  szTable,
     const CHAR * const  szIndex,
     const ULONG         ulDensity );
+
+ERR ErrCATGetDeferredPopulateKey(
+    const IFMP          ifmp,
+    const OBJID         objidIndex,
+    BYTE                *pbDeferredPopulateKey,
+    const ULONG         cbDeferredPopulateKeyMax,
+    ULONG               *pcbDeferredPopulateKeyActual);
+
+ERR ErrCATSetDeferredPopulateKey(
+    const IFMP          ifmp,
+    const OBJID         objidIndex,
+    const BYTE          *pbDeferredPopulateKey,
+    const ULONG         cbDeferredPopulateKey );
 
 ERR ErrCATChangeIndexFlags(
     PIB * const         ppib,
@@ -1352,7 +1374,12 @@ ERR ErrCATDeleteMSExtentPageCountCache(
         _In_ const EXTENT_CACHE_DELETE_REASON ecdrReason,
         _Out_opt_ BOOL *pfTableExisted = NULL
     );
-    
+
+ERR ErrCATInitMSDeferredPopulateKeys(
+        _In_ PIB * const ppib,
+        const IFMP ifmp,
+        BOOL fAllowCreation );
+
 ERR ErrCATCreateMSLocales(
         _In_ PIB * const ppib,
         const IFMP ifmp );
@@ -1365,7 +1392,14 @@ ERR ErrCATDeleteMSLocales(
         _In_ PIB * const ppib,
         _In_ const IFMP ifmp );
 
+ERR ErrCATDeleteMSDeferredPopulateKeys(
+        _In_ PIB * const ppib,
+        _In_ const IFMP ifmp );
+
 VOID CATTermMSLocales(
+        FMP * const pfmp );
+
+VOID CATTermMSDeferredPopulateKeys(
         FMP * const pfmp );
 
 ERR ErrCATCheckForOutOfDateLocales(

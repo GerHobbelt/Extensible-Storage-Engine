@@ -176,7 +176,7 @@ LOCAL const WCHAR   * const wszHelpPrompt3  = L"P=rePair, M=file duMp, Y=copY fi
 #endif // ESENT
 
 #ifdef DEBUG
-LOCAL const WCHAR   * const wszHelpPrompt4  = L"B=Backup, F=record Format upgrade, U=upgrade, Z=secure";
+LOCAL const WCHAR   * const wszHelpPrompt4  = L"B=Backup, Z=secure";
 #endif
 LOCAL const WCHAR   * const wszHelpPromptCursor = L"=> ";
 
@@ -408,6 +408,9 @@ LOCAL VOID EDBUTLHelpCopyFile( _In_ PCWSTR wszAppName )
     wprintf( L"                  /d<file> - destination file (default: copy source file to%c", wchNewLine );
     wprintf( L"                             current directory)%c", wchNewLine );
     wprintf( L"                  /i       - ignore IO read errors%c", wchNewLine );
+#ifdef UNDOCUMENTED
+    wprintf( L"                  /detach  - allows the file to be detached from the ESE Block Cache.%c", wchNewLine );
+#endif
     wprintf( L"                  /o       - suppress logo%c", wchNewLine );
 #ifdef ESESHADOW
     wprintf( L"                  /vss     - copies a snapshot of the file, does not replay%c", wchNewLine );
@@ -503,6 +506,7 @@ LOCAL VOID EDBUTLHelpDump( _In_ PCWSTR wszAppName )
     wprintf( L"                               where a pgnoLast of 'max' indicates the last page%c", wchNewLine );
     wprintf( L"                               of the database.%c", wchNewLine );
     wprintf( L"                  /n<node>   - dump the specified node from the database%c", wchNewLine );
+    wprintf( L"                  /i<itag>   - dump the specified itag from the database%c", wchNewLine );
     wprintf( L"                  /t<table>  - perform dump for specified table only%c", wchNewLine );
     wprintf( L"                  /a         - dump all nodes including deleted ones%c", wchNewLine );
     wprintf( L"                               (dump-nodes mode only)%c", wchNewLine );
@@ -2395,6 +2399,8 @@ LOCAL BOOL FEDBUTLParseDump( _In_ PCWSTR arg, UTILOPTS *popts )
 
         case L'n':
         case L'N':
+        case L'i':
+        case L'I':
         {
             const size_t cchSzNode = 256;
             WCHAR   wszNode[cchSzNode];
@@ -2416,10 +2422,10 @@ LOCAL BOOL FEDBUTLParseDump( _In_ PCWSTR arg, UTILOPTS *popts )
                 break;
             }
 
-            pdbutil->op     = opDBUTILDumpNode;
+            pdbutil->op     = ( arg[1] == L'n' || arg[1] == L'N' ) ? opDBUTILDumpNode : opDBUTILDumpTag;
             pdbutil->dbid   = dbid;
             pdbutil->pgno   = pgno;
-            pdbutil->iline  = iline;
+            pdbutil->iline  = iline;    // iline will be interpreted as itag if op is opDBUTILDumpTag
 
             fResult         = fTrue;
         }
@@ -3095,6 +3101,10 @@ LOCAL BOOL FEDBUTLParseOptions(
             {
                 popts->wszConfigStoreSpec = wszConfigSpec;
             }
+        }
+        else if ( 0 == _wcsicmp( &(arg[1]), L"detach" ) )
+        {
+            UTILOPTSSetDetachFile( popts->fUTILOPTSFlags );
         }
         else
         {
@@ -5402,6 +5412,32 @@ void PushEseutilArgTrace( INT argc, __in_ecount(argc) LPWSTR argv[] )
 }
 #endif
 
+void DetachFileStatus( _In_ const INT i, _In_ const INT c, _In_ const DWORD_PTR keyDetachFileStatus )
+{
+    const INT  iPercentage = (INT)( ( i * 100 ) / c );
+    UpdateStatus( iPercentage );
+}
+
+JET_ERR ErrDetachFile( _In_z_ const WCHAR* const wszPath )
+{
+    ERR                 err     = JET_errSuccess;
+    IBlockCacheFactory* pbcf    = NULL;
+
+    wprintf( L"Initiating DETACH FILE mode...%c", wchNewLine );
+    wprintf( L"\r\n\r\n" );
+    InitStatus( L"Detach Progress (% complete)" );
+
+    Call( COSBlockCacheFactory::ErrCreate( &pbcf ) );
+
+    Call( pbcf->ErrDetachFile( wszPath, DetachFileStatus, NULL ) );
+
+    TermStatus();
+
+HandleError:
+    delete pbcf;
+    return err;
+}
+
 INT __cdecl wmain( INT argc, __in_ecount(argc) LPWSTR argv[] )
 {
     JET_INSTANCE            instance                = 0;
@@ -5711,7 +5747,7 @@ INT __cdecl wmain( INT argc, __in_ecount(argc) LPWSTR argv[] )
         }
         if ( !SUCCEEDED( hr ) )
         {
-            wprintf( L"   VSS Subsystem Init failed, 0x%x\n", hr );
+            wprintf( L"   VSS Create Shadow failed, 0x%x\n", hr );
             Error( ErrERRCheck( JET_errOSSnapshotNotAllowed ) );
         }
 
@@ -5732,7 +5768,7 @@ INT __cdecl wmain( INT argc, __in_ecount(argc) LPWSTR argv[] )
         }
         if ( !SUCCEEDED( hr ) )
         {
-            wprintf( L"   VSS Subsystem Init failed, 0x%x\n", hr );
+            wprintf( L"   VSS Mount Shadow failed, 0x%x\n", hr );
             Error( ErrERRCheck( JET_errOSSnapshotNotAllowed ) );
         }
 
@@ -6291,7 +6327,8 @@ INT __cdecl wmain( INT argc, __in_ecount(argc) LPWSTR argv[] )
 
         case modeCopyFile:
             {
-                WCHAR   wszFileT[_MAX_PATH+1];
+                WCHAR   wszAbsSourceDB[ _MAX_PATH + 1 ]   = L"";
+                WCHAR   wszAbsTempDB[ _MAX_PATH + 1 ]  = L"";
 
                 fWhitespaceOnErr = fTrue;
 
@@ -6300,7 +6337,7 @@ INT __cdecl wmain( INT argc, __in_ecount(argc) LPWSTR argv[] )
                     wprintf( wszUsageErr1, L"source file" );
                     Call( ErrERRCheck( JET_errInvalidParameter ) );
                 }
-                if ( NULL == _wfullpath( wszFileT, opts.wszSourceDB, _MAX_PATH ) )
+                if ( NULL == _wfullpath( wszAbsSourceDB, opts.wszSourceDB, _MAX_PATH ) )
                 {
                     wprintf( L"Error: Source file specification.'%s' is invalid.", opts.wszSourceDB );
                     Call( ErrERRCheck( JET_errInvalidPath ) );
@@ -6308,18 +6345,35 @@ INT __cdecl wmain( INT argc, __in_ecount(argc) LPWSTR argv[] )
 
                 if ( NULL == opts.wszTempDB )
                 {
-                    EDBUTLGetUnpathedFilename( opts.wszSourceDB, wszFileT, sizeof(wszFileT) );
-                    opts.wszTempDB = wszFileT;
+                    EDBUTLGetUnpathedFilename( opts.wszSourceDB, wszAbsTempDB, sizeof( wszAbsTempDB ) );
+                    opts.wszTempDB = wszAbsTempDB;
                 }
-                else if ( NULL == _wfullpath( wszFileT, opts.wszTempDB, _MAX_PATH ) )
+                else
                 {
-                    wprintf( L"Error: Destination file specification.'%s' is invalid.", opts.wszTempDB );
-                    Call( ErrERRCheck( JET_errInvalidPath ) );
+                    if ( FUTILOPTSDetachFile( opts.fUTILOPTSFlags ) )
+                    {
+                        wprintf( L"Error: Destination file specification.'%s' is invalid.", opts.wszTempDB );
+                        Call( ErrERRCheck( JET_errInvalidParameter ) );
+                    }
+
+                    if ( NULL == _wfullpath( wszAbsTempDB, opts.wszTempDB, _MAX_PATH ) )
+                    {
+                        wprintf( L"Error: Destination file specification.'%s' is invalid.", opts.wszTempDB );
+                        Call( ErrERRCheck( JET_errInvalidPath ) );
+                    }
                 }
 
-                wprintf( L"Initiating COPY FILE mode...%c", wchNewLine );
+                if ( FUTILOPTSDetachFile( opts.fUTILOPTSFlags ) )
+                {
+                    err = ErrDetachFile( opts.wszSourceDB );
+                }
+                else
+                {
+                    wprintf( L"Initiating COPY FILE mode...%c", wchNewLine );
 
-                err = ErrCopyFile( opts.wszSourceDB, opts.wszTempDB, opts.fUTILOPTSCopyFileIgnoreIoErrors );
+                    err = ErrCopyFile( opts.wszSourceDB, opts.wszTempDB, opts.fUTILOPTSCopyFileIgnoreIoErrors );
+                }
+
                 if ( err > 0 )
                 {
                     goto HandleError;
@@ -6589,6 +6643,7 @@ INT __cdecl wmain( INT argc, __in_ecount(argc) LPWSTR argv[] )
                         break;
 
                     case opDBUTILDumpNode:
+                    case opDBUTILDumpTag:
                         Call( ErrEDBUTLCheckDBName( &opts, wszDefaultTempDB, NULL ) );
                         wprintf( L"      Database: %s%c", opts.wszSourceDB, wchNewLine );
                         break;

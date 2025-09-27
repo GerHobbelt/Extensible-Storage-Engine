@@ -32,6 +32,7 @@ class TFileFilter  //  ff
                         _In_        const VolumeId                      volumeid,
                         _In_        const FileId                        fileid,
                         _Inout_opt_ ICachedFileConfiguration** const    ppcfconfig,
+                        _In_        const BOOL                          fEverEligibleForCaching,
                         _Inout_opt_ ICache** const                      ppc,
                         _Inout_opt_ CCachedFileHeader** const           ppcfh );
 
@@ -39,39 +40,45 @@ class TFileFilter  //  ff
 
         static void Cleanup();
 
-        ICache* Pc() { return m_pc; }
+        ICachedFileConfiguration* Pcfconfig() const { return m_pcfconfig; }
 
-        void SetFileId( _In_ const VolumeId volumeid, _In_ const FileId fileid )
+        ICache* Pc() const { return m_pc; }
+
+        CCachedFileHeader* Pcfh() const { return m_pcfh; }
+
+        BOOL FAttached() const { return m_pc && m_pcfh; }
+
+        void Configure( _In_    const VolumeId                      volumeid,
+                        _In_    const FileId                        fileid, 
+                        _Inout_ ICachedFileConfiguration** const    ppcfconfig,
+                        _In_    const BOOL                          fEverEligibleForCaching )
         {
             m_volumeid = volumeid;
             m_fileid = fileid;
-        }
-
-        void SetEverEligibleForCaching( _In_ const BOOL fEverEligible )
-        {
-            m_fEverEligibleForCaching = fEverEligible;
-        }
-
-        void SetCacheState( _Inout_     ICachedFileConfiguration** const    ppcfconfig,
-                            _Inout_opt_ ICache** const                      ppc,
-                            _Inout_opt_ CCachedFileHeader** const           ppcfh )
-        {
+            m_fileserial = fileserialInvalid;
+            if ( m_volumeid == volumeidInvalid || m_fileid == fileidInvalid )
+            {
+                rand_s( (unsigned int*)&m_fileserial );
+            }
             m_pcfconfig = *ppcfconfig;
             *ppcfconfig = NULL;
+            m_fEverEligibleForCaching = fEverEligibleForCaching;
 
-            if ( ppc && *ppc )
-            {
-                m_pc = &m_cWrapper;
-                m_cWrapper.SetCache( ppc );
-            }
+            SetCacheParameters();
+        }
 
+        void SetCacheState( _Inout_opt_ ICache** const              ppc,
+                            _Inout_opt_ CCachedFileHeader** const   ppcfh )
+        {
+            m_pc = ppc && *ppc ? &m_cWrapper : NULL;
+            m_cWrapper.SetCache( ppc );
+
+            delete m_pcfh;
             m_pcfh = ppcfh ? *ppcfh : NULL;
             if ( ppcfh )
             {
                 *ppcfh = NULL;
             }
-
-            SetCacheParameters();
 
             if ( m_pcfh )
             {
@@ -90,6 +97,7 @@ class TFileFilter  //  ff
     public:  //  IFileAPI
 
         ERR ErrFlushFileBuffers( _In_ const IOFLUSHREASON iofr ) override;
+        void SetNoFlushNeeded() override;
 
         ERR ErrSetSize( _In_ const TraceContext&    tc,
                         _In_ const QWORD            cbSize,
@@ -129,6 +137,8 @@ class TFileFilter  //  ff
         ERR ErrIOIssue() override;
 
         void RegisterIFilePerfAPI( _In_ IFilePerfAPI* const pfpapi ) override;
+
+        LONG64 CioNonFlushed() const override;
 
     public:  //  IFileFilter
 
@@ -423,8 +433,6 @@ class TFileFilter  //  ff
                                     _In_ size_t&                                                iwriteback );
         BOOL FTooManyWrites( _In_ const ERR err );
 
-        BOOL FAttached() const { return m_pc && m_pcfh; }
-
         ICache::CachingPolicy CpGetCachingPolicy( _In_ const TraceContext& tc, _In_ const BOOL fWrite );
 
         ERR ErrCacheRead(   _In_                    const TraceContext&             tc,
@@ -463,7 +471,8 @@ class TFileFilter  //  ff
                             _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
                             _Inout_                 CMeteredSection::Group* const   pgroup,
                             _Inout_                 CSemaphore** const              ppsem );
-        ERR ErrWriteThrough(    _In_                    const TraceContext&             tc,
+        ERR ErrWriteThrough(    _In_                    const IFileFilter::IOMode       iom,
+                                _In_                    const TraceContext&             tc,
                                 _In_                    const QWORD                     ibOffset,
                                 _In_                    const DWORD                     cbData,
                                 _In_reads_( cbData )    const BYTE* const               pbData,
@@ -485,7 +494,8 @@ class TFileFilter  //  ff
                             _In_opt_                const DWORD_PTR                 keyIOComplete,
                             _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
                             _In_                    CWriteBack* const               pwriteback );
-        ERR ErrWriteCommon( _In_                    const TraceContext&             tc,
+        ERR ErrWriteCommon( _In_                    const IFileFilter::IOMode       iom,
+                            _In_                    const TraceContext&             tc,
                             _In_                    const QWORD                     ibOffset,
                             _In_                    const DWORD                     cbData,
                             _In_reads_( cbData )    const BYTE* const               pbData,
@@ -546,10 +556,14 @@ class TFileFilter  //  ff
                     delete m_pcInner;
                 }
 
-                void SetCache( _Inout_ ICache** const ppc )
+                void SetCache( _Inout_opt_ ICache** const ppc )
                 {
-                    m_pcInner = *ppc;
-                    *ppc = NULL;
+                    delete m_pcInner;
+                    m_pcInner = ppc ? *ppc : NULL;
+                    if ( ppc )
+                    {
+                        *ppc = NULL;
+                    }
                 }
 
             public:  //  ICache
@@ -564,14 +578,19 @@ class TFileFilter  //  ff
                     return ErrToErr( "Mount", m_pcInner->ErrMount() );
                 }
 
+                ERR ErrPrepareToDismount() override
+                {
+                    return ErrToErr( "PrepareToDismount", m_pcInner->ErrPrepareToDismount() );
+                }
+
                 ERR ErrDump( _In_ CPRINTF* const pcprintf ) override
                 {
                     return ErrToErr( "Dump", m_pcInner->ErrDump( pcprintf ) );
                 }
 
-                ERR ErrGetCacheType( _Out_writes_( cbGuid ) BYTE* const rgbCacheType ) override
+                BOOL FEnabled() override
                 {
-                    return ErrToErr( "GetCacheType", m_pcInner->ErrGetCacheType( rgbCacheType ) );
+                    return m_pcInner->FEnabled();
                 }
 
                 ERR ErrGetPhysicalId(   _Out_                   VolumeId* const pvolumeid,
@@ -593,6 +612,20 @@ class TFileFilter  //  ff
                                 _In_ const FileSerial   fileserial ) override
                 {
                     return ErrToErr( "Flush", m_pcInner->ErrFlush( volumeid, fileid, fileserial ) );
+                }
+
+                ERR ErrDestage( _In_        const VolumeId                  volumeid,
+                                _In_        const FileId                    fileid,
+                                _In_        const FileSerial                fileserial,
+                                _In_opt_    const ICache::PfnDestageStatus  pfnDestageStatus,
+                                _In_opt_    const DWORD_PTR                 keyDestageStatus ) override
+                {
+                    return ErrToErr(    "Destage",
+                                        m_pcInner->ErrDestage(  volumeid, 
+                                            fileid, 
+                                            fileserial, 
+                                            pfnDestageStatus, 
+                                            keyDestageStatus ) );
                 }
 
                 ERR ErrInvalidate(  _In_ const VolumeId     volumeid,
@@ -1007,7 +1040,7 @@ class TFileFilter  //  ff
 
                     //  IOs with non-adjacent offsets cannot be combined
 
-                    if ( offsetsIOA.IbEnd() + 1 != offsetsIOB.IbStart() && offsetsIOB.IbEnd() + 1 != offsetsIOA.IbStart() )
+                    if ( !offsetsIOA.FAdjacent( offsetsIOB ) )
                     {
                         return fFalse;
                     }
@@ -1460,7 +1493,7 @@ class TFileFilter  //  ff
                     if ( pwaiter && pwaiter->FWaiting() )
                     {
                         m_ilWaiting.Remove( pwaiter );
-                        ilToComplete.InsertAsPrevMost( pwaiter );
+                        pwaiter->Complete();
                     }
 
                     while ( m_ilWaiting.PrevMost() && FIncrementMax( m_cIO, m_cIOMax ) )
@@ -1893,10 +1926,8 @@ class TFileFilter  //  ff
 
             //  if we need to wait to get a throttle count then we must issue to avoid deadlocks
 
-            if ( !waiter.FComplete() )
+            if ( fThrottleAcquired && !fCombined && !waiter.FComplete() )
             {
-                Assert( fThrottleAcquired && !fCombined );
-
                 //  issue any IO queued for this thread
 
                 Call( ErrIOIssue() );
@@ -1997,6 +2028,8 @@ class TFileFilter  //  ff
         volatile int                                                m_cCacheWriteBackForIssue;
         CInitOnceAttach                                             m_initOnceAttach;
         CSemaphore                                                  m_semCachedFileHeader;
+        volatile LONG64                                             m_cioUnflushed;
+        volatile LONG64                                             m_cioFlushing;
 
     private:
 
@@ -2065,6 +2098,7 @@ class TFileFilter  //  ff
 
                 CIOComplete(    _In_                    const BOOL                      fIsHeapAlloc,
                                 _In_                    TFileFilter<I>* const           pff,
+                                _In_                    const IFileFilter::IOMode       iom,
                                 _In_                    const BOOL                      fWrite,
                                 _In_                    const OSFILEQOS                 grbitQOS,
                                 _Inout_opt_             CMeteredSection::Group* const   pgroupPendingWriteBacks,
@@ -2086,6 +2120,7 @@ class TFileFilter  //  ff
                                                         pfnIOHandoff,
                                                         keyIOComplete ),
                         m_pff( pff ),
+                        m_iom( iom ),
                         m_fAsync( pfnIOComplete != NULL ),
                         m_fWrite( fWrite ),
                         m_grbitQOS( grbitQOS ),
@@ -2207,6 +2242,13 @@ class TFileFilter  //  ff
                                     _In_ const FullTraceContext&    tc,
                                     _In_ const OSFILEQOS            grbitQOS )
                 {
+                    //  note any unflushed async engine write
+                    
+                    if ( m_fAsync && m_iom == iomEngine && m_fWrite )
+                    {
+                        AtomicAdd( (QWORD*)&m_pff->m_cioUnflushed, 1 );
+                    }
+                    
                     //  pass on the return signals from the lower layer
 
                     OSFILEQOS grbitQOSOutput = m_grbitQOS & qosIOInMask;
@@ -2240,17 +2282,18 @@ class TFileFilter  //  ff
 
             private:
 
-                TFileFilter<I>* const   m_pff;
-                const BOOL              m_fAsync;
-                const BOOL              m_fWrite;
-                const OSFILEQOS         m_grbitQOS;
-                CMeteredSection::Group  m_groupPendingWriteBacks;
-                CSemaphore*             m_psemCachedFileHeader;
-                CWriteBack* const       m_pwriteback;
-                BOOL                    m_fReleaseWriteback;
-                BOOL                    m_fThrottleReleaser;
-                volatile BOOL           m_fReleaseResources;
-                CIORequestPending       m_iorequestpending;
+                TFileFilter<I>* const       m_pff;
+                const IFileFilter::IOMode   m_iom;
+                const BOOL                  m_fAsync;
+                const BOOL                  m_fWrite;
+                const OSFILEQOS             m_grbitQOS;
+                CMeteredSection::Group      m_groupPendingWriteBacks;
+                CSemaphore*                 m_psemCachedFileHeader;
+                CWriteBack* const           m_pwriteback;
+                BOOL                        m_fReleaseWriteback;
+                BOOL                        m_fThrottleReleaser;
+                volatile BOOL               m_fReleaseResources;
+                CIORequestPending           m_iorequestpending;
         };
 };
 
@@ -2264,6 +2307,7 @@ TFileFilter<I>::TFileFilter(    _Inout_     IFileAPI** const                    
                                 _In_        const VolumeId                      volumeid,
                                 _In_        const FileId                        fileid,
                                 _Inout_opt_ ICachedFileConfiguration** const    ppcfconfig,
+                                _In_        const BOOL                          fEverEligibleForCaching,
                                 _Inout_opt_ ICache** const                      ppc,
                                 _Inout_opt_ CCachedFileHeader** const           ppcfh )
     :   TFileWrapper<I>( (I** const)ppfapi ),
@@ -2277,7 +2321,7 @@ TFileFilter<I>::TFileFilter(    _Inout_     IFileAPI** const                    
         m_volumeid( volumeid ),
         m_fileid( fileid ),
         m_fileserial( fileserialInvalid ),
-        m_fEverEligibleForCaching( fFalse ),
+        m_fEverEligibleForCaching( fEverEligibleForCaching ),
         m_pcfconfig( ppcfconfig ? *ppcfconfig : NULL ),
         m_pc( ppc && *ppc ? &m_cWrapper : NULL ),
         m_cWrapper( this, ppc ),
@@ -2291,7 +2335,9 @@ TFileFilter<I>::TFileFilter(    _Inout_     IFileAPI** const                    
         m_semRequestWriteBacks( CSyncBasicInfo( "TFileFilter<I>::m_semRequestWriteBacks" ) ),
         m_cCacheWriteForFlush( 0 ),
         m_cCacheWriteBackForIssue( 0 ),
-        m_semCachedFileHeader( CSyncBasicInfo( "TFileFilter<I>::m_semCachedFileHeader" ) )
+        m_semCachedFileHeader( CSyncBasicInfo( "TFileFilter<I>::m_semCachedFileHeader" ) ),
+        m_cioUnflushed( 0 ),
+        m_cioFlushing( 0 )
 {
     SetCacheParameters();
     m_rgparrayPendingWriteBacks[ 0 ] = &m_rgarrayOffsets[ 0 ];
@@ -2344,7 +2390,28 @@ ERR TFileFilter<I>::ErrGetPhysicalId(   _Out_ VolumeId* const   pvolumeid,
 template< class I >
 ERR TFileFilter<I>::ErrFlushFileBuffers( _In_ const IOFLUSHREASON iofr )
 {
-    return ErrFlush( iofr, iomEngine );
+    ERR err = JET_errSuccess;
+
+    const LONG64 ciosDelta = AtomicExchange( &m_cioUnflushed, 0 );
+    AtomicAdd( (QWORD*)&m_cioFlushing, ciosDelta );
+
+    Call( ErrFlush( iofr, iomEngine ) );
+
+HandleError:
+    if ( err < JET_errSuccess )
+    {
+        AtomicAdd( (QWORD*)&m_cioUnflushed, ciosDelta );
+    }
+    AtomicAdd( (QWORD*)&m_cioFlushing, -ciosDelta );
+    return err;
+}
+
+template< class I >
+void TFileFilter<I>::SetNoFlushNeeded()
+{
+    AtomicExchange( &m_cioUnflushed, 0 );
+
+    TFileWrapper<I>::SetNoFlushNeeded();
 }
 
 template< class I >
@@ -2432,7 +2499,7 @@ ERR TFileFilter<I>::ErrIOTrim(  _In_ const TraceContext&    tc,
         //  NOTE:  we will not trim the header if we are attached
 
         QWORD cbHeaderTrimmed = FAttached() && offsets.FOverlaps( m_offsetsCachedFileHeader ) ?
-            min(offsets.Cb(), m_offsetsCachedFileHeader.IbEnd() - offsets.IbStart() + 1 ) :
+            min( offsets.Cb(), m_offsetsCachedFileHeader.IbEnd() - offsets.IbStart() + 1 ) :
             0;
 
         if ( cbToFree > cbHeaderTrimmed )
@@ -2555,6 +2622,12 @@ void TFileFilter<I>::RegisterIFilePerfAPI( _In_ IFilePerfAPI* const pfpapi )
 }
 
 template< class I >
+LONG64 TFileFilter<I>::CioNonFlushed() const
+{
+    return AtomicRead( (QWORD*)&m_cioUnflushed ) + AtomicRead( (QWORD*)&m_cioFlushing );
+}
+
+template< class I >
 ERR TFileFilter<I>::ErrRead(    _In_                    const TraceContext&             tc,
                                 _In_                    const QWORD                     ibOffset,
                                 _In_                    const DWORD                     cbData,
@@ -2667,7 +2740,7 @@ ERR TFileFilter<I>::ErrWrite(   _In_                    const TraceContext&     
     else if ( iom == iomCacheWriteThrough )
     {
         Call( ErrVerifyAccess( offsets ) );
-        Call( ErrWriteThrough( tc, ibOffset, cbData, pbData, grbitQOS, grbitQOS, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, &group, &psem, NULL ) );
+        Call( ErrWriteThrough( iomCacheWriteThrough, tc, ibOffset, cbData, pbData, grbitQOS, grbitQOS, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, &group, &psem, NULL ) );
     }
     else if ( iom == iomCacheWriteBack )
     {
@@ -2807,6 +2880,8 @@ ERR TFileFilter<I>::ErrBeginAccess( _In_    const COffsets&                 offs
                                     _Out_   CSemaphore** const              ppsem )
 {
     ERR                     err             = JET_errSuccess;
+    const BOOL              fNotYetAttached = !m_pcfh && !m_initOnceAttach.FIsInit();
+    const BOOL              fNeedsAttach    = fWrite && fNotYetAttached && m_pcfconfig && m_pcfconfig->FCachingEnabled();
     COffsets                offsetsActual   = offsets;
     CMeteredSection::Group  group           = CMeteredSection::groupInvalidNil;
     CSemaphore*             psem            = NULL;
@@ -2817,8 +2892,6 @@ ERR TFileFilter<I>::ErrBeginAccess( _In_    const COffsets&                 offs
     //  if this is a write and the file is cached and not yet attached then expand the offset range to include the
     //  header so that we can write our cached file header
 
-    const BOOL fNotYetAttached = !m_pcfh && !m_initOnceAttach.FIsInit();
-    const BOOL fNeedsAttach = fWrite && fNotYetAttached;
     if ( fNeedsAttach )
     {
         offsetsActual = COffsets( 0, offsetsActual.IbEnd() );
@@ -3011,7 +3084,7 @@ ERR TFileFilter<I>::ErrInvalidate( _In_ const COffsets& offsets )
                                     qosIONormal,
                                     cpPinned,
                                     NULL,
-                                    NULL ));
+                                    NULL ) );
         }
 
         //  invalidate the cache for this offset range
@@ -3044,6 +3117,13 @@ ERR TFileFilter<I>::ErrAttach( _In_ const COffsets& offsetsFirstWrite )
     BOOL                        fPresumeCached              = fFalse;
     BOOL                        fPresumeAttached            = fFalse;
 
+    //  if the file has an invalid file id then it is not eligible for caching
+
+    if ( m_volumeid == volumeidInvalid || m_fileid == fileidInvalid )
+    {
+        Error( JET_errSuccess );
+    }
+
     //  we do not currently support caching files opened for write through
 
     if ( ( Fmf() & fmfStorageWriteBack ) == 0 )
@@ -3070,8 +3150,8 @@ ERR TFileFilter<I>::ErrAttach( _In_ const COffsets& offsetsFirstWrite )
         Error( JET_errSuccess );
     }
 
-    //  try to open the cache for this file.  if we can't then we will use access the file without caching.  this
-    //  is intentionally best effort only to allow continued operation if the caching storage is failed
+    //  try to open the cache for this file.  if we can't then we will access the file without caching.  this is
+    //  intentionally best effort only to allow continued operation if the caching storage is failed
 
     err = ErrGetConfiguredCache();
     if ( err < JET_errSuccess )
@@ -3088,7 +3168,7 @@ ERR TFileFilter<I>::ErrAttach( _In_ const COffsets& offsetsFirstWrite )
 
     //  read the data to be displaced by the cached file header, if any
 
-    Alloc( pvData = PvOSMemoryPageAlloc( m_offsetsCachedFileHeader.Cb(), NULL ) );
+    Alloc( pvData = PvOSMemoryPageAlloc( (size_t)( m_offsetsCachedFileHeader.Cb() ), NULL ) );
     if ( cbSize > 0 )
     {
         Call( ErrRead(  *tcScope, 
@@ -3105,7 +3185,7 @@ ERR TFileFilter<I>::ErrAttach( _In_ const COffsets& offsetsFirstWrite )
 
     //  create the new cached file header
 
-    Call( CCachedFileHeader::ErrCreate( this, m_pc, &pcfh ) );
+    Call( CCachedFileHeader::ErrCreate( this, m_pc, (DWORD)m_offsetsCachedFileHeader.Cb(), &pcfh ) );
 
     //  allow this file to be opened by the cache
 
@@ -3123,7 +3203,7 @@ ERR TFileFilter<I>::ErrAttach( _In_ const COffsets& offsetsFirstWrite )
                             qosIONormal,
                             cpPinned,
                             NULL,
-                            NULL ));
+                            NULL ) );
     fPresumeCached = fTrue;
     Call( m_pc->ErrFlush( m_volumeid, m_fileid, m_fileserial ) );
 
@@ -3135,7 +3215,7 @@ ERR TFileFilter<I>::ErrAttach( _In_ const COffsets& offsetsFirstWrite )
     //  we will remove the ability of the cache to open this already open file for write through / write back.  so we 
     //  are not at risk of writing this stale data back to the file
 
-    memset( pvData, 0, m_offsetsCachedFileHeader.Cb() );
+    memset( pvData, 0, (size_t)( m_offsetsCachedFileHeader.Cb() ) );
     UtilMemCpy( pvData, pcfh, sizeof( *pcfh ) );
 
     Call( ErrWrite( *tcScope, 
@@ -3187,7 +3267,6 @@ ERR TFileFilter<I>::ErrGetConfiguredCache()
     const DWORD                     cwchKeyPathCachedFileMax                            = IFileIdentification::cwchKeyPathMax;
     WCHAR                           wszKeyPathCachedFile[ cwchKeyPathCachedFileMax ]    = { 0 };
     IBlockCacheConfiguration*       pbcconfig                                           = NULL;
-    ICachedFileConfiguration*       pcfconfig                                           = NULL;
     const DWORD                     cwchAbsPathCachingFileMax                           = IFileSystemAPI::cchPathMax;
     WCHAR                           wszAbsPathCachingFile[ cwchAbsPathCachingFileMax ]  = { 0 };
     const DWORD                     cwchKeyPathCachingFileMax                           = IFileIdentification::cwchKeyPathMax;
@@ -3207,15 +3286,14 @@ ERR TFileFilter<I>::ErrGetConfiguredCache()
     Call( ErrPath( wszAbsPathCachedFile ) );
     Call( m_pfident->ErrGetFileKeyPath( wszAbsPathCachedFile, wszKeyPathCachedFile ) );
     Call( m_pfsconfig->ErrGetBlockCacheConfiguration( &pbcconfig ) );
-    Call( pbcconfig->ErrGetCachedFileConfiguration( wszKeyPathCachedFile, &pcfconfig ) );
 
     //  if caching is enabled for this file then open its backing store
 
-    if ( pcfconfig->FCachingEnabled() )
+    if ( m_pcfconfig->FCachingEnabled() )
     {
         //  get the cache configuration for this file
 
-        pcfconfig->CachingFilePath( wszAbsPathCachingFile );
+        m_pcfconfig->CachingFilePath( wszAbsPathCachingFile );
         Call( m_pfident->ErrGetFileKeyPath( wszAbsPathCachingFile, wszKeyPathCachingFile ) );
         Call( pbcconfig->ErrGetCacheConfiguration( wszKeyPathCachingFile, &pcconfig ) );
 
@@ -3223,22 +3301,14 @@ ERR TFileFilter<I>::ErrGetConfiguredCache()
 
         Call( m_pcrep->ErrOpen( m_pfsf, m_pfsconfig, &pcconfig, &pc ) );
 
-        //  if we didn't get a cache then we're done
-
-        if ( !pc )
-        {
-            Error( JET_errSuccess );
-        }
-
         //  save the file's cache configuration and cache
 
-        SetCacheState( &pcfconfig, &pc, NULL );
+        SetCacheState( &pc, NULL );
     }
 
 HandleError:
     delete pc;
     delete pcconfig;
-    delete pcfconfig;
     delete pbcconfig;
     return err;
 }
@@ -3690,6 +3760,7 @@ ERR TFileFilter<I>::ErrCacheRead(   _In_                    const TraceContext& 
         {
             Alloc( piocomplete = new CIOComplete(   fTrue,
                                                     this,
+                                                    iomEngine,
                                                     fFalse, 
                                                     grbitQOSOutput,
                                                     pgroup, 
@@ -3832,6 +3903,7 @@ ERR TFileFilter<I>::ErrCacheMiss(   _In_                    const TraceContext& 
         Alloc( piocomplete = new( fHeap ? new Buffer<CIOComplete>() : _malloca( sizeof( CIOComplete ) ) )
             CIOComplete(    fHeap,
                             this,
+                            iomCacheMiss,
                             fFalse, 
                             grbitQOSOutputActual,
                             pgroup, 
@@ -3945,6 +4017,7 @@ ERR TFileFilter<I>::ErrCacheWrite(  _In_                    const TraceContext& 
         {
             Alloc( piocomplete = new CIOComplete(   fTrue,
                                                     this, 
+                                                    iomEngine,
                                                     fTrue,
                                                     grbitQOSOutput,
                                                     pgroup, 
@@ -4003,7 +4076,8 @@ ERR TFileFilter<I>::ErrCacheWrite(  _In_                    const TraceContext& 
             m_pctm->Write( filenumber, blocknumber, true );
         }
 
-        err = ErrWriteThrough(  tc,
+        err = ErrWriteThrough(  iomEngine,
+                                tc,
                                 ibOffset,
                                 cbData,
                                 pbData,
@@ -4033,7 +4107,8 @@ HandleError:
 }
 
 template< class I >
-ERR TFileFilter<I>::ErrWriteThrough(    _In_                    const TraceContext&             tc,
+ERR TFileFilter<I>::ErrWriteThrough(    _In_                    const IFileFilter::IOMode       iom,
+                                        _In_                    const TraceContext&             tc,
                                         _In_                    const QWORD                     ibOffset,
                                         _In_                    const DWORD                     cbData,
                                         _In_reads_( cbData )    const BYTE* const               pbData,
@@ -4047,7 +4122,7 @@ ERR TFileFilter<I>::ErrWriteThrough(    _In_                    const TraceConte
                                         _Inout_                 CSemaphore** const              ppsem,
                                         _Inout_opt_             BOOL* const                     pfThrottleReleaser )
 {
-    return ErrWriteCommon( tc, ibOffset, cbData, pbData, grbitQOS, grbitQOSInput, grbitQOSOutput, pfnIOComplete, keyIOComplete, pfnIOHandoff, pgroup, ppsem, NULL, pfThrottleReleaser );
+    return ErrWriteCommon( iom, tc, ibOffset, cbData, pbData, grbitQOS, grbitQOSInput, grbitQOSOutput, pfnIOComplete, keyIOComplete, pfnIOHandoff, pgroup, ppsem, NULL, pfThrottleReleaser );
 }
 
 template< class I >
@@ -4061,11 +4136,12 @@ ERR TFileFilter<I>::ErrWriteBack(   _In_                    const TraceContext& 
                                     _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
                                     _In_                    CWriteBack* const               pwriteback )
 {
-    return ErrWriteCommon( tc, ibOffset, cbData, pbData, grbitQOS, grbitQOS, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, NULL, NULL, pwriteback, NULL );
+    return ErrWriteCommon( iomCacheWriteBack, tc, ibOffset, cbData, pbData, grbitQOS, grbitQOS, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, NULL, NULL, pwriteback, NULL );
 }
 
 template< class I >
-ERR TFileFilter<I>::ErrWriteCommon( _In_                    const TraceContext&             tc,
+ERR TFileFilter<I>::ErrWriteCommon( _In_                    const IFileFilter::IOMode       iom,
+                                    _In_                    const TraceContext&             tc,
                                     _In_                    const QWORD                     ibOffset,
                                     _In_                    const DWORD                     cbData,
                                     _In_reads_( cbData )    const BYTE* const               pbData,
@@ -4097,6 +4173,7 @@ ERR TFileFilter<I>::ErrWriteCommon( _In_                    const TraceContext& 
         Alloc( piocomplete = new( fHeap ? new Buffer<CIOComplete>() : _malloca( sizeof( CIOComplete ) ) )
             CIOComplete(    fHeap,
                             this, 
+                            iom,
                             fTrue,
                             grbitQOSOutput,
                             pgroup, 
@@ -4120,6 +4197,13 @@ ERR TFileFilter<I>::ErrWriteCommon( _In_                    const TraceContext& 
                     pfnIOComplete ? CIOComplete::IOComplete_ : NULL,
                     DWORD_PTR( piocomplete ),
                     piocomplete ? CIOComplete::IOHandoff_ : NULL ) );
+
+    //  note any unflushed sync engine write
+
+    if ( !pfnIOComplete && iom == iomEngine )
+    {
+        AtomicAdd( (QWORD*)&m_cioUnflushed, 1 );
+    }
 
 HandleError:
     if ( piocomplete )
@@ -4159,9 +4243,10 @@ class CFileFilter : public TFileFilter<IFileFilter>
                         _In_        const VolumeId                      volumeid,
                         _In_        const FileId                        fileid,
                         _Inout_opt_ ICachedFileConfiguration** const    ppcfconfig,
+                        _In_        const BOOL                          fEverEligibleForCaching,
                         _Inout_opt_ ICache** const                      ppc,
                         _Inout_opt_ CCachedFileHeader** const           ppcfh )
-            :   TFileFilter<IFileFilter>( ppfapi, pfsf, pfsconfig, pfident, pctm, pcrep, volumeid, fileid, ppcfconfig, ppc, ppcfh )
+            :   TFileFilter<IFileFilter>( ppfapi, pfsf, pfsconfig, pfident, pctm, pcrep, volumeid, fileid, ppcfconfig, fEverEligibleForCaching, ppc, ppcfh )
         {
         }
 

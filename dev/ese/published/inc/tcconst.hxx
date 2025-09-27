@@ -46,7 +46,8 @@ const QWORD qwLogFileID             = 0x4000000000000000;   // top DWORD is m_iI
 const QWORD qwBackupDbID            = 0x6000000000000000;   // low DWORD is ifmp.
 const QWORD qwBackupLogID           = 0x7000000000000000;   // top DWORD is m_iInstance (except top nibble)
 const QWORD qwRBSFileID             = 0x8000000000000000;   // top DWORD is m_iInstance (except top nibble)
-const QWORD qwRBSRevertChkFileID    = 0x9000000000000000;   // top DWORD is m_iInstance (except top nibble)
+const QWORD qwRBSRevertChkFileID    = 0x8000000100000000;   // top DWORD is m_iInstance (except top nibble)
+const QWORD qwRBSRevertFDPDeleteFileID = 0x8000000200000000; // top DWORD is m_iInstance (except top nibble)
 
 const LONG lGenSignalCurrentID  = 0x80000001;           // signal to indicate current lgen where we can't know the lgen apriori
 const LONG lGenSignalTempID     = 0x80000002;           // signal to indicate current lgen where we can't know the lgen apriori
@@ -183,7 +184,8 @@ enum IOREASONSECONDARY : BYTE
     iorsBTMerge = 13,
     iorsBTRefresh = 14,
     iorsBTPreread = 15,
-    iorsBTMax = 16,
+    iorsBTUtility = 16,
+    iorsBTMax = 17,
 
     // Defined by LG as iorsLRNOP + lrtyp, reserved through iorsLRMax
     iorsLRNOP = 128,
@@ -225,7 +227,7 @@ enum IOREASONFLAGS : BYTE
 {
     //iorfNone = 0, defined generically by OS layer
 
-    iorfShadow                  = 0x01,
+    iorfNewPage                 = 0x01, //  used to be iorfShadow, only emitted for iorpLGWriteCapacity, iorpLGWriteCommit, iorpLGWriteSignal
     iorfFill                    = 0x02,
     iorfOpportune               = 0x04,
     iorfForeground              = 0x08,

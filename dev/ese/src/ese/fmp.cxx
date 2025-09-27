@@ -334,7 +334,8 @@ FMP::FMP()
         m_isdlCreate( isdltypeCreate ),
         m_isdlAttach( isdltypeAttach ),
         m_isdlDetach( isdltypeDetach ),
-        m_critOpenDbCheck( CLockBasicInfo( CSyncBasicInfo( szOpenDbCheck ), rankOpenDbCheck, 0 ) )
+        m_critOpenDbCheck( CLockBasicInfo( CSyncBasicInfo( szOpenDbCheck ), rankOpenDbCheck, 0 ) ),
+        m_rwlLeakEstimation( CLockBasicInfo( CSyncBasicInfo( szBFFMPContext ), rankFMPLeakEstimation, 0 ) )
 
         // TRY NOT TO ADD INITIALIZATION HERE!  Only like critical section contructors or
         // something that might live in the g_rgfmp outside / longer than the normal attached 
@@ -595,7 +596,56 @@ VOID FMP::SetDbHeaderUpdateState( _In_ const DbHeaderUpdateState dbhusNewState )
 }
 #endif // DEBUG
 
+ERR FMP::ErrInitMSysDeferredPopulateKeys_( FMP * pfmp, PIB * const ppib, BOOL fAllowCreation )
+{
+    Assert( NULL == pfmp->PkvpsMSysDeferredPopulateKeys() );
+    ERR err;
 
+    err =  ErrCATInitMSDeferredPopulateKeys( ppib, pfmp->Ifmp(), fAllowCreation );
+    return err;
+}
+
+ERR FMP::ErrInitMSysDeferredPopulateKeys( PIB * const ppib, BOOL fAllowCreation )
+{
+    ERR err = m_initOnceMSysDeferredPopulateKeys.Init(FMP::ErrInitMSysDeferredPopulateKeys_, this, ppib, fAllowCreation );
+
+    if ( !fAllowCreation )
+    {
+        // The whole reason for the use of the init once structure is so we only have one thread
+        // at a time actually creating the table.  Since we're not allowing creation, that's not
+        // necessary here.  Furthermore, there are valid reasons to try to look up the existence
+        // of the table multiple times (serially without race possibilities), which ends up being
+        // multiple calls to this function with fAllowCreation == fFalse, and if we don't Reset(),
+        // then only the first lookup will find the table.
+        m_initOnceMSysDeferredPopulateKeys.Reset();
+
+        switch ( err )
+        {
+        case JET_errSuccess:
+            break;
+
+        case JET_errObjectNotFound:
+            // Since we were only checking to see if the store was already there, it's not
+            // really a problem if it's not.
+            err = JET_errSuccess;
+            break;
+
+        case JET_errEngineFormatVersionParamTooLowForRequestedFeature:
+            // Since we were only checking to see if the store was already there, it's not
+            // really a problem that the efv is too low for it to be there.
+            err = JET_errSuccess;
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    return err;
+}
+
+
+ERR ErrDBFormatFeatureEnabled_( const FormatVersions* pfmtversFormatFeature, const DbVersion& dbvCurrentFromFile );
 ERR ErrDBFormatFeatureEnabled_( const JET_ENGINEFORMATVERSION efvFormatFeature, const DbVersion& dbvCurrentFromFile );
 
 ERR FMP::ErrDBFormatFeatureEnabled( const DBFILEHDR* const pdbfilehdr, const JET_ENGINEFORMATVERSION efvFormatFeature )
@@ -640,7 +690,34 @@ ERR FMP::ErrDBFormatFeatureEnabled( const DBFILEHDR* const pdbfilehdr, const JET
 
 ERR FMP::ErrDBFormatFeatureEnabled( const JET_ENGINEFORMATVERSION efvFormatFeature )
 {
-    return ErrDBFormatFeatureEnabled( Pdbfilehdr().get(), efvFormatFeature );
+    ERR err = JET_errSuccess;
+
+    Assert( efvFormatFeature <= PfmtversEngineMax()->efv );
+
+    JET_ENGINEFORMATVERSION efvHighestSupported = m_efvHighestSupported;
+    if ( efvHighestSupported == 0 )
+    {
+        // If cached efv is not initialized.
+        const FormatVersions* pfmtVerDb;
+        err = ErrDBFindHighestMatchingDbMajors( Pdbfilehdr().get()->Dbv(), &pfmtVerDb );
+        if ( err == JET_errSuccess )
+        {
+            AtomicCompareExchange( (ULONG*) &m_efvHighestSupported, efvHighestSupported, pfmtVerDb->efv );
+            efvHighestSupported = m_efvHighestSupported;
+        }
+    }
+
+    if ( efvHighestSupported >= JET_efvSetDbVersion )
+    {
+        return ( efvFormatFeature <= efvHighestSupported ? JET_errSuccess : ErrERRCheck( JET_errEngineFormatVersionParamTooLowForRequestedFeature ) );
+    }
+    else
+    {
+        // DB's supported efv is lower than SetDbVersion.
+        // Don't use cached checks for this case, fall back to slow path.
+        // This is because some legacy efvs are out of order and just comparing efv value may yield incorrect result.
+        return ErrDBFormatFeatureEnabled( Pdbfilehdr().get(), efvFormatFeature );
+    }
 }
 
 ERR ErrFMFormatFeatureEnabled( const JET_ENGINEFORMATVERSION efvFormatFeature, const GenVersion& fmvCurrentFromFile )
@@ -1271,56 +1348,102 @@ ERR FMP::ErrNewAndWriteLatch(
 
     //  We did not find a match when searching for it, so now find a usable FMP (preferring
     //  ones with no unattached cache, and lower ifmps over higher ones)...
-
-    OnDebug( BOOL fDidCanabalizeUnattachedCachesPass = fFalse );
-#pragma warning(suppress: 6293)
-    for ( BOOL fPreserveUnattachedCaches = fTrue; fPreserveUnattachedCaches != 0xFFFFFFFF; fPreserveUnattachedCaches-- )
+    ULONG cFmpsEvaluated = 0;
+    ULONG cFmpsInUse = 0;
+    ULONG cFmpsRedoMapNotEmpty = 0;
+    ULONG cPreservedCaches = 0;
+    for ( int iPreserveUnattachedCaches = 1; iPreserveUnattachedCaches >= 0; iPreserveUnattachedCaches-- )
     {
-
-        ULONG cFmpsEvaluated = 0;
-        ULONG cPreservedCaches = 0;
+        const BOOL fPreserveUnattachedCaches = ( iPreserveUnattachedCaches != 0 );
+        cFmpsEvaluated = 0;
+        cFmpsInUse = 0;
+        cFmpsRedoMapNotEmpty = 0;
+        cPreservedCaches = 0;
 
         //  First we try to search something in the Min-Mac range to keep the IFMP range tight
         for ( ifmp = IfmpMinInUse(); ifmp <= IfmpMacInUse(); ifmp++ )
         {
             cFmpsEvaluated++;
+
             if ( g_rgfmp[ifmp].FInUse() )
+            {
+                cFmpsInUse++;
                 continue;
+            }
+
+            if ( !g_rgfmp[ifmp].FRedoMapsEmpty() )
+            {
+                cFmpsRedoMapNotEmpty++;
+                continue;
+            }
+
             if ( fPreserveUnattachedCaches && !g_rgfmp[ifmp].DataHeaderSignature().FNull() )
             {
                 cPreservedCaches++;
                 continue;
             }
+
             goto SelectedIfmp;
         }
+
         //  Next we try to utilize FMPs on the lower side of Min/Mac range to keep ourselves from wasting g_rgfmp memory
         for ( ifmp = IfmpMinInUse() - 1; IfmpMacInUse() != 0 && ifmp >= cfmpReserved && ifmp < IfmpMinInUse() /* note using/catch UINT wrap-around */; ifmp-- )
         {
             Assert( NULL == g_rgfmp[ifmp].WszDatabaseName() ); // == Assert( !g_rgfmp[ifmp].FInUse() ); // that would be weird, as it's outside the min/mac range
 
             cFmpsEvaluated++;
+
+            if ( !g_rgfmp[ifmp].FRedoMapsEmpty() )
+            {
+                cFmpsRedoMapNotEmpty++;
+                continue;
+            }
+
             if ( fPreserveUnattachedCaches && !g_rgfmp[ifmp].DataHeaderSignature().FNull() )
             {
                 cPreservedCaches++;
                 continue;
             }
+
             goto SelectedIfmp;
         }
+
         //  We might have previously grown, but then shrunk, so see if that is available.
         for ( ifmp = IfmpMacInUse() + 1; ifmp < g_ifmpMax && FMP::FAllocatedFmp( ifmp ); ifmp++ )
         {
             Assert( NULL == g_rgfmp[ifmp].WszDatabaseName() ); // == Assert( !g_rgfmp[ifmp].FInUse() ); // that would be weird, as it's outside the min/mac range
 
             cFmpsEvaluated++;
+
+            if ( !g_rgfmp[ifmp].FRedoMapsEmpty() )
+            {
+                cFmpsRedoMapNotEmpty++;
+                continue;
+            }
+
             if ( fPreserveUnattachedCaches && !g_rgfmp[ifmp].DataHeaderSignature().FNull() )
             {
                 cPreservedCaches++;
                 continue;
             }
+
             goto SelectedIfmp;
         }
 
         Assert( cFmpsEvaluated == ( s_ifmpMacCommitted - cfmpReserved ) );
+        Assert( cFmpsInUse <= cFmpsEvaluated );
+        Assert( cFmpsRedoMapNotEmpty <= cFmpsEvaluated );
+        Assert( cPreservedCaches <= cFmpsEvaluated );
+        Assert( cPreservedCaches == 0 || fPreserveUnattachedCaches );
+        Assert( ( cFmpsInUse + cFmpsRedoMapNotEmpty + cPreservedCaches ) == cFmpsEvaluated );
+
+        if ( fPreserveUnattachedCaches && cPreservedCaches == 0 )
+        {
+            // We are trying to preserve caches, but we ended up not selecting any IFMP
+            // for reasons other than preserving the IFMPs' caches, so it's pointless
+            // to retry.
+            break;
+        }
 
 #ifdef DEBUG
         const ULONG cMinimumPreservedCaches = ( ( rand() % 2 ) == 0 ) ? 2 : g_ifmpMax;
@@ -1332,7 +1455,7 @@ ERR FMP::ErrNewAndWriteLatch(
 
         if ( fPreserveUnattachedCaches &&
                 cPreservedCaches <= cMinimumPreservedCaches &&  // we don't have enough preserved caches
-                cFmpsEvaluated < ( g_ifmpMax - 1 ) )              // we have room to grow the FMP pool
+                cFmpsEvaluated < ( g_ifmpMax - 1 ) )            // we have room to grow the FMP pool
         {
             //  We found only preserved caches (or we would've bailed to SelectedIfmp by now), so we could
             //  go back through with (fPreserveUnattachedCaches == fFalse this time) and select one of them 
@@ -1341,21 +1464,19 @@ ERR FMP::ErrNewAndWriteLatch(
             //  instead ...
             break;
         }
-        if ( !fPreserveUnattachedCaches )
-        {
-            OnDebug( fDidCanabalizeUnattachedCachesPass = fTrue );
-        }
     }
 
     //  Finally fall back to potentially actually growing the FMP array to new memory ...
 
-    //  We fell off the end of the last loop, even with fPreserveUnattachedCaches false, have we
-    //  just hit the maximum DBs attached?
+    //  We fell off the end of the last loop, have we just hit the maximum DBs attached?
     if ( ifmp >= g_ifmpMax )
     {
-        ; // double checking we did everything to find a slot before bailing
-        Assert( fDidCanabalizeUnattachedCachesPass );
-        err = ErrERRCheck( JET_errTooManyAttachedDatabases );
+        Assert( ifmp == g_ifmpMax );
+        Assert( ifmp > cfmpReserved );
+        Assert( ( ifmp - cfmpReserved ) == cFmpsEvaluated );
+        Assert( cPreservedCaches == 0 );
+        Assert( ( cFmpsInUse + cFmpsRedoMapNotEmpty ) == cFmpsEvaluated );
+        Error( ErrERRCheck( JET_errTooManyAttachedDatabases ) );
     }
 
     //  We are here because we couldn't find an allocated IFMP or an allocated and no unattached-cache IFMP ...
@@ -1425,6 +1546,10 @@ SelectedIfmp:
 
     if ( !fFoundMatchingFmp )
     {
+        // We can't reuse an FMP with pending redo map entries because we would lose
+        // track of unresolved entries, which could cause us to succeed in recovering
+        // a database which could be potentially corrupted. However, this is already being
+        // prevented above, as we always skip picking an FMP with a non-empty redo map.
         DBEnforceSz(
             ifmp,
             g_rgfmp[ifmp].FRedoMapsEmpty(),
@@ -1507,6 +1632,8 @@ ERR FMP::ErrInitializeOneFmp(
     pfmp->SetTrxOldestTarget( trxMax );
     pfmp->SetTrxNewestWhenDiscardsLastReported( trxMin );
 
+    pfmp->SetKVPMSysDeferredPopulateKeys( NULL );
+
     pfmp->SetWriteLatch( ppib );
     pfmp->SetLgposAttach( lgposMin );
     pfmp->SetLgposDetach( lgposMin );
@@ -1535,9 +1662,11 @@ ERR FMP::ErrInitializeOneFmp(
     pfmp->SetLeakReclaimerEnabled( fFalse );
     pfmp->SetLeakReclaimerTimeQuota( -1 );
     pfmp->SetSelfAllocSpBufReservationEnabled( fFalse );
+    pfmp->ResetEfvHighestSupported();
     pfmp->ResetLeakReclaimerIsRunning();
     pfmp->ResetPgnoMaxTracking();
     pfmp->ResetCpgAvail();
+    pfmp->InitLeakEstimation();
 
     pfmp->SetDbtimeBeginRBS( 0 );
     pfmp->ResetRBSOn();
@@ -2964,6 +3093,101 @@ VOID FMP::WaitForAsyncIOForViewCache()
             AssertSz( fFalse, "Asynchronous Read File I/O appears to be hung." );
         }
     }
+}
+
+//  ================================================================
+ERR FMP::ErrStartRootSpaceLeakEstimation()
+//  ================================================================
+{
+    ERR err = JET_errSuccess;
+
+    m_rwlLeakEstimation.EnterAsWriter();
+
+    Assert( m_objidLeakEstimation <= objidFDPOverMax );
+    if ( m_objidLeakEstimation != objidFDPOverMax )
+    {
+        Error( ErrERRCheck( JET_errRootSpaceLeakEstimationAlreadyRunning ) );
+    }
+
+    m_objidLeakEstimation = objidNil;
+
+    Expected( m_cpgLeakEstimationCorrection == 0 );
+    m_cpgLeakEstimationCorrection = 0;
+
+HandleError:
+    m_rwlLeakEstimation.LeaveAsWriter();
+    return err;
+}
+
+//  ================================================================
+VOID FMP::StopRootSpaceLeakEstimation()
+//  ================================================================
+{
+    m_rwlLeakEstimation.EnterAsWriter();
+    Expected( m_objidLeakEstimation < objidFDPOverMax );
+    InitLeakEstimation();
+    m_rwlLeakEstimation.LeaveAsWriter();
+}
+
+//  ================================================================
+VOID FMP::SetOjidLeakEstimation( const OBJID objid )
+//  ================================================================
+{
+    m_rwlLeakEstimation.EnterAsReader();
+
+    Expected( m_objidLeakEstimation < objidFDPOverMax );
+    Assert( objid > objidNil );
+    Assert( objid <= objidFDPMax );
+    Assert( ( objid > m_objidLeakEstimation ) || ( ( objid == m_objidLeakEstimation ) && ( objid == objidFDPMax ) ) );
+    m_objidLeakEstimation = objid;
+
+    m_rwlLeakEstimation.LeaveAsReader();
+}
+
+//  ================================================================
+CPG FMP::CpgLeakEstimationCorrection() const
+//  ================================================================
+{
+    return m_cpgLeakEstimationCorrection;
+}
+
+//  ================================================================
+VOID FMP::AccumulateCorrectionForLeakEstimation( const OBJID objid, const CPG cpg )
+//  ================================================================
+{
+    Assert( objid > objidNil );
+    Assert( objid <= objidFDPMax );
+
+    // Check without a lock first (common case).
+    if ( m_objidLeakEstimation == objidFDPOverMax )
+    {
+        return;
+    }
+
+    m_rwlLeakEstimation.EnterAsReader();
+
+    const OBJID objidLeakEstimation = m_objidLeakEstimation;
+    if ( ( objidLeakEstimation != objidFDPOverMax ) && ( objid <= objidLeakEstimation ) )
+    {
+        (VOID)AtomicExchangeAdd( (LONG*)&m_cpgLeakEstimationCorrection, (LONG)cpg );
+    }
+
+    m_rwlLeakEstimation.LeaveAsReader();
+}
+
+//  ================================================================
+OBJID FMP::OjidLeakEstimation() const
+//  ================================================================
+{
+    return m_objidLeakEstimation;
+}
+
+//  ================================================================
+VOID FMP::InitLeakEstimation()
+//  ================================================================
+{
+    m_cpgLeakEstimationCorrection = 0;
+    m_objidLeakEstimation = objidFDPOverMax;
 }
 
 //  ================================================================

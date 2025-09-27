@@ -26,10 +26,6 @@
 //  support for JET_bitCheckUniqueness on JetSeek()
 #define CHECK_UNIQUE_KEY_ON_NONUNIQUE_INDEX
 
-//  index rebuild perf improvements
-#define PARALLEL_BATCH_INDEX_BUILD
-#define DONT_LOG_BATCH_INDEX_BUILD
-
 //  ****************************************************
 //  global test hook / diagnostics macros
 //
@@ -1115,6 +1111,9 @@ const DBTIME dbtimeNil = 0xffffffffffffffff;
 const DBTIME dbtimeInvalid = 0xfffffffffffffffe;
 const DBTIME dbtimeShrunk = 0xfffffffffffffffd;
 const DBTIME dbtimeRevert = 0xfffffffffffffffc; // Used to track reverted new pages which get zeroed out as part of the revert and need to be ignored in dbscan check.
+const DBTIME dbtimeRevertRoot = 0xfffffffffffffffb; // Used to track pages which have been marked by root page records of RBS but are not yet root pages.
+                                                    // They should eventually be replaced with root page preimage by the snapshot. Once revert is done, there shouldn't be any db pages with dbtimeFDPDeleteRoot.
+                                                    // DbScan should help catch any such pages which would point to a bug in revert and a corrupted database.
 const DBTIME dbtimeUndone = dbtimeNil;          //  used to track the unused DBTIMEs in log records
 const DBTIME dbtimeStart = 0x40;
 
@@ -2454,8 +2453,6 @@ inline INT CmpDbVer( const DbVersion& ver1, const DbVersion& ver2 )
 //   - Also for any engine releases that should be publically addressible, surround them in () and ensure
 //     you update the ManagedEsent layer.
 //   - And finally add an entry to end of g_rgfmtversEngine[] table.
-
-extern const FormatVersions     g_rgfmtversEngine[];
 
 const FormatVersions * PfmtversEngineMin();
 const FormatVersions * PfmtversEngineMax();

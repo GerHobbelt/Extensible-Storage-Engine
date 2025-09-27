@@ -175,8 +175,6 @@ LOCAL VOID NDILineToKeydataflags( const CPAGE& cpage, const LINE * pline, KEYDAT
     //  an in-memory corruption, or ESE bug.  Either way we're hosed if we continue.
 
 
-    PageAssertTrack( cpage, pline->cb > (ULONG)cbKeyCountTotal || FNegTest( fCorruptingPageLogically ), "LineNotLongEnoughForKeyCounts" );
-#ifdef DEBUG
     if ( pline->cb <= (ULONG)cbKeyCountTotal )
     {
         if ( perrNoEnforce == NULL )
@@ -189,7 +187,6 @@ LOCAL VOID NDILineToKeydataflags( const CPAGE& cpage, const LINE * pline, KEYDAT
             *perrNoEnforce = ErrERRCheck( JET_errNodeCorrupted );
         }
     }
-#endif
 
     if constexpr( pgnbc == pgnbcChecked ) 
     {
@@ -2639,6 +2636,109 @@ ERR ErrNDValidateSetExternalHeader( const CPAGE &cpage, _In_ const DATA * pdata 
 }
 
 
+//  ================================================================
+INT INDIGetReservedTag( _In_ CPAGE& cpage, _In_ NodeResvTagId resvTagId, _Out_ DATA* pdata )
+//  ================================================================
+{
+    LINE    line;
+    INT     ctagReserved = cpage.CTagReserved();
+
+    for ( INT itag = 1; itag < ctagReserved; itag++ )
+    {
+        cpage.GetPtrReservedTag( itag, &line );
+        NodeResvTag* pResvTag = (NodeResvTag*) line.pv;
+        if ( pResvTag->resvTagId == resvTagId )
+        {
+            pdata->SetPv( line.pv );
+            pdata->SetCb( line.cb );
+            return itag;
+        }
+    }
+
+    pdata->Nullify();
+    return -1;
+}
+
+
+//  ================================================================
+INT INDGetReservedTag( _In_ FUCB* pfucb, _In_ CSR* pcsr, _In_ NodeResvTagId resvTagId, _Out_ DATA* pdata )
+//  ================================================================
+{
+    Assert( g_rgfmp[ pfucb->ifmp ].ErrDBFormatFeatureEnabled( JET_efvReservedTags ) );
+    Assert( resvTagId <= rtidMax );
+    return INDIGetReservedTag( pcsr->Cpage(), resvTagId, pdata );
+}
+
+
+//  ================================================================
+INT INDIAddReservedTag( _In_ CPAGE& cpage, _In_ NodeResvTagId resvTagId, _In_ int cb, _In_ BYTE fill )
+//  ================================================================
+//  Adds a reserved tag to the page.
+//  Caller should log this operation before calling this API.
+{
+    // Tag shouldn't exist already.
+    DATA dataOld;
+    EnforceSz( INDIGetReservedTag( cpage, resvTagId, &dataOld ) < 0, "ND: ReservedTagAlreadyExists" );
+
+    INT itag = cpage.IAddReservedTag( cb, fill );
+    EnforceSz( itag > 0, "NDBadReservedTag" );
+
+    LINE line;
+    cpage.GetPtrReservedTag( itag, &line );
+
+    NodeResvTag* pResvTag = (NodeResvTag*) line.pv;
+    pResvTag->resvTagId = resvTagId;
+    return itag;
+}
+
+
+//  ================================================================
+INT INDAddReservedTag( _In_ FUCB* pfucb, _In_ CSR* pcsr, _In_ NodeResvTagId resvTagId, _In_ int cb, _In_ BYTE fill )
+//  ================================================================
+//  Adds a reserved tag to the page.
+//  Caller should log this operation before calling this API.
+{
+    Assert( pcsr->FDirty() );
+    Assert( g_rgfmp[ pfucb->ifmp ].ErrDBFormatFeatureEnabled( JET_efvReservedTags ) );
+    Assert( pcsr->Cpage().CbPageFree() > cb );
+    Assert( resvTagId <= rtidMax );
+
+    return INDIAddReservedTag( pcsr->Cpage(), resvTagId, cb, fill );
+}
+
+
+//  ================================================================
+VOID NDIReplaceReservedTag( _In_ CPAGE& cpage, _In_ NodeResvTagId resvTagId, const DATA& data )
+//  ================================================================
+//  Replaces a reserved tag with the new data, resizing it.
+//  Caller should log this operation before calling this API.
+{
+    DATA dataOld;
+    INT itag = INDIGetReservedTag( cpage, resvTagId, &dataOld );
+    EnforceSz( itag > 0, "NDReservedTagNotFound" );
+
+    NodeResvTag* pResvTag = (NodeResvTag*) data.Pv();
+    Assert( pResvTag->resvTagId == resvTagId );
+    Assert( cpage.CbPageFree() >= data.Cb() - dataOld.Cb() );
+
+    cpage.ReplaceReservedTag( itag, &data, 1 );
+}
+
+
+//  ================================================================
+VOID NDReplaceReservedTag( _In_ FUCB* pfucb, _In_ CSR* pcsr, _In_ NodeResvTagId resvTagId, const DATA& data )
+//  ================================================================
+//  Replaces a reserved tag with the new data, resizing it.
+//  Caller should log this operation before calling this API.
+{
+    Assert( pcsr->FDirty() );
+    Assert( g_rgfmp[ pfucb->ifmp ].ErrDBFormatFeatureEnabled( JET_efvReservedTags ) );
+    Assert( resvTagId <= rtidMax );
+
+    NDIReplaceReservedTag( pcsr->Cpage(), resvTagId, data );
+}
+
+
 ///  ================================================================
 LOCAL VOID NDScrubOneUsedPage(
         _In_ CSR * const pcsr,
@@ -3175,7 +3275,7 @@ BOOL FNDCorruptRandomNodeElement( CPAGE * const pcpage )
             AssertSz( fFalse, "Bad code" );
         }
         //  Check this to ensure code that depends upon this, see the expected error it expects.
-        Assert( JET_errDatabaseCorrupted == pcpage->ErrCheckPage( CPRINTFDBGOUT::PcprintfInstance(), CPAGE::OnErrorReturnError, CPAGE::CheckLineBoundedByTag ) );
+        Assert( JET_errDatabaseCorrupted == pcpage->ErrCheckPage( CPRINTFDBGOUT::PcprintfInstance(), pgvr::DebugCorruptFaultInj, CPAGE::OnErrorReturnError, CPAGE::CheckLineBoundedByTag ) );
         return fTrue;
     }
 

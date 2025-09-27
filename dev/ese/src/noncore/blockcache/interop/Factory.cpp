@@ -15,6 +15,11 @@ namespace Internal
                 {
                     public:
 
+                        static void DisableLeakDetection()
+                        {
+                            RFSSetKnownResourceLeak();
+                        }
+
                         static IDisposable^ CreateOSLayer()
                         {
                             return gcnew OSLayer();
@@ -417,7 +422,8 @@ namespace Internal
                             Int64 cachedBlockWriteCountNumberBase,
                             ClusterNumber clusterNumberMin,
                             ClusterNumber clusterNumberMax,
-                            bool ignoreVerificationErrors )
+                            bool ignoreVerificationErrors,
+                            [Out] EsentErrorException^% ex )
                         {
                             return factory->LoadCachedBlockSlab(
                                 ff,
@@ -427,7 +433,8 @@ namespace Internal
                                 cachedBlockWriteCountNumberBase, 
                                 clusterNumberMin, 
                                 clusterNumberMax,
-                                ignoreVerificationErrors );
+                                ignoreVerificationErrors,
+                                ex );
                         }
 
                         static CachedBlockSlab^ CreateCachedBlockSlabWrapper( ICachedBlockSlab^ icbsInner )
@@ -503,6 +510,11 @@ namespace Internal
                                 isSlotUpdated,
                                 isClusterUpdated,
                                 isSuperceded );
+                        }
+
+                        static void DetachFile( String^ path, IBlockCacheFactory::DetachFileStatus^ status )
+                        {
+                            return factory->DetachFile( path, status );
                         }
 
                     private:

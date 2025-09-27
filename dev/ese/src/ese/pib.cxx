@@ -589,6 +589,24 @@ WORD PIB::PctCachePriorityPib() const
     return pctCachePriority;
 }
 
+ERR PIB::ErrMacroPgnoFreed( const DBTIME dbtime, CArray< CFMPPage >** rgfmppgnoFreed )
+{
+    Assert( rgfmppgnoFreed );
+    ASSERT_VALID( this );
+
+    for ( MACRO* pMacro = m_pMacroNext; pMacro != NULL; pMacro = pMacro->PMacroNext() )
+    {
+        if ( pMacro->Dbtime() == dbtime )
+        {
+            *rgfmppgnoFreed = pMacro->PrgfmppgnoFreed();
+            return JET_errSuccess;
+        }
+    }
+
+    Assert( fFalse );
+    return ErrERRCheck( JET_errInvalidSesid );
+}
+
 ERR ErrPIBInit( INST *pinst )
 {
     ERR err = JET_errSuccess;
@@ -745,6 +763,7 @@ ERR ErrPIBBeginSession( INST *pinst, _Outptr_ PIB ** pppib, PROCID procidTarget,
     Assert( !ppib->FSessionOLD() );
     Assert( !ppib->FSessionOLD2() );
     Assert( !ppib->FSessionDBScan() );
+    Assert( !ppib->FSessionLeakReport() );
     Assert( ppib->levelBegin == 0 );
     Assert( ppib->clevelsDeferBegin == 0 );
     Assert( ppib->levelRollback == 0 );

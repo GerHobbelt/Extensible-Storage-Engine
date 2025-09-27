@@ -1368,7 +1368,7 @@ LOCAL ERR ErrDBUTLDumpPage( PIB * ppib, IFMP ifmp, PGNO pgno, PFNPAGE pfnpage, V
     pagedef.pgnoNext    = csr.Cpage().PgnoNext();
     pagedef.pgnoPrev    = csr.Cpage().PgnoPrev();
     
-    pagedef.pbRawPage   = reinterpret_cast<BYTE *>( csr.Cpage().PvBuffer() );
+    pagedef.pbRawPage   = reinterpret_cast<const BYTE *>( csr.Cpage().PvBuffer() );
 
     pagedef.cbFree      = csr.Cpage().CbPageFree();
     pagedef.cbUncommittedFree   = csr.Cpage().CbUncommittedFree();
@@ -2062,6 +2062,43 @@ void DBUTLCloseIfmpFucb( _Inout_ JET_SESID sesid, PCWSTR wszDatabase, _In_ IFMP 
 }
 
 //  ================================================================
+LOCAL VOID DBUTLDumpNode_( const KEYDATAFLAGS& kdf, CHAR* szBuf, const INT cbBuf, const INT cbWidth )
+//  ================================================================
+{
+    printf( "     Flags:  0x%4.4x\n", kdf.fFlags );
+    printf( "===========\n" );
+    if ( FNDVersion( kdf ) )
+    {
+        printf( "            Versioned\n" );
+    }
+    if ( FNDDeleted( kdf ) )
+    {
+        printf( "            Deleted\n" );
+    }
+    if ( FNDCompressed( kdf ) )
+    {
+        printf( "            Compressed\n" );
+    }
+    printf( "\n" );
+
+    printf( "Key Prefix:  %4d bytes\n", kdf.key.prefix.Cb() );
+    printf( "===========\n" );
+    szBuf[ 0 ] = 0;
+    DBUTLSprintHex( szBuf, cbBuf, reinterpret_cast<BYTE*>( kdf.key.prefix.Pv() ), kdf.key.prefix.Cb(), cbWidth );
+    printf( "%s\n", szBuf );
+    printf( "Key Suffix:  %4d bytes\n", kdf.key.suffix.Cb() );
+    printf( "===========\n" );
+    szBuf[ 0 ] = 0;
+    DBUTLSprintHex( szBuf, cbBuf, reinterpret_cast<BYTE*>( kdf.key.suffix.Pv() ), kdf.key.suffix.Cb(), cbWidth );
+    printf( "%s\n", szBuf );
+    printf( "      Data:  %4d bytes\n", kdf.data.Cb() );
+    printf( "===========\n" );
+    szBuf[ 0 ] = 0;
+    DBUTLSprintHex( szBuf, cbBuf, reinterpret_cast<BYTE*>( kdf.data.Pv() ), kdf.data.Cb(), cbWidth );
+    printf( "%s\n", szBuf );
+}
+
+//  ================================================================
 LOCAL ERR ErrDBUTLDumpNode( JET_SESID sesid, IFileSystemAPI *const pfsapi, const WCHAR * const wszFile, const PGNO pgno, const INT iline, const  JET_GRBIT grbit )
 //  ================================================================
 {
@@ -2098,7 +2135,7 @@ LOCAL ERR ErrDBUTLDumpNode( JET_SESID sesid, IFileSystemAPI *const pfsapi, const
     }
     Call( pfapi->ErrIORead( *tcUtil, ibOffset, g_cbPage, (BYTE* const)pvPage, qosIONormal ) );
 
-    cpage.LoadPage( 1, pgno, pvPage, g_cbPage );
+    cpage.LoadPage( ifmpNil, pgno, pvPage, g_cbPage);
 
     if ( iline < -1 || iline >= cpage.Clines() )
     {
@@ -2153,38 +2190,7 @@ LOCAL ERR ErrDBUTLDumpNode( JET_SESID sesid, IFileSystemAPI *const pfsapi, const
         NDIGetKeydataflags( cpage, ilineCurrent, &kdf );
 
         printf( "          Node: %d:%d\n\n", pgno, ilineCurrent );
-        printf( "     Flags:  0x%4.4x\n", kdf.fFlags );
-        printf( "===========\n" );
-        if( FNDVersion( kdf ) )
-        {
-            printf( "            Versioned\n" );
-        }
-        if( FNDDeleted( kdf ) )
-        {
-            printf( "            Deleted\n" );
-        }
-        if( FNDCompressed( kdf ) )
-        {
-            printf( "            Compressed\n" );
-        }
-        printf( "\n" );
-
-        printf( "Key Prefix:  %4d bytes\n", kdf.key.prefix.Cb() );
-        printf( "===========\n" );
-        szBuf[0] = 0;
-        DBUTLSprintHex( szBuf, g_cbPage * 8, reinterpret_cast<BYTE *>( kdf.key.prefix.Pv() ), kdf.key.prefix.Cb(), cbWidth );
-        printf( "%s\n", szBuf );
-        printf( "Key Suffix:  %4d bytes\n", kdf.key.suffix.Cb() );
-        printf( "===========\n" );
-        szBuf[0] = 0;
-        DBUTLSprintHex( szBuf, g_cbPage * 8, reinterpret_cast<BYTE *>( kdf.key.suffix.Pv() ), kdf.key.suffix.Cb(), cbWidth );
-        printf( "%s\n", szBuf );
-        printf( "      Data:  %4d bytes\n", kdf.data.Cb() );
-        printf( "===========\n" );
-        szBuf[0] = 0;
-        DBUTLSprintHex( szBuf, g_cbPage * 8, reinterpret_cast<BYTE *>( kdf.data.Pv() ), kdf.data.Cb(), cbWidth );
-        printf( "%s\n", szBuf );
-
+        DBUTLDumpNode_( kdf, szBuf, g_cbPage * 8, cbWidth );
         printf( "\n\n" );
 
         if( !cpage.FLeafPage() )
@@ -2235,6 +2241,137 @@ LOCAL ERR ErrDBUTLDumpNode( JET_SESID sesid, IFileSystemAPI *const pfsapi, const
 HandleError:
     DBUTLCloseIfmpFucb( sesid, wszFile, ifmp, pfucbTable );
 
+    if ( cpage.FLoadedPage() )
+    {
+        cpage.UnloadPage();
+    }
+    OSMemoryPageFree( szBuf );
+    OSMemoryPageFree( pvPage );
+    delete pfapi;
+    return err;
+}
+
+//  ================================================================
+LOCAL ERR ErrDBUTLDumpTag( JET_SESID sesid, IFileSystemAPI* const pfsapi, const WCHAR* const wszFile, const PGNO pgno, const INT itag, const  JET_GRBIT grbit )
+//  ================================================================
+{
+    ERR             err = JET_errSuccess;
+    KEYDATAFLAGS    kdf;
+    CPAGE           cpage;
+    IFileAPI* pfapi = NULL;
+    QWORD           ibOffset = OffsetOfPgno( pgno );
+    VOID* pvPage = NULL;
+    CHAR* szBuf = NULL;
+    const INT       cbWidth = UtilCprintfStdoutWidth() >= 116 ? 32 : 16;
+    INT             itagCurr;
+    TraceContextScope   tcUtil( iorpDirectAccessUtil );
+
+    pvPage = PvOSMemoryPageAlloc( g_cbPage, NULL );
+    if ( NULL == pvPage )
+    {
+        Call( ErrERRCheck( JET_errOutOfMemory ) );
+    }
+
+    err = CIOFilePerf::ErrFileOpen( pfsapi,
+        reinterpret_cast<PIB*>( sesid )->m_pinst,
+        wszFile,
+        IFileAPI::fmfReadOnly,
+        iofileDbAttached,
+        qwDumpingFileID,
+        &pfapi );
+    if ( err < 0 )
+    {
+        wprintf( L"Cannot open file %ws.\n\n", wszFile );
+        Call( err );
+    }
+    Call( pfapi->ErrIORead( *tcUtil, ibOffset, g_cbPage, (BYTE* const) pvPage, qosIONormal ) );
+
+    cpage.LoadPage( ifmpNil, pgno, pvPage, g_cbPage );
+
+    const INT ctags = cpage.Clines() + cpage.CTagReserved();
+    if ( itag < -1 || itag >= ctags )
+    {
+        printf( "Invalid itag: %d\n\n", itag );
+        //  errNDNotFound would be a MUCH better error, but we have a general policy against returning
+        //  internal errors out the JET API.  Perhaps we should relax that for utility \ dumping.
+        Call( ErrERRCheck( cpage.FPageIsInitialized() ? JET_errInvalidParameter : JET_errPageNotInitialized ) );
+    }
+
+    if ( !cpage.FNewRecordFormat()
+        && cpage.FPrimaryPage()
+        && !cpage.FRepairedPage()
+        && cpage.FLeafPage()
+        && !cpage.FSpaceTree()
+        && !cpage.FLongValuePage() )
+    {
+        if ( itag == -1 )
+        {
+            printf( "Cannot dump all tags on old format page\n\n" );
+            Call( ErrERRCheck( JET_errInvalidParameter ) );
+        }
+
+        VOID* pvBuf = PvOSMemoryPageAlloc( g_cbPage, NULL );
+
+        if ( NULL == pvBuf )
+        {
+            Call( ErrERRCheck( JET_errOutOfMemory ) );
+        }
+
+        err = ErrUPGRADEConvertNode( &cpage, itag, pvBuf );
+        OSMemoryPageFree( pvBuf );
+        Call( err );
+    }
+
+    szBuf = (CHAR*) PvOSMemoryPageAlloc( g_cbPage * 8, NULL );
+    if ( NULL == szBuf )
+    {
+        Call( ErrERRCheck( JET_errOutOfMemory ) );
+    }
+
+    itagCurr = ( itag == -1 ) ? 0 : itag;
+
+    do
+    {
+        if ( itagCurr >= ctags )
+        {
+            Assert( itagCurr == 0 );
+            printf( "ERROR:  This page doesn't even have one valid tag.  Q: Blank?  A: %hs\n", cpage.FPageIsInitialized() ? "No" : "Yes" );
+            Call( ErrERRCheck( cpage.FPageIsInitialized() ? JET_errInvalidParameter : JET_errPageNotInitialized ) );
+        }
+
+        printf( "          Tag: %d:%d\n", pgno, itagCurr );
+        printf( "         Type: %s\n\n",
+                    itagCurr == 0 ? "External Header" :
+                    itagCurr < cpage.CTagReserved() ? "Reserved Tag" :
+                    "Node" );
+
+        if ( itagCurr < cpage.CTagReserved() )
+        {
+            LINE line;
+            cpage.GetPtrReservedTag( itagCurr, &line );
+            if ( itagCurr > 0 )
+            {
+                NodeResvTag* pResvTag = (NodeResvTag*) line.pv;
+                printf( " ResvTagId:  %d\n", pResvTag->resvTagId );
+            }
+
+            printf( "      Data:  %4d bytes\n", line.cb );
+            printf( "===========\n" );
+            szBuf[ 0 ] = 0;
+            DBUTLSprintHex( szBuf, g_cbPage * 8, reinterpret_cast<BYTE*>( line.pv ), line.cb, cbWidth );
+            printf( "%s\n", szBuf );
+        }
+        else
+        {
+            NDIGetKeydataflags( cpage, itagCurr - cpage.CTagReserved(), &kdf);
+            DBUTLDumpNode_( kdf, szBuf, g_cbPage * 8, cbWidth );
+        }
+
+        printf( "\n\n" );
+        itagCurr++;
+    } while ( itag == -1 && itagCurr < ctags );
+
+HandleError:
     if ( cpage.FLoadedPage() )
     {
         cpage.UnloadPage();
@@ -2429,7 +2566,7 @@ LOCAL ERR ErrDBUTLSeekToKey_(
             return err;
         }
 
-        cpage.LoadPage( 1, pgnoChild, pvPageBuf, g_cbPage );
+        cpage.LoadPage( ifmpNil, pgnoChild, pvPageBuf, g_cbPage );
 
         pgnoCurr = pgnoChild;
     }
@@ -2487,7 +2624,7 @@ LOCAL ERR ErrDBUTLDumpPage(
     }
     Call( pfapi->ErrIORead( *tcUtil, OffsetOfPgno( pgno ), g_cbPage, (BYTE* const)pvPage, qosIONormal ) );
 
-    cpage.LoadPage( 1, pgno, pvPage, g_cbPage );
+    cpage.LoadPage( ifmpNil, pgno, pvPage, g_cbPage );
 
 
     //  page integrity check.
@@ -2500,7 +2637,7 @@ LOCAL ERR ErrDBUTLDumpPage(
     }
     else
     {
-        Call( cpage.ErrCheckPage( CPRINTFSTDOUT::PcprintfInstance() ) );
+        Call( cpage.ErrCheckPage( CPRINTFSTDOUT::PcprintfInstance(), pgvr::DbutilPageDump ) );
     }
     
     if ( NULL != wszPrintedKeyToSeek && 0 != cpage.Clines() )
@@ -2679,7 +2816,7 @@ class CBTreeStatsManager {
         BTREE_STATS_PAGE_SPACE      m_btsInternalPageSpace;
         BTREE_STATS_PAGE_SPACE      m_btsFullWalk;
         BTREE_STATS_LV              m_btsLvData;
-        CPerfectHistogramStats      m_rgHistos[20];
+        CPerfectHistogramStats      m_rgHistos[22];
         BTREE_STATS                 m_bts;
 
     public:
@@ -2708,23 +2845,25 @@ class CBTreeStatsManager {
             m_btsFullWalk.phistoKeySizes        = (JET_HISTO*)&m_rgHistos[3];
             m_btsFullWalk.phistoDataSizes       = (JET_HISTO*)&m_rgHistos[4];
             m_btsFullWalk.phistoKeyCompression  = (JET_HISTO*)&m_rgHistos[5];
-            m_btsFullWalk.phistoUnreclaimedBytes    = (JET_HISTO*)&m_rgHistos[6];
+            m_btsFullWalk.phistoResvTagSizes    = (JET_HISTO*)&m_rgHistos[6];
+            m_btsFullWalk.phistoUnreclaimedBytes    = (JET_HISTO*)&m_rgHistos[7];
             m_btsFullWalk.cVersionedNodes       = 0;
             
-            m_btsInternalPageSpace.phistoFreeBytes      = (JET_HISTO*)&m_rgHistos[7];
-            m_btsInternalPageSpace.phistoNodeCounts     = (JET_HISTO*)&m_rgHistos[8];
-            m_btsInternalPageSpace.phistoKeySizes       = (JET_HISTO*)&m_rgHistos[9];
-            m_btsInternalPageSpace.phistoDataSizes      = (JET_HISTO*)&m_rgHistos[10];
-            m_btsInternalPageSpace.phistoKeyCompression = (JET_HISTO*)&m_rgHistos[11];
-            m_btsInternalPageSpace.phistoUnreclaimedBytes   = (JET_HISTO*)&m_rgHistos[12];
+            m_btsInternalPageSpace.phistoFreeBytes      = (JET_HISTO*)&m_rgHistos[8];
+            m_btsInternalPageSpace.phistoNodeCounts     = (JET_HISTO*)&m_rgHistos[9];
+            m_btsInternalPageSpace.phistoKeySizes       = (JET_HISTO*)&m_rgHistos[10];
+            m_btsInternalPageSpace.phistoDataSizes      = (JET_HISTO*)&m_rgHistos[11];
+            m_btsInternalPageSpace.phistoKeyCompression = (JET_HISTO*)&m_rgHistos[12];
+            m_btsInternalPageSpace.phistoResvTagSizes   = (JET_HISTO*)&m_rgHistos[13];
+            m_btsInternalPageSpace.phistoUnreclaimedBytes   = (JET_HISTO*)&m_rgHistos[14];
 
-            m_btsLvData.phistoLVSize            = (JET_HISTO*)&m_rgHistos[13];
-            m_btsLvData.phistoLVComp            = (JET_HISTO*)&m_rgHistos[14];
-            m_btsLvData.phistoLVRatio           = (JET_HISTO*)&m_rgHistos[15];
-            m_btsLvData.phistoLVSeeks           = (JET_HISTO*)&m_rgHistos[16];
-            m_btsLvData.phistoLVBytes           = (JET_HISTO*)&m_rgHistos[17];
-            m_btsLvData.phistoLVExtraSeeks      = (JET_HISTO*)&m_rgHistos[18];
-            m_btsLvData.phistoLVExtraBytes      = (JET_HISTO*)&m_rgHistos[19];
+            m_btsLvData.phistoLVSize            = (JET_HISTO*)&m_rgHistos[15];
+            m_btsLvData.phistoLVComp            = (JET_HISTO*)&m_rgHistos[16];
+            m_btsLvData.phistoLVRatio           = (JET_HISTO*)&m_rgHistos[17];
+            m_btsLvData.phistoLVSeeks           = (JET_HISTO*)&m_rgHistos[18];
+            m_btsLvData.phistoLVBytes           = (JET_HISTO*)&m_rgHistos[19];
+            m_btsLvData.phistoLVExtraSeeks      = (JET_HISTO*)&m_rgHistos[20];
+            m_btsLvData.phistoLVExtraBytes      = (JET_HISTO*)&m_rgHistos[21];
 
             //  Zero the parent structure of all this.
             memset( &m_bts, 0, sizeof(m_bts) );
@@ -2771,6 +2910,7 @@ class CBTreeStatsManager {
             CStatsFromPv(pPOL->pInternalPageStats->phistoKeySizes)->Zero();
             CStatsFromPv(pPOL->pInternalPageStats->phistoDataSizes)->Zero();
             CStatsFromPv(pPOL->pInternalPageStats->phistoKeyCompression)->Zero();
+            CStatsFromPv(pPOL->pInternalPageStats->phistoResvTagSizes)->Zero();
             CStatsFromPv(pPOL->pInternalPageStats->phistoUnreclaimedBytes)->Zero();
         }
 
@@ -2793,6 +2933,9 @@ class CBTreeStatsManager {
 
             Assert( pFW->phistoKeyCompression );
             CStatsFromPv(pFW->phistoKeyCompression)->Zero();
+
+            Assert( pFW->phistoResvTagSizes );
+            CStatsFromPv(pFW->phistoResvTagSizes)->Zero();
 
             Assert( pFW->phistoUnreclaimedBytes );
             CStatsFromPv(pFW->phistoUnreclaimedBytes)->Zero();
@@ -3790,13 +3933,15 @@ ERR ErrDBUTLEnumTableSpace( const TABLEDEF * ptabledef, void * pv )
                     ptabledef->pgnoFDP,
                     pbts,
                     pcprintf );
-
     if ( err == JET_errRBSFDPToBeDeleted )
     {
         pbts->fPgnoFDPRootDelete = fTrue;
         Call( pdbues->pfnBTreeStatsAnalysisFunc( pbts, pdbues->pvBTreeStatsAnalysisFuncCtx ) );
         return JET_errSuccess;
     }
+    Call( err );
+
+    pbts->fPgnoFDPRootDelete = fFalse;
 
     //  Callback to client.
     //
@@ -4994,6 +5139,478 @@ HandleError:
     return err;
 }
 
+//  ================================================================
+LOCAL VOID DBUTLIReportSpaceLeakEstimationSucceeded(
+    const FMP* const pfmp,
+    const CPG cpgAvailable,
+    const CPG cpgOwnedBelowEof,
+    const CPG cpgOwnedBeyondEof,
+    const CPG cpgOwnedPrimary,
+    const CPG cpgOwnedPrimaryCorrection,
+    const CPG cpgUsedRoot,
+    const CPG cpgUsedOe,
+    const CPG cpgUsedAe,
+    const CPG cpgSplitBuffers,
+    const ULONG cCachedPrimary,
+    const ULONG cUncachedPrimary,
+    const ULONG cEnumerationConflictsSucceeded,
+    const ULONG cEnumerationConflictsFailed,
+    const JET_THREADSTATS& jts,
+    const ULONG ulMinElapsed,
+    const double dblSecElapsed )
+//  ================================================================
+{
+    const CPG cpgOwned = cpgOwnedBelowEof + cpgOwnedBeyondEof;
+    Assert( cpgOwned > 0 );
+
+    const CPG cpgUsed = cpgOwnedPrimary + cpgUsedRoot + cpgUsedOe + cpgUsedAe;
+    Assert( ( cpgUsed <= cpgOwned ) || ( !pfmp->FReadOnlyAttach() && !pfmp->FExclusiveOpen() ) );
+
+    CPG cpgLeaked = cpgOwned - ( cpgAvailable + cpgSplitBuffers + cpgUsed );
+    Assert( ( cpgLeaked >= 0 ) || ( !pfmp->FReadOnlyAttach() && !pfmp->FExclusiveOpen() ) );
+    cpgLeaked = LFunctionalMax( cpgLeaked, 0 );
+
+    const CPG cpgOwnedPrimaryOriginal = cpgOwnedPrimary - cpgOwnedPrimaryCorrection;
+
+    OSTraceSuspendGC();
+    const WCHAR* rgwsz[] =
+    {
+        pfmp->WszDatabaseName(),
+        OSFormatW( L"%d", cpgLeaked ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgLeaked ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgLeaked ) / (double)cpgOwned ),
+        OSFormatW( L"%d", cpgOwned ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgOwned ) ),
+        OSFormatW( L"%d", cpgAvailable ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgAvailable ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgAvailable ) / (double)cpgOwned ),
+        OSFormatW( L"%d", cpgUsed ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgUsed ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgUsed ) / (double)cpgOwned ),
+        OSFormatW( L"%d", cpgOwnedBelowEof ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgOwnedBelowEof ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgOwnedBelowEof ) / (double)cpgOwned ),
+        OSFormatW( L"%d", cpgOwnedBeyondEof ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgOwnedBeyondEof ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgOwnedBeyondEof ) / (double)cpgOwned ),
+        OSFormatW( L"%d", cpgOwnedPrimary ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgOwnedPrimary ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgOwnedPrimary ) / (double)cpgOwned ),
+        OSFormatW( L"%d", cpgUsedRoot ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgUsedRoot ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgUsedRoot ) / (double)cpgOwned ),
+        OSFormatW( L"%d", cpgUsedOe ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgUsedOe ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgUsedOe ) / (double)cpgOwned ),
+        OSFormatW( L"%d", cpgUsedAe ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgUsedAe ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgUsedAe ) / (double)cpgOwned ),
+        OSFormatW( L"%d", cpgSplitBuffers ), OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgSplitBuffers ) ), OSFormatW( L"%.3f", ( 100.0 * (double)cpgSplitBuffers ) / (double)cpgOwned ),
+        OSFormatW( L"%u", cCachedPrimary ),
+        OSFormatW( L"%u", cUncachedPrimary ),
+        OSFormatW( L"%u", jts.cPageRead ), OSFormatW( L"%u", jts.cPagePreread ), OSFormatW( L"%u", jts.cPageReferenced ), OSFormatW( L"%u", jts.cPageDirtied ), OSFormatW( L"%u", jts.cPageRedirtied ),
+        OSFormatW( L"%u", ulMinElapsed ), OSFormatW( L"%.3f", dblSecElapsed ),
+        OSFormatW( L"%d", cpgOwnedPrimaryCorrection ), OSFormatW( L"%I64d", pfmp->CbOfCpgSigned( cpgOwnedPrimaryCorrection ) ), ( ( cpgOwnedPrimaryOriginal != 0 ) ? OSFormatW( L"%.3f", ( 100.0 * (double)cpgOwnedPrimaryCorrection ) / (double)cpgOwnedPrimaryOriginal ) : L"-" ),
+        OSFormatW( L"%u", cEnumerationConflictsSucceeded ),
+        OSFormatW( L"%u", cEnumerationConflictsFailed )
+    };
+    UtilReportEvent(
+        eventInformation,
+        SPACE_MANAGER_CATEGORY,
+        ROOT_SPACE_LEAK_ESTIMATION_SUCCEEDED_ID,
+        _countof( rgwsz ),
+        rgwsz,
+        0,
+        NULL,
+        pfmp->Pinst() );
+    OSTraceResumeGC();
+}
+
+//  ================================================================
+LOCAL VOID DBUTLIReportSpaceLeakEstimationFailed(
+    const FMP* const pfmp,
+    const ERR err,
+    const OBJID objidLast,
+    const CHAR* const szContext,
+    const ULONG ulMinElapsed,
+    const double dblSecElapsed )
+//  ================================================================
+{
+    OSTraceSuspendGC();
+    const WCHAR* rgwsz[] =
+    {
+        pfmp->WszDatabaseName(),
+        OSFormatW( L"%d", err ),
+        OSFormatW( L"%u", objidLast ),
+        OSFormatW( L"%hs", szContext ),
+        OSFormatW( L"%u", ulMinElapsed ), OSFormatW( L"%.3f", dblSecElapsed )
+    };
+    UtilReportEvent(
+        eventError,
+        SPACE_MANAGER_CATEGORY,
+        ROOT_SPACE_LEAK_ESTIMATION_FAILED_ID,
+        _countof( rgwsz ),
+        rgwsz,
+        0,
+        NULL,
+        pfmp->Pinst() );
+    OSTraceResumeGC();
+}
+
+//  ================================================================
+LOCAL ERR ErrDBUTLIEstimateRootSpaceLeak( PIB* const ppib, const IFMP ifmp )
+//  ================================================================
+{
+    ERR err = JET_errSuccess;
+    FMP* const pfmp = g_rgfmp + ifmp;
+    const CHAR* szContext = NULL;
+    const HRT hrtStart = HrtHRTCount();
+    BOOL fRunning = fFalse;
+    JET_THREADSTATS jtsStart = { 0 }, jtsEnd = { 0 };
+    OBJID objidLast = objidNil;
+    PGNO pgnoFDPLast = pgnoNull;
+    ULONG cEnumerationConflictsFailed = 0, cEnumerationConflictsSucceeded = 0;
+    CPG cpgOwnedPrimary = 0, cpgOwnedPrimaryCorrection = 0;
+    ULONG cCachedPrimary = 0, cUncachedPrimary = 0;
+    CPG cpgUsedRoot = 0, cpgUsedOe = 0, cpgUsedAe = 0;
+    CPG rgcpgRootSpaceInfo[ 4 ] = { 0 };
+    FUCB* pfucbCatalog = pfucbNil;
+    FUCB* pfucbSpaceTree = pfucbNil;
+    FUCB* pfucbTable = pfucbNil;
+    FUCB* pfucb = pfucbNil;
+
+    szContext = "CheckInTrx";
+    if ( ppib->Level() > 0 )
+    {
+        // Being in a transaction means we might miss some catalog entries that get
+        // inserted while we process all the tables.
+        Error( ErrERRCheck( JET_errInTransaction ) );
+    }
+
+    szContext = "CheckAlreadyRunning";
+    Call( pfmp->ErrStartRootSpaceLeakEstimation() );
+    fRunning = fTrue;
+
+    szContext = "ThreadStatsStart";
+    jtsStart.cbStruct = sizeof( jtsStart );
+    jtsEnd.cbStruct = sizeof( jtsStart );
+    Call( JetGetThreadStats( &jtsStart, jtsStart.cbStruct ) );
+
+    szContext = "PrimaryObjects";
+    OnDebug( OBJID objidPrev = objidNil );
+
+    ppib->SetFSessionLeakReport();
+
+    CHAR szObjectName[ JET_cbNameMost + 1 ];
+    for ( err = ErrCATGetNextRootObject( ppib, ifmp, fTrue, &pfucbCatalog, &objidLast, &pgnoFDPLast, szObjectName );
+        ( err >= JET_errSuccess ) && ( objidLast != objidNil );
+        err = ErrCATGetNextRootObject( ppib, ifmp, fTrue, &pfucbCatalog, &objidLast, &pgnoFDPLast, szObjectName ) )
+    {
+#ifdef DEBUG
+        Assert( objidLast != objidSystemRoot );  // Root object is not supposed to be returned here.
+        Assert( objidLast > objidPrev );
+        objidPrev = objidLast;
+#endif // DEBUG
+
+        CPG cpgPrimaryObject = cpgNil;
+
+        // Check if it is cached.
+        err = ErrCATGetExtentPageCounts( ppib, ifmp, objidLast, &cpgPrimaryObject, NULL );
+        if ( err >= JET_errSuccess )
+        {
+            cCachedPrimary++;
+            cpgOwnedPrimary += cpgPrimaryObject;
+        }
+        else
+        {
+            if ( ( err == JET_errRecordNotFound ) || ( err == JET_errNotInitialized ) )
+            {
+                err = JET_errSuccess;
+            }
+            Call( err );
+
+            // Test injection.
+            OnDebug( while ( objidLast >= (OBJID)UlConfigOverrideInjection( 48550, objidFDPOverMax ) ) );
+
+            BOOL fRetried = fFalse, fRetry = fFalse;
+            const BOOL fInfiniteRetries = OnDebugOrRetail( fTrue, fFalse );
+            ERR errRetry = JET_errSuccess;
+            const CHAR* wszRetryReason = "";
+            do
+            {
+                fRetried = fRetry;
+                if ( fRetry )
+                {
+                    UtilSleep( 10 );
+                    fRetry = fFalse;
+                }
+
+                err = ErrFILEOpenTable( ppib, ifmp, &pfucbTable, szObjectName, JET_bitTableReadOnly | JET_bitTableTryPurgeOnClose );
+                if ( ( err == JET_errObjectNotFound ) || ( err == JET_errTableLocked ) )
+                {
+                    // We are probably racing with table deletion.
+                    FCBStateFlags fcbsf = fcbsfNone;
+                    const BOOL fFoundFcb = ( FCB::PfcbFCBGet( ifmp, pgnoFDPLast, &fcbsf, fFalse /* fIncrementRefCount */, fTrue /* fInitForRecovery */ ) != pfcbNil );
+                    const BOOL fDeletePending = fFoundFcb && ( fcbsf & fcbsfDeletePending );
+
+                    if ( fFoundFcb && !fDeletePending )
+                    {
+                        // This is unexpected if we know the table is actually getting deleted.
+                        Assert( err != JET_errObjectNotFound );
+                        fRetry = fTrue;
+                        wszRetryReason = "DelNotPending";
+                    }
+                    else if ( fFoundFcb && fDeletePending )
+                    {
+                        // Table deletion is still pending.
+                        fRetry = fTrue;
+                        wszRetryReason = "DelPending";
+
+                        // Perform cleanup.
+                        (void)PverFromPpib( ppib )->ErrVERRCEClean( ifmp );
+                    }
+                    else
+                    {
+                        Assert( !fFoundFcb );
+                        if ( err == JET_errTableLocked )
+                        {
+                            // Either the version store entry for the table deletion has cleared,
+                            // or an exclusive user released the table and the FCB got purged.
+                            fRetry = fTrue;
+                            wszRetryReason = "FcbNotFound";
+                        }
+                        else
+                        {
+                            // Version store entry for the table deletion has cleared.
+                            // No need to retry.
+                            Assert( err == JET_errObjectNotFound );
+                        }
+                    }
+
+                    errRetry = err;
+                    err = JET_errSuccess;
+                }
+                else
+                {
+                    Assert( !fRetry );
+                    Call( err );
+
+                    cUncachedPrimary++;
+
+                    // Test injection.
+                    OnDebug( while ( objidLast >= (OBJID)UlConfigOverrideInjection( 57894, objidFDPOverMax ) ) );
+
+                    Call( ErrSPGetInfo(
+                        ppib,
+                        ifmp,
+                        pfucbTable,
+                        (BYTE*)&cpgPrimaryObject,
+                        sizeof( cpgPrimaryObject ),
+                        fSPOwnedExtent,
+                        gci::Allow ) );
+
+                    cpgOwnedPrimary += cpgPrimaryObject;
+
+                    Call( ErrFILECloseTable( ppib, pfucbTable ) );
+                    pfucbTable = pfucbNil;
+                }
+
+                if ( fRetried )
+                {
+                    if ( fRetry )
+                    {
+                        cEnumerationConflictsFailed++;
+                        if ( !fInfiniteRetries )
+                        {
+                            FireWall( OSFormat( "LeakReportConflict:%s:%d", wszRetryReason, errRetry ) );
+                        }
+                    }
+                    else
+                    {
+                        cEnumerationConflictsSucceeded++;
+                    }
+                }
+
+                Assert( pfucbTable == pfucbNil );
+                Assert( err >= JET_errSuccess );
+            }
+            while ( fRetry && ( !fRetried || fInfiniteRetries ) );
+        }
+
+        pfmp->SetOjidLeakEstimation( objidLast );
+
+#ifdef DEBUG
+        // Test injection.
+        while ( objidLast >= (OBJID)UlConfigOverrideInjection( 35366, objidFDPOverMax ) );
+        Call( ErrFaultInjection( 55190 ) );
+#endif // DEBUG
+    }
+    Call( err );
+    CallS( ErrCATClose( ppib, pfucbCatalog ) );
+    pfucbCatalog = pfucbNil;
+    objidLast = objidSystemRoot;
+    pfmp->SetOjidLeakEstimation( objidFDPMax );
+
+    // Root space
+    //
+    szContext = "RootSpace";
+
+    // Open root.
+    Call( ErrBTIOpen( ppib, ifmp, pgnoSystemRoot, objidNil, openNormal, &pfucb, fFalse ) );
+    Call( ErrBTIGotoRoot( pfucb, latchReadNoTouch ) );
+    pfucb->pcsrRoot = Pcsr( pfucb );
+    Assert( pfucb->u.pfcb->FSpaceInitialized() );
+
+    // Root object.
+    CPG rgcpgRootInfo[ 4 ] = { cpgNil };
+    Call( ErrSPGetInfo(
+        ppib,
+        ifmp,
+        pfucb,
+        (BYTE*)rgcpgRootInfo,
+        sizeof( rgcpgRootInfo ),
+        fSPOwnedExtent | fSPAvailExtent | fSPSplitBuffers | fSPShelvedExtent,
+        gci::Allow ) );
+    Call( ErrSPGetInfo(
+        ppib,
+        ifmp,
+        pfucb,
+        (BYTE*)&cpgUsedRoot,
+        sizeof( cpgUsedRoot ),
+        fSPReachablePages,
+        gci::Allow ) );
+    Expected( cpgUsedRoot == 1 );
+
+    // Root OE.
+    szContext = "RootOe";
+    Call( ErrSPIOpenOwnExt( pfucb, &pfucbSpaceTree ) );
+    Call( ErrBTIGotoRoot( pfucbSpaceTree, latchReadNoTouch ) );
+    pfucbSpaceTree->pcsrRoot = Pcsr( pfucbSpaceTree );
+    Call( ErrSPGetInfo(
+        ppib,
+        ifmp,
+        pfucbSpaceTree,
+        (BYTE*)&cpgUsedOe,
+        sizeof( cpgUsedOe ),
+        fSPReachablePages,
+        gci::Allow ) );
+    pfucbSpaceTree->pcsrRoot = pcsrNil;
+    BTClose( pfucbSpaceTree );
+    pfucbSpaceTree = pfucbNil;
+
+    // Root AE.
+    szContext = "RootAe";
+    Call( ErrSPIOpenAvailExt( pfucb, &pfucbSpaceTree ) );
+    Call( ErrBTIGotoRoot( pfucbSpaceTree, latchReadNoTouch ) );
+    pfucbSpaceTree->pcsrRoot = Pcsr( pfucbSpaceTree );
+    Call( ErrSPGetInfo(
+        ppib,
+        ifmp,
+        pfucbSpaceTree,
+        (BYTE*)&cpgUsedAe,
+        sizeof( cpgUsedAe ),
+        fSPReachablePages,
+        gci::Allow ) );
+    pfucbSpaceTree->pcsrRoot = pcsrNil;
+    BTClose( pfucbSpaceTree );
+    pfucbSpaceTree = pfucbNil;
+
+    // Root space.
+    szContext = "RootSpace";
+    Call( ErrSPGetInfo(
+        ppib,
+        ifmp,
+        pfucb,
+        (BYTE*)rgcpgRootSpaceInfo,
+        sizeof( rgcpgRootSpaceInfo ),
+        fSPOwnedExtent | fSPAvailExtent | fSPSplitBuffers | fSPShelvedExtent,
+        gci::Allow ) );
+
+    // Apply correction.
+    cpgOwnedPrimaryCorrection = pfmp->CpgLeakEstimationCorrection();
+    cpgOwnedPrimary += cpgOwnedPrimaryCorrection;
+
+    // Close root.
+    pfucb->pcsrRoot = pcsrNil;
+    BTClose( pfucb );
+    pfucb = pfucbNil;
+
+    // We are done with the part that requires exclusivity.
+    pfmp->StopRootSpaceLeakEstimation();
+    fRunning = fFalse;
+
+    szContext = "ThreadStatsEnd";
+    Call( JetGetThreadStats( &jtsEnd, jtsEnd.cbStruct ) );
+
+HandleError:
+    if ( fRunning )
+    {
+        pfmp->StopRootSpaceLeakEstimation();
+    }
+
+    if ( pfucbCatalog != pfucbNil )
+    {
+        Assert( err < JET_errSuccess );
+        CallS( ErrCATClose( ppib, pfucbCatalog ) );
+        pfucbCatalog = pfucbNil;
+    }
+
+    if ( pfucbSpaceTree != pfucbNil )
+    {
+        Assert( err < JET_errSuccess );
+        pfucbSpaceTree->pcsrRoot = pcsrNil;
+        BTClose( pfucbSpaceTree );
+        pfucbSpaceTree = pfucbNil;
+    }
+
+    if ( pfucbTable != pfucbNil )
+    {
+        Assert( err < JET_errSuccess );
+        CallS( ErrFILECloseTable( ppib, pfucbTable ) );
+        pfucbTable = pfucbNil;
+    }
+
+    if ( pfucb != pfucbNil )
+    {
+        Assert( err < JET_errSuccess );
+        pfucb->pcsrRoot = pcsrNil;
+        BTClose( pfucb );
+        pfucb = pfucbNil;
+    }
+
+    ppib->ResetFSessionLeakReport();
+
+    const double dblSecTotalElapsed = DblHRTSecondsElapsed( DhrtHRTElapsedFromHrtStart( hrtStart ) );
+    const ULONG ulMinElapsed = (ULONG)( dblSecTotalElapsed / 60.0 );
+    const double dblSecElapsed = dblSecTotalElapsed - (double)ulMinElapsed * 60.0;
+    if ( err >= JET_errSuccess )
+    {
+        JET_THREADSTATS jts = { 0 };
+        jts.cPageRead = jtsEnd.cPageRead - jtsStart.cPageRead;
+        jts.cPagePreread = jtsEnd.cPagePreread - jtsStart.cPagePreread;
+        jts.cPageReferenced = jtsEnd.cPageReferenced - jtsStart.cPageReferenced;
+        jts.cPageDirtied = jtsEnd.cPageDirtied - jtsStart.cPageDirtied;
+        jts.cPageRedirtied = jtsEnd.cPageRedirtied - jtsStart.cPageRedirtied;
+
+        DBUTLIReportSpaceLeakEstimationSucceeded(
+            pfmp,
+            rgcpgRootSpaceInfo[ 1 ],    // cpgAvailable
+            rgcpgRootSpaceInfo[ 0 ],    // cpgOwnedBelowEof
+            rgcpgRootSpaceInfo[ 3 ],    // cpgOwnedBeyondEof (shelved)
+            cpgOwnedPrimary,
+            cpgOwnedPrimaryCorrection,
+            cpgUsedRoot,
+            cpgUsedOe,
+            cpgUsedAe,
+            rgcpgRootSpaceInfo[ 2 ],    // cpgSplitBuffers
+            cCachedPrimary,
+            cUncachedPrimary,
+            cEnumerationConflictsSucceeded,
+            cEnumerationConflictsFailed,
+            jts,
+            ulMinElapsed,
+            dblSecElapsed );
+
+        err = JET_errSuccess;
+    }
+    else
+    {
+        Assert( err != JET_errObjectNotFound );
+        Assert( err != JET_errRBSFDPToBeDeleted );
+
+        DBUTLIReportSpaceLeakEstimationFailed(
+            pfmp,
+            err,
+            objidLast,
+            szContext,
+            ulMinElapsed,
+            dblSecElapsed );
+    }
+
+    return err;
+}
+
 BOOL g_fDisableDumpPrintF = fFalse;
 
 //  ================================================================
@@ -5016,7 +5633,8 @@ ERR ISAMAPI ErrIsamDBUtilities( JET_SESID sesid, JET_DBUTIL_W *pdbutil )
          opDBUTILDumpPageUsage         != pdbutil->op &&
          opDBUTILChecksumLogFromMemory != pdbutil->op &&
          opDBUTILDumpSpaceCategory     != pdbutil->op && 
-         opDBUTILDumpRBSPages          != pdbutil->op )
+         opDBUTILDumpRBSPages          != pdbutil->op &&
+         opDBUTILEstimateRootSpaceLeak != pdbutil->op )
     {
         //  the current operation requires szDatabase != NULL
 
@@ -5042,6 +5660,15 @@ ERR ISAMAPI ErrIsamDBUtilities( JET_SESID sesid, JET_DBUTIL_W *pdbutil )
         {
             // calling this function when there is already a log attached
             // to the instance is not supported.
+            return ErrERRCheck( JET_errInvalidParameter );
+        }
+    }
+
+    if ( opDBUTILEstimateRootSpaceLeak == pdbutil->op )
+    {
+        // We need a JET_DBID, not a DB name.
+        if ( ( pdbutil->szDatabase != NULL ) || ( pdbutil->dbid == JET_dbidNil ) )
+        {
             return ErrERRCheck( JET_errInvalidParameter );
         }
     }
@@ -5080,6 +5707,8 @@ ERR ISAMAPI ErrIsamDBUtilities( JET_SESID sesid, JET_DBUTIL_W *pdbutil )
             return ErrDBUTLDump( sesid, pdbutil );
         case opDBUTILDumpNode:
             return ErrDBUTLDumpNode( sesid, pinst->m_pfsapi, pdbutil->szDatabase, pdbutil->pgno, pdbutil->iline, pdbutil->grbitOptions );
+        case opDBUTILDumpTag:
+            return ErrDBUTLDumpTag( sesid, pinst->m_pfsapi, pdbutil->szDatabase, pdbutil->pgno, pdbutil->iline, pdbutil->grbitOptions );
 #ifdef DEBUG
         case opDBUTILSetHeaderState:
             return ErrDUMPFixupHeader( pinst, pdbutil->szDatabase, pdbutil->grbitOptions & JET_bitDBUtilOptionDumpVerbose );
@@ -5239,6 +5868,9 @@ ERR ISAMAPI ErrIsamDBUtilities( JET_SESID sesid, JET_DBUTIL_W *pdbutil )
 
         case opDBUTILDumpRBSHeader:
             return ErrDUMPRBSHeader( pinst, pdbutil->szDatabase, pdbutil->grbitOptions & JET_bitDBUtilOptionDumpVerbose );
+
+        case opDBUTILEstimateRootSpaceLeak:
+            return ErrDBUTLIEstimateRootSpaceLeak( (PIB*)sesid, (IFMP)pdbutil->dbid );
     }
 
 

@@ -1469,7 +1469,7 @@ Additional information:%n
 MessageId=540
 SymbolicName=DB_DIVERGENCE_ID
 Language=English
-%1 (%2) %3Database %4: Page %5 in a B-Tree (ObjectId: %11) logical data checksum %6 failed to match logged scan check %7 checksum (seed %8) at log position %9.%n
+%1 (%2) %3Database %4: Page %5 in a B-Tree (ObjectId: %11) logical data checksum %6 failed to match logged scan check %7 checksum (seed %8) at log position %9 / dbtime %14.%n
 Additional information:%n
 %tSource: %10%n
 %tSourceObjidInvalid: %12%n
@@ -1683,6 +1683,17 @@ Language=English
 %1 (%2) %3An illegal operation is being performed on root page %4 of table (%5) with objid %6 on database %7 which was reverted by RBS. Only delete operation should be performed on such a table.
 .
 
+MessageId=569
+SymbolicName=DBSCAN_REDELETE_REVERTED_TABLE_UNEXPECTED
+Language=English
+%1 (%2) %3Db scan encountered root page %4 with objid %5 which was unexpectedly marked for delete by revert operation.
+.
+
+MessageId=570
+SymbolicName=DB_PAGE_FDP_DELETE_DIVERGENCE_ID
+Language=English
+%1 (%2) %3Database %4: Page %5 in a B-Tree (ObjectId: %6) failed verfication due to page FDP delete flag mismatch at log position %7.  The remote page FDP delete flag persisted to the log record was %8 but the actual page FDP delete flag was %9. This problem is likely due to revert of the database gone wrong. Please investigate the database revert operations performed on the database.%n
+.
 
 ;// !!! ARE YOU SURE you're adding this in the right place !!! ???
 
@@ -2591,6 +2602,40 @@ Number of available extents: %23.%n
 Total available space: %24 bytes (%25 page(s)).%n
 .
 
+MessageId=756
+SymbolicName=ROOT_SPACE_LEAK_ESTIMATION_SUCCEEDED_ID
+Language=English
+%1 (%2) %3Root space leak estimation has completed successfully on database '%4'.%n
+Leaked space: %5 page(s) (%6 bytes, %7%%).%n
+Owned space: %8 page(s) (%9 bytes).%n
+Available space: %10 page(s) (%11 bytes, %12%%).%n
+Used space: %13 page(s) (%14 bytes, %15%%).%n
+Space owned within known file size: %16 page(s) (%17 bytes, %18%%).%n
+Space owned beyond known file size: %19 page(s) (%20 bytes, %21%%).%n
+Space owned by primary objects: %22 page(s) (%23 bytes, %24%%).%n
+Space used by root object: %25 page(s) (%26 bytes, %27%%).%n
+Space used by root owned-extent tree: %28 page(s) (%29 bytes, %30%%).%n
+Space used by root available-extent tree: %31 page(s) (%32 bytes, %33%%).%n
+Space used by root space tree split buffers: %34 page(s) (%35 bytes, %36%%).%n
+Number of cached primary objects: %37%n
+Number of uncached primary objects: %38%n
+Correction applied to space owned by primary objects: %46 page(s) (%47 bytes, %48%%).%n
+Enumeration conflicts resolved successfully: %49%n
+Enumeration conflicts not resolved successfully: %50%n
+Performance: %39 page(s) read, %40 page(s) preread, %41 page(s) referenced, %42 page(s) dirtied, %43 page(s) re-dirtied.%n
+Duration: %44 minute(s) and %45 second(s).%n
+.
+
+MessageId=757
+SymbolicName=ROOT_SPACE_LEAK_ESTIMATION_FAILED_ID
+Language=English
+%1 (%2) %3Root space leak estimation has failed on database '%4'.%n
+Error code: %5%n
+Last processed object ID: %6%n
+Context: %7%n
+Duration: %8 minute(s) and %9 second(s).%n
+.
+
 ;// !!! ARE YOU SURE you're adding this in the right place !!! ???
 
 
@@ -3084,6 +3129,16 @@ Language=English
 %1 (%2) %3The caching file at '%4' could not perform a caching operation '%5' due to an unexpected error %6.  The caching operation will fail with error %7.%n
 .
 
+MessageId=4005
+SymbolicName=BLOCK_CACHE_CACHING_FILE_NOT_ENABLED_ID
+Language=English
+%1 (%2) %3The caching file with the requested physical ids was not enabled.%n
+%n
+Volume id=%4%n
+File id=%5%n
+Unique id=%6%n
+.
+
 ;///////////////////////////////////////////////////////////
 ;//	RBS Events
 ;///////////////////////////////////////////////////////////
@@ -3152,6 +3207,12 @@ MessageId=5010
 SymbolicName=RBS_NON_REVERTABLE_DELETE_FAILED_ID
 Language=English
 %1 (%2) %3The non-revertable table delete operation for %4 with root page at %5 and objid %6 failed due to error %7.
+.
+
+MessageId=5011
+SymbolicName=RBSREVERT_ROOTPAGES_MOVED_COUNT_ID
+Language=English
+%1 (%2) %3The revert operation using RBS generation %4 performed %5 root page create move and %6 root page shrink move operations.
 .
 
 ;////////////////////////////////////////////////////////////////////////

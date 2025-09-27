@@ -497,6 +497,27 @@ INLINE VOID AssertSPIWrappedLatches( FUCB *pfucb, CSR *pcsr = pcsrNil )
 #endif
 }
 
+
+LOCAL VOID SPIAccumulateCorrectionForLeakEstimation( const FCB* const pfcb, const CPG cpg )
+{
+    FMP* const pfmp = &g_rgfmp[ pfcb->Ifmp() ];
+
+    // Skip it for temp DBs, or if there's nothing to be adjusted.
+    if ( pfmp->FIsTempDB() || ( cpg == 0 ) )
+    {
+        return;
+    }
+
+    Assert( !pfcb->FTypeNull() );
+
+    if ( !pfcb->FTypeTable() )
+    {
+        return;
+    }
+
+    pfmp->AccumulateCorrectionForLeakEstimation( pfcb->ObjidFDP(), cpg );
+}
+
 //
 // Wrappers around updates on space trees to force you to think about the
 // ExtentPageCountCache.
@@ -514,6 +535,8 @@ SPIWrappedNDInsert(
     PIB  *ppib = pfucb->ppib;
     BOOL fOpenedTransaction = fFalse;
     BOOL fUpdateCache = ( ( cpgDeltaOE != 0 ) || ( cpgDeltaAE != 0 ) );
+
+    SPIAccumulateCorrectionForLeakEstimation( pfucb->u.pfcb, cpgDeltaOE );
 
     AssertSPIWrappedLatches( pfucb, pcsr );
 
@@ -534,7 +557,7 @@ SPIWrappedNDInsert(
         // but at the very least we'll trigger all sorts of downstream Asserts() if
         // we don't have one.
 
-        err =  ErrDIRBeginTransaction( ppib, 35734, NO_GRBIT );
+        err = ErrDIRBeginTransaction( ppib, 35734, NO_GRBIT );
         if ( JET_errSuccess > err )
         {
             OSTraceSuspendGC();
@@ -544,7 +567,7 @@ SPIWrappedNDInsert(
                 OSFormatW( L"%d", PgnoFDP( pfucb ) ),
                 OSFormatW( L"%d", err )
             };
-            
+
             UtilReportEvent(
                 eventError,
                 SPACE_MANAGER_CATEGORY,
@@ -554,7 +577,7 @@ SPIWrappedNDInsert(
                 0,
                 PinstFromPfucb( pfucb ) );
             OSTraceResumeGC();
-            
+
             // We can't trust any further calls to the cache here, since we don't have that transaction.
             fUpdateCache = fFalse;
         }
@@ -642,6 +665,8 @@ ErrSPIWrappedNDSetExternalHeader(
     BOOL fOpenedTransaction = fFalse;
     BOOL fUpdateCache = ( ( cpgDeltaOE != 0 ) || ( cpgDeltaAE != 0 ) );
 
+    SPIAccumulateCorrectionForLeakEstimation( pfucb->u.pfcb, cpgDeltaOE );
+
     AssertSPIWrappedLatches( pfucb, pcsr );
 
     if ( fUpdateCache )
@@ -712,6 +737,8 @@ ErrSPIWrappedBTFlagDelete(
     BOOL fOpenedTransaction = fFalse;
     BOOL fUpdateCache = ( ( cpgDeltaOE != 0 ) || ( cpgDeltaAE != 0 ) );
 
+    SPIAccumulateCorrectionForLeakEstimation( pfucb->u.pfcb, cpgDeltaOE );
+
     AssertSPIWrappedLatches( pfucb );
 
     Assert( fDIRNoVersion & fDIRFlag );
@@ -781,6 +808,8 @@ ErrSPIWrappedBTReplace(
     PIB  *ppib = pfucb->ppib;
     BOOL fOpenedTransaction = fFalse;
     BOOL fUpdateCache = ( ( cpgDeltaOE != 0 ) || ( cpgDeltaAE != 0 ) );
+
+    SPIAccumulateCorrectionForLeakEstimation( pfucb->u.pfcb, cpgDeltaOE );
 
     AssertSPIWrappedLatches( pfucb );
 
@@ -853,6 +882,8 @@ ErrSPIWrappedBTInsert(
     PIB  *ppib = pfucb->ppib;
     BOOL fOpenedTransaction = fFalse;
     BOOL fUpdateCache = ( ( cpgDeltaOE != 0 ) || ( cpgDeltaAE != 0 ) );
+
+    SPIAccumulateCorrectionForLeakEstimation( pfucb->u.pfcb, cpgDeltaOE );
 
     AssertSPIWrappedLatches( pfucb );
 
@@ -3434,6 +3465,14 @@ ERR ErrSPCreate(
         *pcpgAEFDP = cpgPrimary - cpgSingleExtentMin;
     }
 
+    // If RBS is enabled, capture the fact that table was just created,
+    // so that if the table is non-revertable deleted in near future
+    // and if the database is reverted, delete flag can be cleared accordingly.
+    if ( g_rgfmp[ pfucb->ifmp ].FRBSOn() )
+    {
+        Call( g_rgfmp[ pfucb->ifmp ].PRBS()->ErrCaptureRootPageMove( g_rgfmp[ pfucb->ifmp ].Dbid(), 0, pgnoFDP ) );
+    }
+
     Assert( !FFUCBSpace( pfucb ) );
     Assert( !FFUCBVersioned( pfucb ) );
 
@@ -5081,9 +5120,9 @@ ERR ErrSPIGetSpaceCategoryNoHint(
     OBJID objid = objidNil;
 
     // All root objects (tables) and their children.
-    for ( err = ErrCATGetNextRootObject( ppib, ifmp, &pfucbCatalog, &objid );
+    for ( err = ErrCATGetNextRootObject( ppib, ifmp, fFalse, &pfucbCatalog, &objid );
         ( err >= JET_errSuccess ) && ( objid != objidNil );
-        err = ErrCATGetNextRootObject( ppib, ifmp, &pfucbCatalog, &objid ) )
+        err = ErrCATGetNextRootObject( ppib, ifmp, fFalse, &pfucbCatalog, &objid ) )
     {
         if ( objid == objidExclude )
         {
@@ -7408,12 +7447,12 @@ LOCAL ERR ErrSPIFreeSEToParent(
     const PGNO  pgnoLast,
     const CPG   cpgSize )
 {
-    ERR         err;
-    FCB         *pfcb = pfucb->u.pfcb;
-    FCB         *pfcbParent;
-    BOOL        fState;
-    DIB         dib;
-    FUCB        *pfucbParentLocal = pfucbParent;
+    ERR             err;
+    FCB             *pfcb = pfucb->u.pfcb;
+    FCB             *pfcbParent;
+    FCBStateFlags   fcbsf;
+    DIB             dib;
+    FUCB            *pfucbParentLocal = pfucbParent;
     const CSPExtentKeyBM    CSPOEKey( SPEXTKEY::fSPExtentTypeOE, pgnoLast );
 
     Assert( pfcbNil != pfcb );
@@ -7440,9 +7479,9 @@ LOCAL ERR ErrSPIFreeSEToParent(
 
     //  parent must always be in memory
     //
-    pfcbParent = FCB::PfcbFCBGet( pfucb->ifmp, pgnoParentFDP, &fState, fTrue, fTrue );
+    pfcbParent = FCB::PfcbFCBGet( pfucb->ifmp, pgnoParentFDP, &fcbsf, fTrue, fTrue );
     Assert( pfcbParent != pfcbNil );
-    Assert( fFCBStateInitialized == fState );
+    Assert( fcbsf & fcbsfInitialized );
     Assert( !pfcb->FTypeNull() );
 
     if ( !pfcb->FInitedForRecovery() )
@@ -8466,7 +8505,7 @@ ERR ErrSPCaptureNonRevertableFDPRootPage( PIB *ppib, FCB* pfcbFDPToFree, const P
     CPG cpgCaptured = 0;
     PIBTraceContextScope tcScope = ppib->InitTraceContextScope();
 
-    Call( ErrBTOpen( ppib, pfcbFDPToFree, &pfucb ) );
+    CallR( ErrBTOpen( ppib, pfcbFDPToFree, &pfucb ) );
 
     Assert( pfucbNil != pfucb );
     Assert( pfucb->u.pfcb->FInitialized() );
@@ -8542,6 +8581,11 @@ ERR ErrSPCaptureNonRevertableFDPRootPage( PIB *ppib, FCB* pfcbFDPToFree, const P
     }
 
 HandleError:
+    if ( err < JET_errSuccess )
+    {
+        SPIReportSpaceLeak( pfucb, err, pfcbFDPToFree->PgnoFDP(), 1, "CaptureNonRevertableFDPRootPage" );
+    }
+
     if ( pfucbNil != pfucb )
     {
         pfucb->pcsrRoot = pcsrNil;
@@ -8566,8 +8610,10 @@ ERR ErrSPCaptureSpaceTreePages( FUCB* const pfucbParent, FCB* pfcb, CPG* pcpgSna
     CSPExtentKeyBM spoebmStart( SPEXTKEY::fSPExtentTypeOE, 0, SpacePool::MinPool );
     CSPExtentKeyBM spoebmEnd( SPEXTKEY::fSPExtentTypeOE, pgnoSysMax, SpacePool::AvailExtLegacyGeneralPool );
     LONG cbmPreread;
-    PGNO* rgPgnos = NULL;
-    CPG   cpgno   = 0;
+    PGNO* rgPgnos   = NULL;
+    CPG   cpgno     = 0;
+    PGNO pgnoFirst  = pgnoNull;
+    LONG cpgExtent  = 0;
 
     PIBTraceContextScope tcScope = pfucbOE->ppib->InitTraceContextScope();
     tcScope->nParentObjectClass = TceFromFUCB( pfucbOE );
@@ -8603,9 +8649,6 @@ ERR ErrSPCaptureSpaceTreePages( FUCB* const pfucbParent, FCB* pfcb, CPG* pcpgSna
 
     std::sort( rgPgnos, rgPgnos + cpgno - 1, CmpPgno );
 
-    PGNO pgnoFirst = pgnoNull;
-    LONG cpgExtent = 0;
-
     // Find if there is any continuous extent in space tree. Also capture preimage if needed.
     for ( LONG ipg = 0; ipg < cpgno; ++ipg )
     {
@@ -8636,6 +8679,11 @@ ERR ErrSPCaptureSpaceTreePages( FUCB* const pfucbParent, FCB* pfcb, CPG* pcpgSna
     *pcpgSnapshotted = cpgno;
 
 HandleError:
+    if ( err < JET_errSuccess )
+    {
+        SPIReportSpaceLeak( pfucbOE, err, pgnoFirst, cpgExtent, "CaptureSpaceTreePages" );
+    }
+
     if ( pfucbOE != pfucbNil )
     {
         pfucbOE->pcsrRoot = pcsrNil;
@@ -8703,9 +8751,6 @@ ERR ErrSPCaptureSnapshot( FUCB* const pfucb, const PGNO pgnoFirst, CPG cpgSize, 
             // Capture all freed but non-revertable extent pages as if they need to be reverted to empty pages when RBS is applied with special flag fRBSFDPDeleted.
             // If we already captured a preimage for one of those pages in the extent, the revert to an empty page will be ignored for that page when we apply the snapshot.
             CallR( g_rgfmp[ pfucb->ifmp ].PRBS()->ErrCaptureEmptyPages( g_rgfmp[ pfucb->ifmp ].Dbid(), pgnoFirst, cpgSize, fRBSFDPNonRevertableDelete ) );
-
-            // We need to make sure we flush our snapshot records else we might go out of required range without flushing and fail to snapshot them as empty pages.
-            CallR( g_rgfmp[ pfucb->ifmp ].PRBS()->ErrFlushAll() );
         }
 
         if ( fEfvEnabled )
@@ -10068,9 +10113,9 @@ ERR ErrSPReclaimSpaceLeaks( PIB* const ppib, const IFMP ifmp )
     // All tables: process space owned by the first level of B+ trees right below the root.
     {
     OBJID objid = objidNil;
-    for ( err = ErrCATGetNextRootObject( ppib, ifmp, &pfucbCatalog, &objid );
+    for ( err = ErrCATGetNextRootObject( ppib, ifmp, fFalse, &pfucbCatalog, &objid );
         ( err >= JET_errSuccess ) && ( objid != objidNil );
-        err = ErrCATGetNextRootObject( ppib, ifmp, &pfucbCatalog, &objid ) )
+        err = ErrCATGetNextRootObject( ppib, ifmp, fFalse, &pfucbCatalog, &objid ) )
     {
         Call( ErrSPILRProcessObjectSpaceOwnership( ppib, ifmp, objid, &spbmOwned, &arrShelved ) );
 
@@ -10468,10 +10513,11 @@ INLINE VOID OWNEXT_LIST::AddExtentInfoEntry(
 }
 
 INLINE ERR ErrSPIFreeOwnedExtentsInList(
-    FUCB        *pfucbParent,
-    EXTENTINFO  *rgextinfo,
-    const ULONG cExtents,
-    const BOOL  fFDPRevertable )
+    FUCB*               pfucbParent,
+    const FCB* const    pfcb,
+    EXTENTINFO*         rgextinfo,
+    const ULONG         cExtents,
+    const BOOL          fFDPRevertable )
 {
     ERR         err;
 
@@ -10482,7 +10528,10 @@ INLINE ERR ErrSPIFreeOwnedExtentsInList(
         const CPG   cpgSize = rgextinfo[i].CpgExtent();
         const PGNO  pgnoFirst = rgextinfo[i].PgnoLast() - cpgSize + 1;
 
+        SPIAccumulateCorrectionForLeakEstimation( pfcb, -cpgSize );
+
         Assert( !FFUCBSpace( pfucbParent ) );
+
         CallR( ErrSPCaptureSnapshot( pfucbParent, pgnoFirst, cpgSize, !fFDPRevertable ) );
         CallR( ErrSPFreeExt( pfucbParent, pgnoFirst, cpgSize, "FreeFdpLarge" ) );
     }
@@ -10633,6 +10682,7 @@ LOCAL ERR ErrSPIFreeAllOwnedExtents( FUCB* pfucbParent, FCB* pfcb, const BOOL fP
 
     Call( ErrSPIFreeOwnedExtentsInList(
             pfucbParent,
+            pfcb,
             extinfo,
             min( cOEListEntries, cOEListEntriesInit ),
             fRevertableFDP ) );
@@ -10644,6 +10694,7 @@ LOCAL ERR ErrSPIFreeAllOwnedExtents( FUCB* pfucbParent, FCB* pfcb, const BOOL fP
         Assert( cOEListEntries > cOEListEntriesInit );
         Call( ErrSPIFreeOwnedExtentsInList(
                 pfucbParent,
+                pfcb,
                 pOEListCurr->RgExtentInfo(),
                 pOEListCurr->CEntries(),
                 fRevertableFDP ) );
@@ -10905,8 +10956,10 @@ ERR ErrSPFreeFDP(
             Assert( sizeof( SPACE_HEADER ) == pfucb->kdfCurr.data.Cb() );
             const SPACE_HEADER * const psph = reinterpret_cast <SPACE_HEADER *> ( pfucb->kdfCurr.data.Pv() );
 
-            ULONG cpgPrimary = psph->CpgPrimary();
+            const CPG cpgPrimary = psph->CpgPrimary();
             Assert( psph->CpgPrimary() != 0 );
+
+            SPIAccumulateCorrectionForLeakEstimation( pfucb->u.pfcb, -cpgPrimary );
 
             //  Close the cursor to make sure it latches no buffer whose page
             //  is going to be freed.
@@ -15120,6 +15173,7 @@ LOCAL VOID SPIReportAnyExtentCacheError(
 //  4) RESERVED
 //  5) SHELVED
 //  6) LIST
+//  7) REACHABLEPAGES (must not be combined with other options)
 //
 ERR ErrSPGetInfo(
     PIB                       *ppib,
@@ -15137,8 +15191,10 @@ ERR ErrSPGetInfo(
     CPG           *pcpgReservedExtTotal;
     CPG           *pcpgShelvedExtTotal;
     CPG           *pcpgSplitBuffersTotal;
+    CPG           *pcpgReachableTotal;
     EXTENTINFO    *rgext;
     FUCB          *pfucbT = pfucbNil;
+    FUCB          *pfucbSpace = pfucbNil;
     INT           iext;
     ULONG         cbMaxReq = 0;
     BOOL          fReadCachedValue;
@@ -15154,8 +15210,8 @@ ERR ErrSPGetInfo(
     PIBTraceContextScope tcScope = ppib->InitTraceContextScope();
     tcScope->iorReason.SetIort( iortSpace );
 
-    // Have to specify either owned, available, or split buffers when you call this routine.
-    fSPExtentsRequired = fSPOwnedExtent | fSPAvailExtent | fSPSplitBuffers;
+    // Have to specify either owned, available, split buffers, or reachable pages when you call this routine.
+    fSPExtentsRequired = fSPOwnedExtent | fSPAvailExtent | fSPSplitBuffers | fSPReachablePages;
 
     fSPExtentsAllowed = fSPExtentsRequired;
     if ( ( pfucbNil == pfucb ) || ( ObjidFDP( pfucb ) == pgnoSystemRoot ) )
@@ -15169,7 +15225,7 @@ ERR ErrSPGetInfo(
         fSPExtentsAllowed |= ( fSPReservedExtent | fSPExtentList );
     }
 
-    //  At least one required extent type specified?
+    // At least one required extent type specified?
     if ( ( fSPExtents & fSPExtentsRequired ) == 0 )
     {
         Error( ErrERRCheck( JET_errInvalidParameter ) );
@@ -15179,6 +15235,21 @@ ERR ErrSPGetInfo(
     if ( ( fSPExtents & ~fSPExtentsAllowed ) != 0 )
     {
         Error( ErrERRCheck( JET_errInvalidParameter ) );
+    }
+
+    if ( FSPReachablePages( fSPExtents ) )
+    {
+        // Don't allow fSPReachablePages combined with other options.
+        if ( ( fSPExtents & ~fSPReachablePages ) != 0 )
+        {
+            Error( ErrERRCheck( JET_errInvalidParameter ) );
+        }
+
+        // We must have passed in a specific tree/FUCB.
+        if ( ( pfucb == pfucbNil ) || ( pfucb->pcsrRoot == pcsrNil ) || !pfucb->pcsrRoot->FLatched() )
+        {
+            Error( ErrERRCheck( JET_errInvalidParameter ) );
+        }
     }
 
     if ( FSPExtentList( fSPExtents ) )
@@ -15270,6 +15341,10 @@ ERR ErrSPGetInfo(
     {
         cbMaxReq += sizeof( CPG );
     }
+    if ( FSPReachablePages( fSPExtents ) )
+    {
+        cbMaxReq += sizeof( CPG );
+    }
     if ( cbMax < cbMaxReq )
     {
         AssertSz( fFalse, "Called without the necessary buffer allocated for extents." );
@@ -15289,6 +15364,7 @@ ERR ErrSPGetInfo(
     pcpgSplitBuffersTotal = NULL;
     pcpgReservedExtTotal = NULL;
     pcpgShelvedExtTotal = NULL;
+    pcpgReachableTotal = NULL;
     if ( FSPOwnedExtent( fSPExtents ) )
     {
         pcpgOwnExtTotal = pcpgT;
@@ -15314,6 +15390,11 @@ ERR ErrSPGetInfo(
         pcpgShelvedExtTotal = pcpgT;
         pcpgT++;
     }
+    if ( FSPReachablePages( fSPExtents ) )
+    {
+        pcpgReachableTotal = pcpgT;
+        pcpgT++;
+    }
     rgext = (EXTENTINFO *)pcpgT;
 
     if ( pcpgOwnExtTotal )
@@ -15331,6 +15412,14 @@ ERR ErrSPGetInfo(
     if ( pcpgShelvedExtTotal )
     {
         *pcpgShelvedExtTotal = 0;
+    }
+    if ( pcpgSplitBuffersTotal )
+    {
+        *pcpgSplitBuffersTotal = 0;
+    }
+    if ( pcpgReachableTotal )
+    {
+        *pcpgReachableTotal = 0;
     }
 
     const BOOL  fExtentList     = FSPExtentList( fSPExtents );
@@ -15408,7 +15497,7 @@ ERR ErrSPGetInfo(
                 fSPExtents |= fSPAvailExtent;
             }
 
-            fSetCachedValue = fTrue;
+            fSetCachedValue = !g_rgfmp[ ifmp ].FReadOnlyAttach();
 
             // Now go read the slow way.
             break;
@@ -15443,33 +15532,56 @@ ERR ErrSPGetInfo(
         }
     }
 
-    if ( pfucbNil == pfucb )
+    // If the FUCB we passed in its root already latched, we don't need to open a second one
+    // and latch it.
+    Assert( ( pfucb == pfucbNil ) || ( pfucb->pcsrRoot == pcsrNil ) || pfucb->pcsrRoot->FLatched() );
+    if ( ( pfucb == pfucbNil ) || ( pfucb->pcsrRoot == pcsrNil ) || !pfucb->pcsrRoot->FLatched() )
     {
-        err = ErrBTOpen( ppib, pgnoSystemRoot, ifmp, &pfucbT );
+        Assert( !FSPReachablePages( fSPExtents ) );
+        if ( pfucbNil == pfucb )
+        {
+            err = ErrBTOpen( ppib, pgnoSystemRoot, ifmp, &pfucbT );
+        }
+        else
+        {
+            Assert( !FFUCBSpace( pfucb ) );
+            err = ErrBTOpen( ppib, pfucb->u.pfcb, &pfucbT );
+        }
+        CallR( err );
     }
     else
     {
-        err = ErrBTOpen( ppib, pfucb->u.pfcb, &pfucbT );
+        Assert( !fSetCachedValue || ( ObjidFDP( pfucb ) == objidSystemRoot ) ||  ( pfucb->pcsrRoot->Latch() == latchRIW ) );
+        Assert( Pcsr( pfucb ) == pfucb->pcsrRoot );
+        pfucbT = pfucb;
     }
-    CallR( err );
+
     Assert( pfucbNil != pfucbT );
     tcScope->nParentObjectClass = TceFromFUCB( pfucbT );
     tcScope->SetDwEngineObjid( ObjidFDP( pfucbT ) );
 
-
-    if ( fSetCachedValue )
+    if ( pfucbT != pfucb )
     {
-        // Since we're going to write a value to the cache if we can, we need to hold a write
-        // or RIW latch on the root page in order to have the cache and the space trees be
-        // consistent.
-        Call( ErrBTIGotoRoot( pfucbT, latchRIW ) );
+        if ( fSetCachedValue )
+        {
+            // Since we're going to write a value to the cache if we can, we need to hold a write
+            // or RIW latch on the root page in order to have the cache and the space trees be
+            // consistent.
+            Call( ErrBTIGotoRoot( pfucbT, latchRIW ) );
+        }
+        else
+        {
+            Call( ErrBTIGotoRoot( pfucbT, latchReadTouch ) );
+        }
+        Assert( pcsrNil == pfucbT->pcsrRoot );
+        pfucbT->pcsrRoot = Pcsr( pfucbT );
     }
     else
     {
-        Call( ErrBTIGotoRoot( pfucbT, latchReadTouch ) );
+        Assert( Pcsr( pfucb ) == pfucb->pcsrRoot );
+        Assert( pfucb->pcsrRoot != pcsrNil );
+        Assert( pfucb->pcsrRoot->FLatched() );
     }
-    Assert( pcsrNil == pfucbT->pcsrRoot );
-    pfucbT->pcsrRoot = Pcsr( pfucbT );
 
     if ( !pfucbT->u.pfcb->FSpaceInitialized() )
     {
@@ -15548,17 +15660,15 @@ ERR ErrSPGetInfo(
         {
             //  open cursor on owned extent tree
             //
-            FUCB    *pfucbOE = pfucbNil;
-
-            Call( ErrSPIOpenOwnExt( pfucbT, &pfucbOE ) );
+            Call( ErrSPIOpenOwnExt( pfucbT, &pfucbSpace ) );
 
             if( pcprintf )
             {
                 (*pcprintf)( "\n%s: OWNEXT\n", SzNameOfTable( pfucbT ) );
             }
 
-            err = ErrSPIGetInfo(
-                pfucbOE,
+            Call( ErrSPIGetInfo(
+                pfucbSpace,
                 pcpgOwnExtTotal,
                 NULL,
                 NULL,
@@ -15566,10 +15676,10 @@ ERR ErrSPGetInfo(
                 cext,
                 rgext,
                 &cextSentinelsRemaining,
-                pcprintf );
-            Assert( pfucbOE != pfucbNil );
-            BTClose( pfucbOE );
-            Call( err );
+                pcprintf ) );
+
+            BTClose( pfucbSpace );
+            pfucbSpace = pfucbNil;
         }
     }
 
@@ -15707,17 +15817,15 @@ ERR ErrSPGetInfo(
         {
             //  open cursor on available extent tree
             //
-            FUCB    *pfucbAE = pfucbNil;
-
-            Call( ErrSPIOpenAvailExt( pfucbT, &pfucbAE ) );
+            Call( ErrSPIOpenAvailExt( pfucbT, &pfucbSpace ) );
 
             if( pcprintf )
             {
                 (*pcprintf)( "\n%s: AVAILEXT\n", SzNameOfTable( pfucbT ) );
             }
 
-            err = ErrSPIGetInfo(
-                pfucbAE,
+            Call( ErrSPIGetInfo(
+                pfucbSpace,
                 pcpgAvailExtTotal,
                 pcpgReservedExtTotal,
                 pcpgShelvedExtTotal,
@@ -15725,11 +15833,10 @@ ERR ErrSPGetInfo(
                 cext,
                 rgext,
                 &cextSentinelsRemaining,
-                pcprintf );
+                pcprintf ) );
 
-            Assert( pfucbAE != pfucbNil );
-            BTClose( pfucbAE );
-            Call( err );
+            BTClose( pfucbSpace );
+            pfucbSpace = pfucbNil;
         }
 
         //  if possible, verify AvailExt total against OwnExt total
@@ -15754,39 +15861,37 @@ ERR ErrSPGetInfo(
         {
             //  Get the split buffers ...
             //
-            FUCB    *pfucbAE = pfucbNil;
-            FUCB    *pfucbOE = pfucbNil;
             SPLIT_BUFFER  spbufOnOE;
             SPLIT_BUFFER  spbufOnAE;
             memset( (void*)&spbufOnOE, 0, sizeof(spbufOnOE) );
             memset( (void*)&spbufOnAE, 0, sizeof(spbufOnAE) );
 
-            CallJ( ErrSPIOpenAvailExt( pfucbT, &pfucbAE ), HandleSplitBuffersError );
-            CallJ( ErrSPIOpenOwnExt( pfucbT, &pfucbOE ), HandleSplitBuffersError );
-            CallJ( ErrSPIGetSPBufUnlatched( pfucbOE, &spbufOnOE ), HandleSplitBuffersError );
-            CallJ( ErrSPIGetSPBufUnlatched( pfucbAE, &spbufOnAE ), HandleSplitBuffersError );
+            Call( ErrSPIOpenOwnExt( pfucbT, &pfucbSpace ) );
+            Call( ErrSPIGetSPBufUnlatched( pfucbSpace, &spbufOnOE ) );
+            SPDumpSplitBufExtent( pcprintf, SzNameOfTable( pfucbSpace ), "OE", pfucbSpace->u.pfcb->PgnoOE(), &spbufOnOE );
+            BTClose( pfucbSpace );
+            pfucbSpace = pfucbNil;
 
-            SPDumpSplitBufExtent( pcprintf, SzNameOfTable( pfucbAE ), "OE", pfucbAE->u.pfcb->PgnoOE(), &spbufOnOE );
-            SPDumpSplitBufExtent( pcprintf, SzNameOfTable( pfucbAE ), "AE", pfucbAE->u.pfcb->PgnoAE(), &spbufOnAE );
+            Call( ErrSPIOpenAvailExt( pfucbT, &pfucbSpace ) );
+            Call( ErrSPIGetSPBufUnlatched( pfucbSpace, &spbufOnAE ) );
+            SPDumpSplitBufExtent( pcprintf, SzNameOfTable( pfucbSpace ), "AE", pfucbSpace->u.pfcb->PgnoAE(), &spbufOnAE );
+            BTClose( pfucbSpace );
+            pfucbSpace = pfucbNil;
 
             *pcpgSplitBuffersTotal = spbufOnOE.CpgBuffer1() +
                 spbufOnOE.CpgBuffer2() +
                 spbufOnAE.CpgBuffer1() +
                 spbufOnAE.CpgBuffer2();
-
-        HandleSplitBuffersError:
-            if ( pfucbAE != pfucbNil )
-            {
-                BTClose( pfucbAE );
-            }
-            if ( pfucbOE != pfucbNil )
-            {
-                BTClose( pfucbOE );
-            }
-            Call( err );
         }
     }
 
+    if ( FSPReachablePages( fSPExtents ) )
+    {
+        Assert( pcpgReachableTotal != NULL );
+        Assert( pfucb != pfucbNil );
+        Assert( pfucb == pfucbT );
+        Call( ErrBTIGetReachablePageCount( pfucb, pcpgReachableTotal ) );
+    }
 
     Assert( 0 == cextSentinelsRemaining );
 
@@ -15859,7 +15964,12 @@ ERR ErrSPGetInfo(
     }
 
 HandleError:
-    if ( pfucbT != pfucbNil )
+    if ( pfucbSpace != pfucbNil )
+    {
+        BTClose( pfucbSpace );
+    }
+
+    if ( ( pfucbT != pfucbNil ) && ( pfucbT != pfucb ) )
     {
         pfucbT->pcsrRoot = pcsrNil;
         BTClose( pfucbT );

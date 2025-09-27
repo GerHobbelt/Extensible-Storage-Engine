@@ -193,13 +193,17 @@ class ICache  //  c
 
         virtual ERR ErrMount() = 0;
 
+        //  Prepares for a clean dismount of the cache.
+
+        virtual ERR ErrPrepareToDismount() = 0;
+
         //  Dumps information for an existing cache.
 
         virtual ERR ErrDump( _In_ CPRINTF* const pcprintf ) = 0;
 
-        //  Returns the type of the caching file.
+        //  Indicates if the cache is currently enabled.
 
-        virtual ERR ErrGetCacheType( _Out_writes_( cbGuid ) BYTE* const rgbCacheType ) = 0;
+        virtual BOOL FEnabled() = 0;
 
         //  Returns the physical identity of the caching file.
 
@@ -218,6 +222,20 @@ class ICache  //  c
         virtual ERR ErrFlush(   _In_ const VolumeId     volumeid,
                                 _In_ const FileId       fileid,
                                 _In_ const FileSerial   fileserial ) = 0;
+
+        //  Destage completion status.
+
+        typedef void (*PfnDestageStatus)(   _In_        const int       i,
+                                            _In_        const int       c,
+                                            _In_opt_    const DWORD_PTR keyDestageStatus );
+
+        //  Writes all data previously written for the given cached file back to that cached file.
+
+        virtual ERR ErrDestage( _In_        const VolumeId                  volumeid,
+                                _In_        const FileId                    fileid,
+                                _In_        const FileSerial                fileserial,
+                                _In_opt_    const ICache::PfnDestageStatus  pfnDestageStatus,
+                                _In_opt_    const DWORD_PTR                 keyDestageStatus ) = 0;
 
         //  Invalidates cached data for the specified offset range of the given cached file.
 
@@ -779,6 +797,11 @@ class CCachedBlock  //  cbl
         {
         }
 
+        CCachedBlock( _In_ const CCachedBlock& other )
+        {
+            memcpy( this, &other, sizeof( *this ) );
+        }
+
         const CCachedBlockId& Cbid() const { return m_cbid; }
         ClusterNumber Clno() const { return m_le_clno; }
         BOOL FValid() const { return m_fValid != 0; }
@@ -829,17 +852,17 @@ class CCachedBlock  //  cbl
 
     private:
 
-        const CCachedBlockId                            m_cbid;                 //  the cached block id
-        const UnalignedLittleEndian<ClusterNumber>      m_le_clno;              //  the cluster number of the caching file holding the cached block
-        const UnalignedLittleEndian<DWORD>              m_le_dwECC;             //  ECC of the block's contents
-        const UnalignedLittleEndian<TouchNumber>        m_le_rgtono[ 2 ];       //  touch numbers for the replacement policy
-        const BYTE                                      m_fValid : 1;           //  indicates that the cached block is valid
-        const BYTE                                      m_fPinned : 1;          //  indicates that the cached block must not be written back
-        const BYTE                                      m_fDirty : 1;           //  indicates that the cached block needs to be written back
-        const BYTE                                      m_fEverDirty : 1;       //  indicates that the cached block has been written since cached
-        const BYTE                                      m_fPurged : 1;          //  indicates that the cached block had a current valid dirty image invalidated
-        const BYTE                                      m_rgbitReserved0 : 3;   //  reserved; always zero
-        const UnalignedLittleEndian<UpdateNumber>       m_le_updno;             //  the update number of the cached block
+        CCachedBlockId                            m_cbid;               //  the cached block id
+        UnalignedLittleEndian<ClusterNumber>      m_le_clno;            //  the cluster number of the caching file holding the cached block
+        UnalignedLittleEndian<DWORD>              m_le_dwECC;           //  ECC of the block's contents
+        UnalignedLittleEndian<TouchNumber>        m_le_rgtono[ 2 ];     //  touch numbers for the replacement policy
+        BYTE                                      m_fValid : 1;         //  indicates that the cached block is valid
+        BYTE                                      m_fPinned : 1;        //  indicates that the cached block must not be written back
+        BYTE                                      m_fDirty : 1;         //  indicates that the cached block needs to be written back
+        BYTE                                      m_fEverDirty : 1;     //  indicates that the cached block has been written since cached
+        BYTE                                      m_fPurged : 1;        //  indicates that the cached block had a current valid dirty image invalidated
+        BYTE                                      m_rgbitReserved0 : 3; //  reserved; always zero
+        UnalignedLittleEndian<UpdateNumber>       m_le_updno;           //  the update number of the cached block
 };
 
 #include <poppack.h>
@@ -956,6 +979,9 @@ class CCachedBlockSlot : public CCachedBlock
             C_ASSERT( 55 == sizeof( CCachedBlockSlot ) );
         }
 
+        static void DumpFile(   _In_ const CCachedBlockSlot&    slot,
+                                _In_ CPRINTF* const             pcprintf,
+                                _In_ IFileIdentification* const pfident );
     private:
 
         const UnalignedLittleEndian<QWORD>          m_le_ibSlab;
@@ -989,20 +1015,29 @@ class CCachedBlockSlotState : public CCachedBlockSlot
         BOOL FSlotUpdated() const { return m_fSlotUpdated; }
         BOOL FClusterUpdated() const { return m_fClusterUpdated; }
         BOOL FSuperceded() const { return m_fSuperceded; }
+        BOOL FFirstUpdate() const { return Updno() == (UpdateNumber)1; }
+
+        static void Dump(   _In_ const CCachedBlockSlotState&   slotst,
+                            _In_ CPRINTF* const                 pcprintf,
+                            _In_ IFileIdentification* const     pfident );
 
     protected:
 
         friend class CCachedBlockSlab;
         template<class I> friend class TCachedBlockSlab;
         friend class COSBlockCacheFactoryImpl;
+        friend const char* OSFormat( _In_ const CCachedBlockSlotState& slotst );
 
-        CCachedBlockSlotState(  _In_ const CCachedBlockSlot&    slot,
-                                _In_ const BOOL                 fSlabUpdated,
-                                _In_ const BOOL                 fChunkUpdated,
-                                _In_ const BOOL                 fSlotUpdated,
-                                _In_ const BOOL                 fClusterUpdated,
-                                _In_ const BOOL                 fSuperceded )
-            :   CCachedBlockSlot( slot ),
+        CCachedBlockSlotState(  _In_ const CCachedBlock& cbl,
+                                _In_ const QWORD        ibSlab,
+                                _In_ const ChunkNumber  chno,
+                                _In_ const SlotNumber   slno,
+                                _In_ const BOOL         fSlabUpdated,
+                                _In_ const BOOL         fChunkUpdated,
+                                _In_ const BOOL         fSlotUpdated,
+                                _In_ const BOOL         fClusterUpdated,
+                                _In_ const BOOL         fSuperceded )
+            :   CCachedBlockSlot( ibSlab, chno, slno, cbl ),
                 m_fSlabUpdated( fSlabUpdated ),
                 m_fChunkUpdated( fChunkUpdated ),
                 m_fSlotUpdated( fSlotUpdated ),
@@ -1019,6 +1054,8 @@ class CCachedBlockSlotState : public CCachedBlockSlot
         const BOOL  m_fClusterUpdated;
         const BOOL  m_fSuperceded;
 };
+
+const char* OSFormat( _In_ const CCachedBlockSlotState& slotst );
 
 //  Cached Block Slab
 
@@ -1172,7 +1209,7 @@ class ICachedBlockSlab  //  cbs
         //  The callback must return true to continue visiting more slots.
 
         typedef BOOL (*PfnVisitSlot)(   _In_ const ERR                      err,
-                                        _In_ const CCachedBlockSlot&        slotAccepted,
+                                        _In_ const CCachedBlockSlotState&   slotstAccepted,
                                         _In_ const CCachedBlockSlotState&   slotstCurrent,
                                         _In_ const DWORD_PTR                keyVisitSlot );
 
@@ -1225,18 +1262,10 @@ class ICachedBlockSlabManager  //  cbsm
 
         virtual ~ICachedBlockSlabManager() {}
 
-        //  Gets exclusive access to the slab that may contain a cached block.
-        //
-        //  The slab must be released to allow future access.
+        //  Determines the physical id of the slab that may hold the given cached block.
 
-        virtual ERR ErrGetSlab( _In_    const CCachedBlockId&       cbid,
-                                _Out_   ICachedBlockSlab** const    ppcbs ) = 0;
-
-        //  Indicates if the slab can hold a given cached block.
-
-        virtual ERR ErrIsSlabForCachedBlock(    _In_    ICachedBlockSlab* const pcbs,
-                                                _In_    const CCachedBlockId&   cbid,
-                                                _Out_   BOOL* const             pfIsSlabForCachedBlock ) = 0;
+        virtual ERR ErrGetSlabForCachedBlock(   _In_    const CCachedBlockId&   cbid,
+                                                _Out_   QWORD* const            pib ) = 0;
 
         //  Gets exclusive access to a particular slab by its physical id.
         //
@@ -1410,6 +1439,14 @@ class IBlockCacheFactory  //  bcf
                                                     _In_    const BOOL              fClusterUpdated,
                                                     _In_    const BOOL              fSuperceded,
                                                     _Out_   CCachedBlockSlotState*  pslotst ) = 0;
+
+        typedef void (*PfnDetachFileStatus)(    _In_        const int       i,
+                                                _In_        const int       c,
+                                                _In_opt_    const DWORD_PTR keyDetachFileStatus );
+
+        virtual ERR ErrDetachFile(  _In_z_      const WCHAR* const                              wszFilePath,
+                                    _In_opt_    const IBlockCacheFactory::PfnDetachFileStatus   pfnDetachFileStatus,
+                                    _In_opt_    const DWORD_PTR                                 keyDetachFileStatus ) = 0;
 };
 
 class COSBlockCacheFactory

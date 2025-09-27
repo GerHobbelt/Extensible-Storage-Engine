@@ -19,6 +19,7 @@ const WCHAR wszNewChkExt[]              = L".jcp";          //  checkpoint file 
 const WCHAR wszSecLogExt[]              = L".jsl";          //  shadow|secondary log file extension
 const WCHAR wszShrinkArchiveExt[]       = L".jsa";          //  shrink archive file extension
 const WCHAR wszRBSExt[]                 = L".rbs";          //  revert snapshot file extension
+const WCHAR wszRBSFDPDeleteStateExt[]   = L".jdf";          //  file contain extension for file containing PageFDPDelete state.
 const WCHAR wszRBSDirRoot[]             = L"Snapshot";      //  revert snapshot static root directory name
 const WCHAR wszRBSBackupDir[]           = L"Backup";        //  revert snapshot static backup directory name where snapshots are backed up, once applied, for future investigations if needed.
 const WCHAR wszRBSDirBase[]             = L"RBS";           //  revert snapshot directory static base name
@@ -89,11 +90,12 @@ const QWORD qwCounterMax                = 0x7fffffffffffff00;
 
 const OBJID objidNil                    = 0x00000000;
 const OBJID objidFDPMax                 = 0xFFFFFF00;
+const OBJID objidFDPOverMax             = objidFDPMax + 1;
 const OBJID objidMaxWarningThreshold    = 0x7F000000;   //  the point at which we start periodically generating warning eventlog messages that we are approaching the max
 const ULONG ulObjidMaxWarningFrequency  = 100000;       //  frequency with which a warning eventlog is generated when we are over the ObjidFDP warning threshold
 const OBJID objidMaxPanicThreshold      = 0xFF000000;   //  the point at which we start aggressively generation warning eventlog messages that we are dangerously close to the max
 const ULONG ulObjidMaxPanicFrequency    = 1000;         //  frequency with which a warning eventlog is generated when we are dangerously close to the max
-
+static_assert( objidNil == 0, "There is code with implicit assumptions about either objidNil being zero, or being less than any valid OBJID." );
 
 const CHAR szNull[]                     = "";
 
@@ -291,6 +293,7 @@ const INT rankDBMScanSignalControl      = 10;
 const INT rankBFCacheSizeSet            = 10;
 const INT rankFMPRedoMaps               = 10;
 const INT rankRBSFirstValidGen          = 10;
+const INT rankFMPLeakEstimation         = 10;
 const INT rankFlushMapAccess            = 13;
 const INT rankFlushMapGrowth            = 15;
 const INT rankFlushMapAsyncWrite        = 15;
