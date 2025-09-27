@@ -29,7 +29,9 @@ class COSBlockCacheFactoryImpl : public IBlockCacheFactory
         ERR ErrCreateFileFilter(    _Inout_                     IFileAPI** const                    ppfapiInner,
                                     _In_                        IFileSystemFilter* const            pfsf,
                                     _In_                        IFileSystemConfiguration* const     pfsconfig,
+                                    _In_                        IFileIdentification* const          pfident,
                                     _In_                        ICacheTelemetry* const              pctm,
+                                    _In_                        ICacheRepository* const             pcrep,
                                     _In_                        const VolumeId                      volumeid,
                                     _In_                        const FileId                        fileid,
                                     _Inout_                     ICachedFileConfiguration** const    ppcfconfig,
@@ -98,7 +100,8 @@ class COSBlockCacheFactoryImpl : public IBlockCacheFactory
 
         ERR ErrLoadCachedBlockWriteCountsManager(   _In_    IFileFilter* const                      pff,
                                                     _In_    const QWORD                             ib,
-                                                    _In_    const QWORD                             cb,
+                                                    _In_    const QWORD                             cb, 
+                                                    _In_    const QWORD                             ccbwcs,
                                                     _Out_   ICachedBlockWriteCountsManager** const  ppcbwcm ) override;
 
         ERR ErrCreateCachedBlockSlabWrapper(    _Inout_ ICachedBlockSlab** const    ppcbsInner,
@@ -232,7 +235,9 @@ HandleError:
 INLINE ERR COSBlockCacheFactoryImpl::ErrCreateFileFilter(   _Inout_                     IFileAPI** const                    ppfapiInner,
                                                             _In_                        IFileSystemFilter* const            pfsf,
                                                             _In_                        IFileSystemConfiguration* const     pfsconfig,
+                                                            _In_                        IFileIdentification* const          pfident,
                                                             _In_                        ICacheTelemetry* const              pctm,
+                                                            _In_                        ICacheRepository* const             pcrep,
                                                             _In_                        const VolumeId                      volumeid,
                                                             _In_                        const FileId                        fileid,
                                                             _Inout_                     ICachedFileConfiguration** const    ppcfconfig,
@@ -242,7 +247,7 @@ INLINE ERR COSBlockCacheFactoryImpl::ErrCreateFileFilter(   _Inout_             
                                                             _Out_                       IFileFilter** const                 ppff )
 {
     ERR                 err     = JET_errSuccess;
-    IFileFilter*        pff     = NULL;
+    CFileFilter*        pff     = NULL;
     CCachedFileHeader*  pcfh    = NULL;
 
     *ppff = NULL;
@@ -256,7 +261,9 @@ INLINE ERR COSBlockCacheFactoryImpl::ErrCreateFileFilter(   _Inout_             
 
     //  create the file filter
 
-    Alloc( pff = new CFileFilter( ppfapiInner, pfsf, pfsconfig, pctm, volumeid, fileid, ppcfconfig, ppc, &pcfh ) );
+    Alloc( pff = new CFileFilter( ppfapiInner, pfsf, pfsconfig, pfident, pctm, pcrep, volumeid, fileid, ppcfconfig, ppc, &pcfh ) );
+
+    pff->SetEverEligibleForCaching( fTrue );
 
     //  return the file filter
 
@@ -611,7 +618,7 @@ INLINE ERR COSBlockCacheFactoryImpl::ErrCreateJournal(  _Inout_ IJournalSegmentM
 
     *ppj = NULL;
 
-    Call( CJournal::ErrMount( ppjsm, cbCache, &pj ) );
+    Call( CJournal::ErrMount( NULL, ppjsm, cbCache, &pj ) );
 
     *ppj = pj;
     pj = NULL;
@@ -628,7 +635,8 @@ HandleError:
 
 INLINE ERR COSBlockCacheFactoryImpl::ErrLoadCachedBlockWriteCountsManager(  _In_    IFileFilter* const                      pff, 
                                                                             _In_    const QWORD                             ib, 
-                                                                            _In_    const QWORD                             cb,
+                                                                            _In_    const QWORD                             cb, 
+                                                                            _In_    const QWORD                             ccbwcs,
                                                                             _Out_   ICachedBlockWriteCountsManager** const  ppcbwcm )
 {
     ERR                             err     = JET_errSuccess;
@@ -636,7 +644,7 @@ INLINE ERR COSBlockCacheFactoryImpl::ErrLoadCachedBlockWriteCountsManager(  _In_
 
     *ppcbwcm = NULL;
 
-    Call( CCachedBlockWriteCountsManager::ErrInit( pff, ib, cb, &pcbwcm ) );
+    Call( CCachedBlockWriteCountsManager::ErrInit( pff, ib, cb, ccbwcs, &pcbwcm ) );
 
     *ppcbwcm = pcbwcm;
     pcbwcm = NULL;

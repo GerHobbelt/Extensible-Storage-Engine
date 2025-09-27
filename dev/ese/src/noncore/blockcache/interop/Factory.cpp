@@ -308,14 +308,16 @@ namespace Internal
                         static FileFilter^ CreateFileFilter(    IFile^ fInner,
                                                                 FileSystemFilter^ fsf,
                                                                 FileSystemConfiguration^ fsconfig,
+                                                                FileIdentification^ fident,
                                                                 CacheTelemetry^ ctm,
+                                                                CacheRepository^ crep,
                                                                 VolumeId volumeid,
                                                                 FileId fileid,
                                                                 ICachedFileConfiguration^ icfconfig,
                                                                 ICache^ ic,
-                                                                ArraySegment<byte> header )
+                                                                ArraySegment<BYTE> header )
                         {
-                            return factory->CreateFileFilter( fInner, fsf, fsconfig, ctm, volumeid, fileid, icfconfig, ic, header );
+                            return factory->CreateFileFilter( fInner, fsf, fsconfig, fident, ctm, crep, volumeid, fileid, icfconfig, ic, header );
                         }
 
                         static FileFilter^ CreateFileFilterWrapper( IFileFilter^ iffInner, IOMode ioMode )
@@ -401,9 +403,10 @@ namespace Internal
                         static CachedBlockWriteCountsManager^ LoadCachedBlockWriteCountsManager(
                             FileFilter^ ff,
                             Int64 offsetInBytes,
-                            Int64 sizeInBytes )
+                            Int64 sizeInBytes,
+                            Int64 countCachedBlockWriteCounts )
                         {
-                            return factory->LoadCachedBlockWriteCountsManager( ff, offsetInBytes, sizeInBytes );
+                            return factory->LoadCachedBlockWriteCountsManager( ff, offsetInBytes, sizeInBytes, countCachedBlockWriteCounts );
                         }
 
                         static CachedBlockSlab^ LoadCachedBlockSlab(

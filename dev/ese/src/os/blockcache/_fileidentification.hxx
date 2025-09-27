@@ -26,13 +26,13 @@ class TFileIdentification  //  fident
                             _Out_   VolumeId* const     pvolumeid,
                             _Out_   FileId* const       pfileid ) override;
 
-        ERR ErrGetFileKeyPath(  _In_z_                                  const WCHAR* const  wszPath,
-                                _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const        wszKeyPath ) override;
+        ERR ErrGetFileKeyPath(  _In_z_                                                  const WCHAR* const  wszPath,
+                                _Out_bytecap_c_( IFileIdentification::cbKeyPathMax )    WCHAR* const        wszKeyPath ) override;
 
-        ERR ErrGetFilePathById( _In_                                    const VolumeId  volumeid,
-                                _In_                                    const FileId    fileid,
-                                _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const    wszAnyAbsPath,
-                                _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const    wszKeyPath ) override;
+        ERR ErrGetFilePathById( _In_                                                    const VolumeId  volumeid,
+                                _In_                                                    const FileId    fileid,
+                                _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )                  WCHAR* const    wszAnyAbsPath,
+                                _Out_bytecap_c_( IFileIdentification::cbKeyPathMax )    WCHAR* const    wszKeyPath ) override;
 
     private:
 
@@ -79,8 +79,8 @@ class TFileIdentification  //  fident
                             _Out_   VolumeId* const     pvolumeid,
                             _Out_   FileId* const       pfileid );
 
-        ERR ErrMakeKeyPath( _In_z_                                  WCHAR* const    wszAnyAbsPath,
-                            _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const    wszKeyPath );
+        ERR ErrMakeKeyPath( _In_z_                                                  WCHAR* const    wszAnyAbsPath,
+                            _Out_bytecap_c_( IFileIdentification::cbKeyPathMax )    WCHAR* const    wszKeyPath );
 
         ERR ErrOpenVolumeById(  _In_    const VolumeId              volumeid,
                                 _Out_   CVolumeHandleCacheEntry**   pvhce );
@@ -145,49 +145,71 @@ HandleError:
 }
 
 template< class I >
-ERR TFileIdentification<I>::ErrGetFileKeyPath(  _In_z_                                  const WCHAR* const  wszPath,
-                                                _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const        wszKeyPath )
+ERR TFileIdentification<I>::ErrGetFileKeyPath(  _In_z_                                                  const WCHAR* const  wszPath,
+                                                _Out_bytecap_c_( IFileIdentification::cbKeyPathMax )    WCHAR* const        wszKeyPath )
 {
-    ERR                         err                                 = JET_errSuccess;
-    const DWORD                 cwchDirPathMax                      = OSFSAPI_MAX_PATH;
-    WCHAR                       wszDirPath[ cwchDirPathMax ]        = { 0 };
-    DWORD                       cwchDirPath                         = 0;
-    WCHAR*                      wszFileName                         = NULL;
-    WCHAR                       wchFileNameSave                     = 0;
-    HANDLE                      hDirectory                          = NULL;
-    VolumeId                    volumeid                            = volumeidInvalid;
-    FileId                      fileid                              = fileidInvalid;
-    CVolumeHandleCacheEntry*    pvhce                               = NULL;
-    const DWORD                 cwchFinalPathMax                    = OSFSAPI_MAX_PATH;
-    WCHAR                       wszFinalPath[ cwchFinalPathMax ]    = { 0 };
-    DWORD                       cwchFinalPath                       = 0;
-    const DWORD                 cwchVolumePathMax                   = OSFSAPI_MAX_PATH;
-    const DWORD                 cbVolumePathMax                     = cwchVolumePathMax * sizeof( WCHAR );
-    WCHAR                       wszVolumePath[ cwchVolumePathMax ]  = { 0 };
+    ERR                         err                                         = JET_errSuccess;
+    const DWORD                 cwchContainerPathMax                        = IFileSystemAPI::cchPathMax;
+    WCHAR                       wszContainerPath[ cwchContainerPathMax ]    = { 0 };
+    DWORD                       cwchContainerPath                           = 0;
+    WCHAR*                      wszFileName                                 = NULL;
+    WCHAR*                      wszTarget                                   = NULL;
+    WCHAR                       wchTargetSave                               = 0;
+    HANDLE                      hContainer                                  = NULL;
+    VolumeId                    volumeid                                    = volumeidInvalid;
+    FileId                      fileid                                      = fileidInvalid;
+    CVolumeHandleCacheEntry*    pvhce                                       = NULL;
+    const DWORD                 cwchFinalPathMax                            = IFileSystemAPI::cchPathMax;
+    WCHAR                       wszFinalPath[ cwchFinalPathMax ]            = { 0 };
+    DWORD                       cwchFinalPath                               = 0;
+    const DWORD                 cwchVolumePathMax                           = IFileIdentification::cwchKeyPathMax;
+    const DWORD                 cbVolumePathMax                             = cwchVolumePathMax * sizeof( WCHAR );
+    WCHAR                       wszVolumePath[ cwchVolumePathMax ]          = { 0 };
 
     wszKeyPath[ 0 ] = 0;
 
-    //  compute the absolute path and split it into directory and file name, if present
+    //  compute the absolute path and split it into container and target, if present
 
-    cwchDirPath = GetFullPathNameW( wszPath, cwchDirPathMax, wszDirPath, &wszFileName );
-    if ( cwchDirPath == 0 )
+    cwchContainerPath = GetFullPathNameW( wszPath, cwchContainerPathMax, wszContainerPath, &wszFileName );
+    if ( cwchContainerPath == 0 )
     {
         Call( ErrGetLastError() );
     }
-    if ( cwchDirPath >= cwchDirPathMax )
+    if ( cwchContainerPath >= cwchContainerPathMax )
     {
         Error( ErrERRCheck( JET_errBufferTooSmall ) );
     }
 
     if ( wszFileName )
     {
-        wchFileNameSave = wszFileName[ 0 ];
-        wszFileName[ 0 ] = 0;
+        wszTarget = wszFileName;
+        wchTargetSave = wszTarget[0];
+        wszTarget[0] = 0;
+    }
+    else if ( GetFileAttributesW( wszContainerPath ) == INVALID_FILE_ATTRIBUTES )
+    {
+        for (   wszTarget = wszContainerPath + cwchContainerPath - 1;
+                &wszTarget[ -1 ] >= wszContainerPath && wszTarget[ -1 ] != L'\\';
+                wszTarget-- )
+        {
+        }
+
+        wchTargetSave = wszTarget[0];
+        wszTarget[0] = 0;
     }
 
-    //  get the volume id of the directory which must exist.  the file if any doesn't need to exist
+    //  if this is a raw device path then use it as the key path
 
-    err = ErrGetFileId( wszDirPath, &hDirectory, &volumeid, &fileid );
+    if ( wcscmp( wszContainerPath, L"\\\\.\\" ) == 0 )
+    {
+        wszTarget[0] = wchTargetSave;
+        Call( ErrMakeKeyPath( wszContainerPath, wszKeyPath ) );
+        Error( JET_errSuccess );
+    }
+
+    //  get the volume id of the container which must exist.  the target if any doesn't need to exist
+
+    err = ErrGetFileId( wszContainerPath, &hContainer, &volumeid, &fileid );
     err = err == JET_errFileNotFound ? ErrERRCheck( JET_errInvalidPath ) : err;
     Call( err );
 
@@ -195,10 +217,10 @@ ERR TFileIdentification<I>::ErrGetFileKeyPath(  _In_z_                          
 
     Call( ErrOpenVolumeById( volumeid, &pvhce ) );
 
-    //  generate an absolute path to the file using the volume guid root path to remove ambiguity
+    //  generate an absolute path to the target using the volume guid root path to remove ambiguity
     //  created by possible multiple paths to the same volume
 
-    cwchFinalPath = GetFinalPathNameByHandleW( hDirectory, wszFinalPath, cwchFinalPathMax, VOLUME_NAME_NONE );
+    cwchFinalPath = GetFinalPathNameByHandleW( hContainer, wszFinalPath, cwchFinalPathMax, VOLUME_NAME_NONE );
     if ( cwchFinalPath == 0 )
     {
         Call( ErrGetLastError() );
@@ -211,10 +233,10 @@ ERR TFileIdentification<I>::ErrGetFileKeyPath(  _In_z_                          
     Call( ErrOSStrCbCopyW( wszVolumePath, cbVolumePathMax, pvhce->WszPath() ) );
     Call( ErrOSStrCbAppendW( wszVolumePath, cbVolumePathMax, wszFinalPath ) );
     Call( ErrOSStrCbAppendW( wszVolumePath, cbVolumePathMax, L"\\" ) );
-    if ( wszFileName )
+    if ( wszTarget )
     {
-        wszFileName[ 0 ] = wchFileNameSave;
-        Call( ErrOSStrCbAppendW( wszVolumePath, cbVolumePathMax, wszFileName ) );
+        wszTarget[0] = wchTargetSave;
+        Call( ErrOSStrCbAppendW( wszVolumePath, cbVolumePathMax, wszTarget ) );
     }
 
     //  generate an unambiguous file key path
@@ -222,9 +244,9 @@ ERR TFileIdentification<I>::ErrGetFileKeyPath(  _In_z_                          
     Call( ErrMakeKeyPath( wszVolumePath, wszKeyPath ) );
 
 HandleError:
-    if ( hDirectory && hDirectory != INVALID_HANDLE_VALUE )
+    if ( hContainer && hContainer != INVALID_HANDLE_VALUE )
     {
-        CloseHandle( hDirectory );
+        CloseHandle( hContainer );
     }
     if ( err < JET_errSuccess )
     {
@@ -234,23 +256,23 @@ HandleError:
 }
         
 template< class I >
-ERR TFileIdentification<I>::ErrGetFilePathById( _In_                                    const VolumeId  volumeid,
-                                                _In_                                    const FileId    fileid,
-                                                _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const    wszAnyAbsPath,
-                                                _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const    wszKeyPath )
+ERR TFileIdentification<I>::ErrGetFilePathById( _In_                                                    const VolumeId  volumeid,
+                                                _In_                                                    const FileId    fileid,
+                                                _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )                  WCHAR* const    wszAnyAbsPath,
+                                                _Out_bytecap_c_( IFileIdentification::cbKeyPathMax )    WCHAR* const    wszKeyPath )
 {
     ERR                         err                                 = JET_errSuccess;
     CVolumeHandleCacheEntry*    pvhce                               = NULL;
     FILE_ID_DESCRIPTOR          fileIdDescriptor                    = { 0 };
     HANDLE                      hFile                               = NULL;
-    const DWORD                 cwchAnyAbsPathMax                   = OSFSAPI_MAX_PATH;
+    const DWORD                 cwchAnyAbsPathMax                   = IFileSystemAPI::cchPathMax;
     const DWORD                 cbAnyAbsPathMax                     = cwchAnyAbsPathMax * sizeof( WCHAR );
     const WCHAR                 wszPrefix[]                         = L"\\\\?\\";
     const DWORD                 cwchPrefix                          = _countof( wszPrefix ) - 1;
-    const DWORD                 cwchFinalPathMax                    = cwchPrefix + OSFSAPI_MAX_PATH;
+    const DWORD                 cwchFinalPathMax                    = cwchPrefix + IFileSystemAPI::cchPathMax;
     WCHAR                       wszFinalPath[ cwchFinalPathMax ]    = { 0 };
     DWORD                       cwchFinalPath                       = 0;
-    const DWORD                 cwchVolumePathMax                   = OSFSAPI_MAX_PATH;
+    const DWORD                 cwchVolumePathMax                   = IFileIdentification::cwchKeyPathMax;
     const DWORD                 cbVolumePathMax                     = cwchVolumePathMax * sizeof( WCHAR );
     WCHAR                       wszVolumePath[ cwchVolumePathMax ]  = { 0 };
 
@@ -392,11 +414,11 @@ ERR TFileIdentification<I>::ErrGetFileId(   _In_z_  const WCHAR* const  wszPath,
 
     if ( *pvolumeid == volumeidInvalid )
     {
-        BlockCacheInternalError( "InvalidVolumeId" );
+        Error( ErrBlockCacheInternalError( wszPath, "InvalidVolumeId" ) );
     }
     if ( *pfileid == fileidInvalid )
     {
-        BlockCacheInternalError( "InvalidFileId" );
+        Error( ErrBlockCacheInternalError( wszPath, "InvalidFileId" ) );
     }
 
     //  defend against truncation of the file id because we cannot handle that
@@ -406,7 +428,7 @@ ERR TFileIdentification<I>::ErrGetFileId(   _In_z_  const WCHAR* const  wszPath,
     *((FileId*)fileId.Identifier) = *pfileid;
     if ( memcmp( fileIdInfo.FileId.Identifier, fileId.Identifier, sizeof( fileId.Identifier) ) )
     {
-        BlockCacheInternalError( "TruncatedFileId" );
+        Error( ErrBlockCacheInternalError( wszPath, "TruncatedFileId" ) );
     }
 
 
@@ -425,12 +447,11 @@ HandleError:
 }
 
 template< class I >
-ERR TFileIdentification<I>::ErrMakeKeyPath( _In_z_                                  WCHAR* const    wszAnyAbsPath,
-                                            _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const    wszKeyPath )
+ERR TFileIdentification<I>::ErrMakeKeyPath( _In_z_                                                  WCHAR* const    wszAnyAbsPath,
+                                            _Out_bytecap_c_( IFileIdentification::cbKeyPathMax )    WCHAR* const    wszKeyPath )
 {
-    ERR         err             = JET_errSuccess;
-    const DWORD cwchKeyPathMax  = OSFSAPI_MAX_PATH;
-    DWORD       cwchKeyPath     = 0;
+    ERR     err         = JET_errSuccess;
+    DWORD   cwchKeyPath = 0;
 
     wszKeyPath[ 0 ] = 0;
 
@@ -442,7 +463,7 @@ ERR TFileIdentification<I>::ErrMakeKeyPath( _In_z_                              
                                     wszAnyAbsPath,
                                     LOSStrLengthW( wszAnyAbsPath ) + 1,
                                     wszKeyPath,
-                                    cwchKeyPathMax,
+                                    IFileIdentification::cwchKeyPathMax,
                                     NULL,
                                     NULL,
                                     0 );
@@ -450,7 +471,7 @@ ERR TFileIdentification<I>::ErrMakeKeyPath( _In_z_                              
     {
         Call( ErrGetLastError() );
     }
-    if ( cwchKeyPath >= cwchKeyPathMax )
+    if ( cwchKeyPath > IFileIdentification::cwchKeyPathMax )
     {
         Error( ErrERRCheck( JET_errBufferTooSmall ) );
     }

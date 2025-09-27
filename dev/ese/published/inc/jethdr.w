@@ -3985,7 +3985,6 @@ typedef enum
 #if ( JET_VERSION >= 0x0501 )
 #define JET_paramRuntimeCallback                73  //  pointer to runtime-only callback function
 // end_PubEsent
-#define JET_paramFlight_DisableReplayPrereadForSsd 74 // Disable replay preread for database on SSD
 // #define JET_paramSLVDefragFreeThreshold      74  //  chunks whose free % is > this will be allocated from
 // #define JET_paramSLVDefragMoveThreshold      75  //  chunks whose free % is > this will be relocated
 #define JET_paramEnableSortedRetrieveColumns    76  //  internally sort (in a dynamically allocated parallel array) JET_RETRIEVECOLUMN structures passed to JetRetrieveColumns()
@@ -4062,10 +4061,12 @@ typedef enum
 
 // end_PubEsent
 
-#define JET_paramFlight_ExtentPageCountCacheVerifyOnly  114 //  Verify values read from the Extent Page Count Cache rather than just returning them.
-#define JET_paramFlight_EnablePgnoFDPLastSetTime        115 //  whether we want to enable setting PgnoPFDSetTime in the system table for a table entry.
-#define JET_paramFlight_EnableScanCheck2Flags           116 //  whether we want to enable logging flags in ScanCheck2 log record.
-#define JET_paramFlight_EnableExtentFreed2              117 //  whether we want to enable logging ExtentFreed2 LR after the efv upgrade.
+#define JET_paramFlight_ExtentPageCountCacheVerifyOnly          114 //  Verify values read from the Extent Page Count Cache rather than just returning them.
+#define JET_paramFlight_EnablePgnoFDPLastSetTime                115 //  whether we want to enable setting PgnoPFDSetTime in the system table for a table entry.
+#define JET_paramFlight_EnableScanCheck2Flags                   116 //  whether we want to enable logging flags in ScanCheck2 log record.
+#define JET_paramFlight_EnableExtentFreed2                      117 //  whether we want to enable logging ExtentFreed2 LR after the efv upgrade.
+#define JET_paramFlight_RBSLargeRevertableDeletePages           118 //  Large revertable delete size for a table (in pages) beyond which we will track the deletes.
+#define JET_paramFlight_RBSRevertableDeleteIfTooSoonTimeNull    119 //  If set, we will do a revertable table delete even if NonRevertableTableDelete flag is passed provided NonRevertable delete is failing due to JET_errRBSDeleteTableTooSoon due to time not being set. Note: If JET_bitRevertableTableDeleteIfTooSoon is set, this variant is ignored.
 
 //                                              120 //  JET_paramDBAPageAvailMin
 //                                              121 //  JET_paramDBAPageAvailThreshold
@@ -4211,10 +4212,12 @@ typedef enum
 
 #define JET_paramPerfmonRefreshInterval         217 //  Interval, in units of msec, used by the Permormance Monitor to refresh values for collection.
 
+#define JET_paramEnableBlockCache               218 //  Indicates that the ESE Block Cache is enabled.  This is sufficient to access files previously attached to the ESE Block Cache but not to attach new files.
+
 #endif // JET_VERSION >= 0x0A01
 
 
-#define JET_paramMaxValueInvalid                218 //  This is not a valid parameter. It can change from release to release!
+#define JET_paramMaxValueInvalid                219 //  This is not a valid parameter. It can change from release to release!
 
 // end_PubEsent
 #if ( JET_VERSION >= 0x0A01 )
@@ -4906,7 +4909,7 @@ typedef struct
 #define JET_prepReplaceNoLock               4
 #define JET_prepInsertCopy                  5
 // end_PubEsent
-// #define JET_prepInsertCopyWithoutSLVColumns  6   //  same as InsertCopy, except that SLV columns are nullified instead of copied in the new record */
+// #define JET_prepInsertCopyWithoutSLVColumns  6   //  same as JET_prepInsertCopy, except that SLV columns are nullified instead of copied in the new record */
 // begin_PubEsent
 #if ( JET_VERSION >= 0x0501 )
 #define JET_prepInsertCopyDeleteOriginal    7   //  used for updating a record in the primary key; avoids the delete/insert process and updates autoinc */
@@ -4917,6 +4920,11 @@ typedef struct
 #if ( JET_VERSION >= 0x0603 )
 #define JET_prepInsertCopyReplaceOriginal   9   //  used for updating a record in the primary key; avoids the delete/insert process and keeps autoinc */
 #endif // JET_VERSION >= 0x0603
+// end_PubEsent
+#if ( JET_VERSION >= 0x0A01 )
+#define JET_prepInsertMustSetAutoIncrement  10  //  this option has the same behavior as JET_prepInsert, but the caller must set the auto-increment column explicitly */
+#endif // JET_VERSION >= 0x0A01
+// begin_PubEsent
 
 #if ( JET_VERSION >= 0x0603 )
 // Values for JET_paramEnableSqm
@@ -5481,7 +5489,7 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 
     /* Delete table grbit */
 #define JET_bitNonRevertableTableDelete         0x00000001  // If set, doesn't capture page preimages to allow for reverting the table to a state where it still existed using RBS.
-#define JET_bitRevertableTableDeleteIfTooSoon   0x00000002  // If set, we will do a revertable table even if NonRevertableTableDelete flag is passed provided NonRevertable delete is failing due to JET_errRBSDeleteTableTooSoon.
+#define JET_bitRevertableTableDeleteIfTooSoon   0x00000002  // If set, we will do a revertable table delete even if NonRevertableTableDelete flag is passed provided NonRevertable delete is failing due to JET_errRBSDeleteTableTooSoon.
 
 #endif // JET_VERSION >= 0x0A01
 
@@ -5524,6 +5532,7 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_TblInfoLVChunkMax         13U
 #define JET_TblInfoEncryptionKey      14U
 #define JET_TblInfoSplitBuffers       15U
+#define JET_TblInfoRetrieveAndReserveAutoIncrement 16U  // Retrieves the current table-wide auto-increment counter and increments its value. Only valid with JetGetTableInfo.
 #endif
 // begin_PubEsent
 
@@ -6219,6 +6228,7 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define errLogServiceStopped                -624  /* Logging has been stopped via JetStopServiceInstance2 JET_bitStopServiceStopAndEmitLog */
 // begin_PubEsent
 #define JET_errDbTimeBeyondMaxRequired      -625  /* dbtime on page greater than or equal to dbtimeAfter in record, but record is outside required range for the database */
+#define JET_errLogOperationInconsistentWithDatabase -626 /* Log record in the log is inconsistent with the current state of the database and cannot be applied */
 // end_PubEsent
 
 #define errBackupAbortByCaller              -800  /* INTERNAL ERROR: Backup was aborted by client or RPC connection with client failed */
@@ -6544,6 +6554,8 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_errUpdateMustVersion            -1621 /* No version updates only for uncommitted tables */
 #define JET_errDecryptionFailed             -1622 /* Data could not be decrypted */
 #define JET_errEncryptionBadItag            -1623 /* Cannot encrypt tagged columns with itag>1 */
+#define JET_errSetAutoIncrementTooHigh      -1624  /* The auto-increment value that the user tried to set explicitly is too high . */
+#define JET_errAutoIncrementNotSet          -1625  /* The user must have explicitly set the auto-increment column for this table. */
 
 /*  Sort Table errors
 /**/
@@ -6607,6 +6619,8 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_errRBSDeleteTableTooSoon        -1942  /* The table was created or the root page of table being deleted was moved in the last few days and hence a non-revertable delete cannot be attempted right now. */
 #define JET_errRBSFDPToBeDeleted            -1943  /* The FDP is about to be deleted. The table was originally deleted using non-revertable flag and the database was then reverted to a previous state using RBS causing the table's pages to not be reverted but table root page and space tree pages were reverted to assist in catalog cleanup. */
 #define JET_errRBSRevertableDeleteNotPossible -1944  /* The table being deleted with revertable delete flag is not possible as this table was previously deleted with non-revertable flag and partially reverted by RBS. */
+#define errRBSDeleteTableTooSoonTimeNull     -1945  /* The time the table was created or the time since the root page of table was last moved is not set and hence a non-revertable delete cannot be attempted right now. */
+#define errRBSCorruptUninitializedRBSRemoved -1946  /* The RBS being loaded is either missing or corrupt and uninitialized, so it has been removed. */
 // begin_PubEsent
 
 #define JET_wrnDefragAlreadyRunning          2000 /* Online defrag already running on specified database */

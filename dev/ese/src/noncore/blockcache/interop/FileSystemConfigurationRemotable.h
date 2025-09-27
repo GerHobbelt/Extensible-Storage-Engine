@@ -13,7 +13,7 @@ namespace Internal
         {
             namespace Interop
             {
-                ref class FileSystemConfigurationRemotable : MarshalByRefObject, IFileSystemConfiguration
+                ref class FileSystemConfigurationRemotable : Remotable, IFileSystemConfiguration
                 {
                     public:
 
@@ -29,6 +29,16 @@ namespace Internal
                         virtual TimeSpan AccessDeniedRetryPeriod()
                         {
                             return this->target->AccessDeniedRetryPeriod();
+                        }
+
+                        virtual Int32 MaxConcurrentIO()
+                        {
+                            return this->target->MaxConcurrentIO();
+                        }
+
+                        virtual Int32 MaxConcurrentBackgroundIO()
+                        {
+                            return this->target->MaxConcurrentBackgroundIO();
                         }
 
                         virtual TimeSpan HungIOThreshhold()

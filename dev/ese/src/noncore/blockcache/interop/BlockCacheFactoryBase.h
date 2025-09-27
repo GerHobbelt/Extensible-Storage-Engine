@@ -14,7 +14,7 @@ namespace Internal
             namespace Interop
             {
                 template< class TM, class TN, class TW >
-                public ref class BlockCacheFactoryBase : public Base<TM, TN, TW>, IBlockCacheFactory
+                public ref class BlockCacheFactoryBase : Base<TM, TN, TW>, IBlockCacheFactory
                 {
                     public:
 
@@ -94,12 +94,14 @@ namespace Internal
                             IFile^ fInner,
                             FileSystemFilter^ fsf,
                             FileSystemConfiguration^ fsconfig,
+                            FileIdentification^ fident,
                             CacheTelemetry^ ctm,
+                            CacheRepository^ crep,
                             VolumeId volumeid,
                             FileId fileid,
                             ICachedFileConfiguration^ icfconfig,
                             ICache^ ic,
-                            ArraySegment<byte> header )
+                            ArraySegment<BYTE> header )
                         {
                             ERR                         err         = JET_errSuccess;
                             IFileAPI*                   pfapiInner  = NULL;
@@ -111,13 +113,15 @@ namespace Internal
                             Call( CachedFileConfiguration::ErrWrap( icfconfig, &pcfconfig ) );
                             Call( Cache::ErrWrap( ic, &pc ) );
 
-                            pin_ptr<const byte> pbHeader = header.Count == 0 ? nullptr : &header.Array[ header.Offset ];
+                            pin_ptr<const BYTE> pbHeader = header.Count == 0 ? nullptr : &header.Array[ header.Offset ];
                             int cbHeader = header.Count;
 
                             Call( Pi->ErrCreateFileFilter(  &pfapiInner,
                                                             fsf->Pi,
                                                             fsconfig->Pi,
+                                                            fident->Pi,
                                                             ctm->Pi,
+                                                            crep->Pi,
                                                             (::VolumeId)volumeid,
                                                             (::FileId)fileid,
                                                             &pcfconfig,
@@ -357,7 +361,8 @@ namespace Internal
                         virtual CachedBlockWriteCountsManager^ LoadCachedBlockWriteCountsManager(
                             FileFilter^ ff,
                             Int64 offsetInBytes,
-                            Int64 sizeInBytes )
+                            Int64 sizeInBytes,
+                            Int64 countCachedBlockWriteCounts)
                         {
                             ERR                                 err     = JET_errSuccess;
                             ::ICachedBlockWriteCountsManager*   pcbwcm  = NULL;
@@ -365,6 +370,7 @@ namespace Internal
                             Call( Pi->ErrLoadCachedBlockWriteCountsManager( ff->Pi,
                                                                             offsetInBytes,
                                                                             sizeInBytes,
+                                                                            countCachedBlockWriteCounts,
                                                                             &pcbwcm ) );
 
                             return gcnew CachedBlockWriteCountsManager( &pcbwcm );

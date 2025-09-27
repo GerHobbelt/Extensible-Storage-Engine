@@ -166,12 +166,66 @@ private:    // not implemented
 class FMP
     :   public CZeroInit
 {
+    public:
+#ifdef DEBUGGER_EXTENSION
+        VOID Dump( CPRINTF * pcprintf, DWORD_PTR dwOffset = 0 ) const;
+#endif  //  DEBUGGER_EXTENSION
+
     private:
+
+#ifdef ENABLE_JET_UNIT_TEST
+        friend class TestFMPRangeStructAssignment;
+        friend class TestFMPRangeStructComparisons;
+#endif  // ENABLE_JET_UNIT_TEST
 
         struct RANGE
         {
-            PGNO    pgnoStart;
-            PGNO    pgnoEnd;
+            private:
+                PGNO pgnoStart;
+                PGNO pgnoEnd;
+
+#ifdef DEBUGGER_EXTENSION
+                friend VOID FMP::Dump( CPRINTF*, DWORD_PTR ) const;
+#endif  //  DEBUGGER_EXTENSION
+
+            public:
+                void Set( const PGNO pgnoStartNew, const PGNO pgnoEndNew )
+                {
+                    Assert( pgnoStartNew <= pgnoEndNew );
+                    pgnoStart = pgnoStartNew;
+                    pgnoEnd = pgnoEndNew;
+                }
+
+                RANGE()
+                {
+                    Set( pgnoNull, pgnoNull );
+                }
+
+                RANGE( const PGNO pgnoStartNew, const PGNO pgnoEndNew )
+                {
+                    Set( pgnoStartNew, pgnoEndNew );
+                }
+
+                BOOL FContains( const PGNO pgno ) const
+                {
+                    return ( pgno >= pgnoStart && pgno <= pgnoEnd );
+                }
+
+                BOOL FOverlaps( const RANGE& range ) const
+                {
+                    return ( range.pgnoStart <= pgnoEnd && range.pgnoEnd >= pgnoStart );
+                }
+
+                BOOL FMatches( const RANGE& range ) const
+                {
+                    return ( range.pgnoStart == pgnoStart && range.pgnoEnd == pgnoEnd );
+                }
+
+                RANGE& operator=( const RANGE& range )
+                {
+                    Set( range.pgnoStart, range.pgnoEnd );
+                    return *this;
+                }
         };
 
         struct RANGELOCK
@@ -436,6 +490,11 @@ class FMP
         COSEventTraceIdCheck m_traceidcheckFmp;
         COSEventTraceIdCheck m_traceidcheckDatabase;
 
+        //  Used to indicate this stack frame / code knows it has BFContext pinned by having 
+        //  a BF pinned in write IO.
+        //
+        DWORD                m_cBFContextPinned;
+
     public:
         //  timing sequence for create, attach, and detach
         //
@@ -608,6 +667,8 @@ public:
         VOID LeaveBFContextAsReader();
         VOID EnterBFContextAsWriter();
         VOID LeaveBFContextAsWriter();
+        VOID ImplicitBFContextPin();
+        VOID ImplicitBFContextUnpin();
 
         DWORD_PTR DwBFContext();
         BOOL FBFContext() const;
@@ -980,7 +1041,6 @@ public:
 
         VOID AssertRangeLockEmpty() const;
         BOOL FEnterRangeLock( const PGNO pgno, CMeteredSection::Group* const pirangelock );
-        VOID LeaveRangeLock( const INT irangelock );
         VOID LeaveRangeLock( const PGNO pgnoDebugOnly, const INT irangelock );
 
         ERR ErrRangeLockAndEnter( const PGNO pgnoStart, const PGNO pgnoEnd, CMeteredSection::Group* const pirangelock );
@@ -1017,10 +1077,6 @@ public:
         ERR ErrEnsureLogRedoMapsAllocated();
         VOID FreeLogRedoMaps( const BOOL fAllocCleanup = fFalse );
         BOOL FRedoMapsEmpty();
-
-#ifdef DEBUGGER_EXTENSION
-        VOID Dump( CPRINTF * pcprintf, DWORD_PTR dwOffset = 0 ) const;
-#endif  //  DEBUGGER_EXTENSION
 
     // =====================================================================
     // FMP management
@@ -1397,11 +1453,32 @@ INLINE VOID FMP::LeaveBFContextAsWriter()
     RwlIBFContext().LeaveAsWriter();
     Ptls()->ResetPFMP( this );
 }
+INLINE VOID FMP::ImplicitBFContextPin()
+{
+#ifdef DEBUG
+    // we expect only IO completions to perform this transient pin
+    Assert( Ptls()->fInBFAsyncIOCompletion );
+
+    AtomicIncrement( &m_cBFContextPinned );
+#endif
+}
+INLINE VOID FMP::ImplicitBFContextUnpin()
+{
+#ifdef DEBUG
+    Assert( Ptls()->fInBFAsyncIOCompletion );
+    Assert( m_cBFContextPinned );
+
+    AtomicDecrement( &m_cBFContextPinned );
+#endif
+}
 
 INLINE DWORD_PTR FMP::DwBFContext()
 {
 #ifdef SYNC_DEADLOCK_DETECTION
-    Assert( Ptls()->PFMP() == this || RwlIBFContext().FReader() || RwlIBFContext().FWriter() );
+    Assert( Ptls()->PFMP() == this || 
+            RwlIBFContext().FReader() || 
+            RwlIBFContext().FWriter() || 
+            ( Ptls()->fInBFAsyncIOCompletion && m_cBFContextPinned ) );
 #endif  //  SYNC_DEADLOCK_DETECTION
 
     return m_dwBFContext;

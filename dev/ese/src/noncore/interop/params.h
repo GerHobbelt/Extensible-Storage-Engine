@@ -145,7 +145,6 @@ MSINTERNAL enum class MJET_PARAM
     ZeroDatabaseDuringBackup = 71, // Overwrite deleted records/LVs during backup
     UnicodeIndexDefault = 72, // default LCMapString() lcid and flags to use for CreateIndex() and unique multi-values check
     RuntimeCallback = 73, // pointer to runtime-only callback function
-    Flight_DisableReplayPrereadForSsd = 74, // Disable replay preread for database on SSD
     EnableSortedRetrieveColumns = 76, // internally sort (in a dynamically allocated parallel array) JET_RETRIEVECOLUMN structures passed to JetRetrieveColumns()
     CleanupMismatchedLogFiles = 77, // instead of erroring out after a successful recovery with JET_errLogFileSizeMismatchDatabasesConsistent, ESE will silently delete the old log files and checkpoint file and continue operations
     RecordUpgradeDirtyLevel = 78, // how aggresively should pages with their record format converted be flushed (0-3)
@@ -182,6 +181,8 @@ MSINTERNAL enum class MJET_PARAM
     Flight_EnablePgnoFDPLastSetTime = 115, // whether we want to enable setting PgnoPFDSetTime in the system table for a table entry.
     Flight_EnableScanCheck2Flags = 116, // whether we want to enable logging flags in ScanCheck2 log record.
     Flight_EnableExtentFreed2 = 117, // whether we want to enable logging ExtentFreed2 LR after the efv upgrade.
+    Flight_RBSLargeRevertableDeletePages = 118, // Large revertable delete size for a table (in pages) beyond which we will track the deletes.
+    Flight_RBSRevertableDeleteIfTooSoonTimeNull = 119, // If set, we will do a revertable table delete even if NonRevertableTableDelete flag is passed provided NonRevertable delete is failing due to JET_errRBSDeleteTableTooSoon due to time not being set. Note: If JET_bitRevertableTableDeleteIfTooSoon is set, this variant is ignored.
     IndexTupleIncrement = 132, // for tuple indexes, offset increment for each succesive tuple
     IndexTupleStart = 133, // for tuple indexes, offset to start tuple indexing
     KeyMost = 134, // read only maximum settable key length before key trunctation occurs
@@ -234,7 +235,8 @@ MSINTERNAL enum class MJET_PARAM
     EnableRBS = 215, // Turns on revert snapshot. Not an ESE flight as we will let the variant be controlled outside ESE (like HA can enable this when lag is disabled)
     RBSFilePath = 216, // path to the revert snapshot directory
     PerfmonRefreshInterval = 217, // Interval, in units of msec, used by the Permormance Monitor to refresh values for collection.
-    MaxValueInvalid = 218, // This is not a valid parameter. It can change from release to release!
+    EnableBlockCache = 218, // Indicates that the ESE Block Cache is enabled.  This is sufficient to access files previously attached to the ESE Block Cache but not to attach new files.
+    MaxValueInvalid = 219, // This is not a valid parameter. It can change from release to release!
 };
 
 }

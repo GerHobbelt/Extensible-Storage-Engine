@@ -13,7 +13,7 @@ namespace Internal
         {
             namespace Interop
             {
-                ref class JournalSegmentRemotable : MarshalByRefObject, IJournalSegment
+                ref class JournalSegmentRemotable : Remotable, IJournalSegment
                 {
                     public:
 
@@ -48,7 +48,7 @@ namespace Internal
                         }
 
                         virtual RegionPosition AppendRegion(
-                            array<ArraySegment<byte>>^ payload,
+                            array<ArraySegment<BYTE>>^ payload,
                             Int32 minimumAppendSizeInBytes,
                             [Out] RegionPosition% regionPositionEnd,
                             [Out] Int32% payloadAppendedInBytes )

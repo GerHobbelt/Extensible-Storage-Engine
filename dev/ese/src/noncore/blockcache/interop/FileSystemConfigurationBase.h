@@ -14,7 +14,7 @@ namespace Internal
             namespace Interop
             {
                 template< class TM, class TN, class TW >
-                public ref class FileSystemConfigurationBase : public Base<TM,TN,TW>, IFileSystemConfiguration
+                public ref class FileSystemConfigurationBase : Base<TM,TN,TW>, IFileSystemConfiguration
                 {
                     public:
 
@@ -27,6 +27,10 @@ namespace Internal
                     public:
 
                         virtual TimeSpan AccessDeniedRetryPeriod();
+
+                        virtual int MaxConcurrentIO();
+
+                        virtual int MaxConcurrentBackgroundIO();
 
                         virtual TimeSpan HungIOThreshhold();
 
@@ -49,6 +53,18 @@ namespace Internal
                 inline TimeSpan FileSystemConfigurationBase<TM,TN,TW>::AccessDeniedRetryPeriod()
                 {
                     return TimeSpan::FromMilliseconds( Pi->DtickAccessDeniedRetryPeriod() );
+                }
+
+                template< class TM, class TN, class TW >
+                inline int FileSystemConfigurationBase<TM, TN, TW>::MaxConcurrentIO()
+                {
+                    return Pi->CIOMaxOutstanding();
+                }
+
+                template< class TM, class TN, class TW >
+                inline int FileSystemConfigurationBase<TM, TN, TW>::MaxConcurrentBackgroundIO()
+                {
+                    return Pi->CIOMaxOutstandingBackground();
                 }
 
                 template< class TM, class TN, class TW >

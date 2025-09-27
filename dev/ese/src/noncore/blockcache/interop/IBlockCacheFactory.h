@@ -37,12 +37,14 @@ namespace Internal
                         IFile^ fInner,
                         FileSystemFilter^ fsf,
                         FileSystemConfiguration^ fsconfig,
+                        FileIdentification^ fident,
                         CacheTelemetry^ ctm,
+                        CacheRepository^ crep,
                         VolumeId volumeid,
                         FileId fileid,
                         ICachedFileConfiguration^ icfconfig,
                         ICache^ ic,
-                        ArraySegment<byte> header );
+                        ArraySegment<BYTE> header );
 
                     FileFilter^ CreateFileFilterWrapper( IFileFilter^ iffInner, IOMode ioMode );
 
@@ -96,7 +98,8 @@ namespace Internal
                     CachedBlockWriteCountsManager^ LoadCachedBlockWriteCountsManager(
                         FileFilter^ ff,
                         Int64 offsetInBytes,
-                        Int64 sizeInBytes );
+                        Int64 sizeInBytes,
+                        Int64 countCachedBlockWriteCounts );
 
                     CachedBlockSlab^ LoadCachedBlockSlab(
                         FileFilter^ ff,

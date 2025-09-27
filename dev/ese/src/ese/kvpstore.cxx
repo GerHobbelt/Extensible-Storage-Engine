@@ -448,7 +448,7 @@ ERR CKVPStore::ErrKVPIInitIUpgradeTable( const IFMP ifmp, bool fReadOnly )
             {
                 // We don't have any Minor Version upgrades at this point.
                 
-            case ULONG_MAX:
+            case ulMax:
             default:
                 AssertSz( fFalse, "Unexpected upgrade version ... was the upgrade table not updated with all intermediate versions" );
                 break;
@@ -1243,7 +1243,7 @@ ERR CKVPStore::ErrKVPIDeleteKey(
     if ( err > JET_errSuccess )
     {
         CallS( err );
-        err = JET_errInternalError;
+        err = ErrERRCheck( JET_errInternalError );
     }
 
     switch ( err )
@@ -1383,7 +1383,7 @@ ERR CKVPStore::ErrKVPIGetValue(
     const TrxPosition eTrxPos,
     const WCHAR * const wszKey,
     const KVPIValueType kvpvt,
-    _Out_bytecap_( cbValue ) BYTE * const pbValue,
+    _Out_writes_bytes_to_( cbValue, *pcbActual ) BYTE * const pbValue,
     const ULONG cbValue,
     _Out_opt_ ULONG *pcbActual )
 {
@@ -1608,7 +1608,7 @@ ERR CKVPStore::ErrKVPGetValue( const WCHAR * const wszKey, _Out_ INT64 * pi64Val
 
 // Retrieves variable size binary buffer from KVP store.
 // Note:  If a value was set as INT or INT64, this routine will not retrieve it.  Keep the same typed routines for Set/Get.
-ERR CKVPStore::ErrKVPGetValue( const WCHAR * const wszKey, _Out_ BYTE * const pbValue, const ULONG cbValueMax, _Out_opt_ ULONG *pcbValueActual )
+ERR CKVPStore::ErrKVPGetValue( const WCHAR * const wszKey, _Out_writes_bytes_to_( cbValueMax, *pcbValueActual ) BYTE * const pbValue, const ULONG cbValueMax, _Out_opt_ ULONG *pcbValueActual )
 {
     return ErrKVPIGetValue( eNewTrx, wszKey, kvpvtLongBinaryValueType, (BYTE*)pbValue, cbValueMax, pcbValueActual );
 }

@@ -47,7 +47,9 @@ namespace Internal
                         ERR ErrCreateFileFilter(    _Inout_                     IFileAPI** const                    ppfapiInner,
                                                     _In_                        ::IFileSystemFilter* const          pfsf,
                                                     _In_                        ::IFileSystemConfiguration* const   pfsconfig,
+                                                    _In_                        ::IFileIdentification* const        pfident,
                                                     _In_                        ::ICacheTelemetry* const            pctm,
+                                                    _In_                        ::ICacheRepository* const           pcrep,
                                                     _In_                        const ::VolumeId                    volumeid,
                                                     _In_                        const ::FileId                      fileid,
                                                     _Inout_                     ::ICachedFileConfiguration** const  ppcfconfig,
@@ -150,6 +152,7 @@ namespace Internal
                         ERR ErrLoadCachedBlockWriteCountsManager(   _In_    ::IFileFilter* const                        pff,
                                                                     _In_    const QWORD                                 ib,
                                                                     _In_    const QWORD                                 cb,
+                                                                    _In_    const QWORD                                 ccbwcs,
                                                                     _Out_   ::ICachedBlockWriteCountsManager** const    ppcbwcm ) override
                         {
                             return ErrERRCheck( JET_wrnNyi );

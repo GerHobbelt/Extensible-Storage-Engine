@@ -3072,6 +3072,30 @@ namespace Isam
     };
 
     [Serializable]
+    public ref class IsamLogOperationInconsistentWithDatabaseException : public IsamCorruptionException
+    {
+    public:
+        IsamLogOperationInconsistentWithDatabaseException() : IsamCorruptionException( "Log record in the log is inconsistent with the current state of the database and cannot be applied", JET_errLogOperationInconsistentWithDatabase)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamLogOperationInconsistentWithDatabaseException( String ^ description, Exception^ innerException ) :
+            IsamCorruptionException( description, innerException )
+        {
+        }
+
+        IsamLogOperationInconsistentWithDatabaseException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamCorruptionException( info, context )
+        {
+        }
+
+    };
+
+    [Serializable]
     public ref class IsamBackupAbortByServerException : public IsamOperationException
     {
     public:
@@ -7512,6 +7536,54 @@ namespace Isam
     };
 
     [Serializable]
+    public ref class IsamSetAutoIncrementTooHighException : public IsamUsageException
+    {
+    public:
+        IsamSetAutoIncrementTooHighException() : IsamUsageException( "The auto-increment value that the user tried to set explicitly is too high .", JET_errSetAutoIncrementTooHigh)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamSetAutoIncrementTooHighException( String ^ description, Exception^ innerException ) :
+            IsamUsageException( description, innerException )
+        {
+        }
+
+        IsamSetAutoIncrementTooHighException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamUsageException( info, context )
+        {
+        }
+
+    };
+
+    [Serializable]
+    public ref class IsamAutoIncrementNotSetException : public IsamUsageException
+    {
+    public:
+        IsamAutoIncrementNotSetException() : IsamUsageException( "The user must have explicitly set the auto-increment column for this table.", JET_errAutoIncrementNotSet)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamAutoIncrementNotSetException( String ^ description, Exception^ innerException ) :
+            IsamUsageException( description, innerException )
+        {
+        }
+
+        IsamAutoIncrementNotSetException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamUsageException( info, context )
+        {
+        }
+
+    };
+
+    [Serializable]
     public ref class IsamTooManySortsException : public IsamMemoryException
     {
     public:
@@ -8902,6 +8974,54 @@ namespace Isam
         }
 
     };
+
+    [Serializable]
+    public ref class IsamClientSpaceBeginException : public IsamUsageException
+    {
+    public:
+        IsamClientSpaceBeginException() : IsamUsageException( "Begin of the error space reserved for JET client use", JET_errClientSpaceBegin)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamClientSpaceBeginException( String ^ description, Exception^ innerException ) :
+            IsamUsageException( description, innerException )
+        {
+        }
+
+        IsamClientSpaceBeginException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamUsageException( info, context )
+        {
+        }
+
+    };
+
+    [Serializable]
+    public ref class IsamClientSpaceEndException : public IsamUsageException
+    {
+    public:
+        IsamClientSpaceEndException() : IsamUsageException( "End of the error space reserved for JET client use", JET_errClientSpaceEnd)
+        {
+        }
+
+        // Constructor with embedded exception. Does not use the string from esent.h.
+        IsamClientSpaceEndException( String ^ description, Exception^ innerException ) :
+            IsamUsageException( description, innerException )
+        {
+        }
+
+        IsamClientSpaceEndException(
+            System::Runtime::Serialization::SerializationInfo^ info,
+            System::Runtime::Serialization::StreamingContext context
+        )
+            : IsamUsageException( info, context )
+        {
+        }
+
+    };
 public ref class EseExceptionHelper
 {
 public:
@@ -9127,6 +9247,8 @@ static IsamErrorException^ JetErrToException( const JET_ERR err )
             return gcnew IsamEngineFormatVersionSpecifiedTooLowForDatabaseVersionException;
         case JET_errDbTimeBeyondMaxRequired:
             return gcnew IsamDbTimeBeyondMaxRequiredException;
+        case JET_errLogOperationInconsistentWithDatabase:
+            return gcnew IsamLogOperationInconsistentWithDatabaseException;
         case JET_errBackupAbortByServer:
             return gcnew IsamBackupAbortByServerException;
         case JET_errInvalidGrbit:
@@ -9497,6 +9619,10 @@ static IsamErrorException^ JetErrToException( const JET_ERR err )
             return gcnew IsamDecryptionFailedException;
         case JET_errEncryptionBadItag:
             return gcnew IsamEncryptionBadItagException;
+        case JET_errSetAutoIncrementTooHigh:
+            return gcnew IsamSetAutoIncrementTooHighException;
+        case JET_errAutoIncrementNotSet:
+            return gcnew IsamAutoIncrementNotSetException;
         case JET_errTooManySorts:
             return gcnew IsamTooManySortsException;
         case JET_errTooManyAttachedDatabases:
@@ -9613,6 +9739,10 @@ static IsamErrorException^ JetErrToException( const JET_ERR err )
             return gcnew IsamFileIOBeyondEOFException;
         case JET_errFileCompressed:
             return gcnew IsamFileCompressedException;
+        case JET_errClientSpaceBegin:
+            return gcnew IsamClientSpaceBeginException;
+        case JET_errClientSpaceEnd:
+            return gcnew IsamClientSpaceEndException;
         default:
             return gcnew IsamErrorException( L"Unknown error", err );
         }

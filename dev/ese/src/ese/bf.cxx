@@ -228,11 +228,6 @@ void BFTerm()
     OSMemoryPageFree( g_rgbBFTemp );
     g_rgbBFTemp = NULL;
 
-#ifdef DEBUG
-    OSMemoryPageFree( g_pvIoThreadImageCheckCache );
-    g_pvIoThreadImageCheckCache = NULL;
-#endif
-
     g_pBFAllocLookasideList->Term();
     delete g_pBFAllocLookasideList;
     g_pBFAllocLookasideList = NULL;
@@ -1871,11 +1866,12 @@ void BFMarkAsSuperCold( BFLatch *pbfl )
     BFIMarkAsSuperCold( pbf, fTrue );
 }
 
-void BFCacheStatus( const IFMP ifmp, const PGNO pgno, BOOL* const pfInCache, ERR* const perrBF, BFDirtyFlags* const pbfdf )
+void BFCacheStatus( const IFMP ifmp, const PGNO pgno, BOOL* const pfInCache, ERR* const perrBF, BFDirtyFlags* const pbfdf, BOOL* const pfInRangeLock )
 {
     *pfInCache = fFalse;
     ( perrBF != NULL ) ? ( *perrBF = JET_errSuccess ) : 0;
     ( pbfdf != NULL ) ? ( *pbfdf = bfdfMin ) : 0;
+    ( pfInRangeLock != NULL ) ? ( *pfInRangeLock = fFalse ) : 0;
 
     if ( g_fBFCacheInitialized )
     {
@@ -1891,6 +1887,7 @@ void BFCacheStatus( const IFMP ifmp, const PGNO pgno, BOOL* const pfInCache, ERR
             *pfInCache = fTrue;
             ( perrBF != NULL ) ? ( *perrBF = pgnopbf.pbf->err ) : 0;
             ( pbfdf != NULL ) ? ( *pbfdf = (BFDirtyFlags)pgnopbf.pbf->bfdf ) : 0;
+            ( pfInRangeLock != NULL ) ? ( *pfInRangeLock = pgnopbf.pbf->bfbitfield.FRangeLocked() ) : 0;
         }
         g_bfhash.ReadUnlockKey( &lock );
     }
@@ -3937,6 +3934,19 @@ ERR ErrBFLockPageRangeForExternalZeroing( const IFMP ifmp, const PGNO pgnoFirst,
         }
     }
 
+    for ( PGNO pgno = pbfprl->pgnoFirst; pgno <= pbfprl->pgnoLast; pgno++ )
+    {
+        const size_t ipgno = pgno - pbfprl->pgnoFirst;
+        if ( !pbfprl->rgfLatched[ ipgno ] )
+        {
+            continue;
+        }
+
+        BF* const pbf = PBF( pbfprl->rgbfl[ ipgno ].dwContext );
+        AssertSz( !pbf->bfbitfield.FRangeLocked(), "BFLockRangeAlreadyLocked" );
+        pbf->bfbitfield.SetFRangeLocked( fTrue );
+    }
+
     // Fixup flush map.
     Call( pfmp->PFlushMap()->ErrSyncRangeInvalidateFlushType( pbfprl->pgnoFirst, pbfprl->cpg ) );
 
@@ -4021,6 +4031,19 @@ void BFUnlockPageRangeForExternalZeroing( const DWORD_PTR dwContext, const Trace
     // Rollback range locks if needed.
     if ( pbfprl->fRangeLocked )
     {
+        for ( PGNO pgno = pbfprl->pgnoFirst; pgno <= pbfprl->pgnoLast; pgno++ )
+        {
+            const size_t ipgno = pgno - pbfprl->pgnoFirst;
+            if ( !pbfprl->rgfLatched[ ipgno ] )
+            {
+                continue;
+            }
+
+            BF* const pbf = PBF( pbfprl->rgbfl[ ipgno ].dwContext );
+            AssertSz( pbf->bfbitfield.FRangeLocked(), "BFUnlockRangeNotLocked" );
+            pbf->bfbitfield.SetFRangeLocked( fFalse );
+        }
+
         pfmp->RangeUnlockAndLeave( pbfprl->pgnoFirst, pbfprl->pgnoLast, pbfprl->irangelock );
         pbfprl->fRangeLocked = fFalse;
     }
@@ -4668,13 +4691,16 @@ ERR ErrBFFlush( IFMP ifmp, const OBJID objidFDP, const PGNO pgnoFirst, const PGN
 
         BFOB0::ERR      errOB0;
         BFOB0::CLock    lockOB0;
+        ULONG           cEntries, cEntriesBadPtr;
 
+        cEntries = cEntriesBadPtr = 0;
         pbffmp->bfob0.MoveBeforeFirst( &lockOB0 );
         while ( pbffmp->bfob0.ErrMoveNext( &lockOB0 ) != BFOB0::ERR::errNoCurrentEntry )
         {
             PBF pbf;
             errOB0 = pbffmp->bfob0.ErrRetrieveEntry( &lockOB0, &pbf );
             Assert( errOB0 == BFOB0::ERR::errSuccess );
+            cEntries++;
 
             //  while we can have clean buffers, we do not expect evicted (in available or quiesced)
             //  state buffers to still be in OB0.
@@ -4686,15 +4712,32 @@ ERR ErrBFFlush( IFMP ifmp, const OBJID objidFDP, const PGNO pgnoFirst, const PGN
                 continue;
             }
 
-            //  if we're only flushing pages from a specific btree of this IFMP
-            //  or from a specific range, skip any that don't match
-            //
-            //  HACK:  we are touching the page without the latch!
+            BOOL fSkipEntry = fFalse;
+            TRY
+            {
+                //  if we're only flushing pages from a specific btree of this IFMP
+                //  or from a specific range, skip any that don't match
+                //
+                //  HACK:  we are touching the page without the latch!
 
-            if ( ( ( objidNil != objidFDP ) &&
-                   ( objidFDP != ( (CPAGE::PGHDR *)( pbf->pv ) )->objidFDP ) ) ||
-                 ( ( pgnoFirst != pgnoNull ) && ( pbf->pgno < pgnoFirst ) ) ||
-                 ( ( pgnoLast != pgnoNull ) && ( pbf->pgno > pgnoLast ) ) )
+                if ( ( ( pgnoFirst != pgnoNull ) && ( pbf->pgno < pgnoFirst ) ) ||
+                     ( ( pgnoLast != pgnoNull ) && ( pbf->pgno > pgnoLast ) ) ||
+                     ( ( objidNil != objidFDP ) &&
+                       ( objidFDP != ( (CPAGE::PGHDR *)( pbf->pv ) )->objidFDP ) ) )
+                {
+                    fSkipEntry = fTrue;
+                }
+            }
+            EXCEPT( efaExecuteHandler )
+            {
+                cEntriesBadPtr++;
+                fSkipEntry = fTrue;
+            }
+
+            // We should not be hitting this too often.
+            Assert( ( cEntries < 100 ) || ( cEntriesBadPtr < ( cEntries / 2 )  ) );
+
+            if ( fSkipEntry )
             {
                 continue;
             }
@@ -4703,26 +4746,45 @@ ERR ErrBFFlush( IFMP ifmp, const OBJID objidFDP, const PGNO pgnoFirst, const PGN
         }
         pbffmp->bfob0.UnlockKeyPtr( &lockOB0 );
 
+        cEntries = cEntriesBadPtr = 0;
         pbffmp->critbfob0ol.Enter();
         PBF pbfNext;
         for ( PBF pbf = pbffmp->bfob0ol.PrevMost(); pbf != pbfNil; pbf = pbfNext )
         {
             pbfNext = pbffmp->bfob0ol.Next( pbf );
+            cEntries++;
 
             if ( err < JET_errSuccess || pbf->bfdf == bfdfClean )
             {
                 continue;
             }
 
-            //  if we're only flushing pages from a specific btree of this IFMP
-            //  or from a specific range, skip any that don't match
-            //
-            //  HACK:  we are touching the page without the latch!
+            BOOL fSkipEntry = fFalse;
+            TRY
+            {
+                //  if we're only flushing pages from a specific btree of this IFMP
+                //  or from a specific range, skip any that don't match
+                //
+                //  HACK:  we are touching the page without the latch!
 
-            if ( ( ( objidNil != objidFDP ) &&
-                   ( objidFDP != ( (CPAGE::PGHDR *)( pbf->pv ) )->objidFDP ) ) ||
-                 ( ( pgnoFirst != pgnoNull ) && ( pbf->pgno < pgnoFirst ) ) ||
-                 ( ( pgnoLast != pgnoNull ) && ( pbf->pgno > pgnoLast ) ) )
+                if ( ( ( pgnoFirst != pgnoNull ) && ( pbf->pgno < pgnoFirst ) ) ||
+                     ( ( pgnoLast != pgnoNull ) && ( pbf->pgno > pgnoLast ) ) ||
+                     ( ( objidNil != objidFDP ) &&
+                       ( objidFDP != ( (CPAGE::PGHDR *)( pbf->pv ) )->objidFDP ) ) )
+                {
+                    fSkipEntry = fTrue;
+                }
+            }
+            EXCEPT( efaExecuteHandler )
+            {
+                cEntriesBadPtr++;
+                fSkipEntry = fTrue;
+            }
+
+            // We should not be hitting this too often.
+            Assert( ( cEntries < 100 ) || ( cEntriesBadPtr < ( cEntries / 2 )  ) );
+
+            if ( fSkipEntry )
             {
                 continue;
             }
@@ -6387,6 +6449,18 @@ INLINE void BFITraceDirtyPage(
 
     const CPAGE::PGHDR * ppghdr = (const CPAGE::PGHDR *)pbf->pv;
     GetCurrUserTraceContext getutc;
+
+    // Iorp() is reserved for the loweset level action that caused an IO, just above the IO layer (e.g. BF's reason for initiating an IO).
+    // Dirtying a page isn't going to cause an IO directly, so iorp should be none. But it doesn't hurt telemetry if we do emit an iorp here.
+    // These are some of the culprits who push an iorp because they call the IO layer directly, which expects an iorp.
+    // But they also end up leaking iorp into the BF Api.
+    // FUTURE-2022-04-14-SOMEONE - If we ever save tc on the BF, consider fixing the iorp leak.
+    Expected( tc.iorReason.Iorp() == iorpNone || 
+              tc.iorReason.Iorp() == iorpDatabaseShrink ||
+              tc.iorReason.Iorp() == iorpDatabaseTrim ||
+              tc.iorReason.Iorp() == iorpPatchFix ||
+              tc.iorReason.Iorp() == iorpSPDatabaseInlineZero ||
+              tc.iorReason.Iorp() == iorpBFLatch ); // page patch
 
     if ( pbf->bfdf < bfdfDirty /* first "proper" dirty */ )
     {
@@ -11123,13 +11197,13 @@ ERR ErrBFIMaintScavengeIScavengePages( const char* const szContextTraceOnly, con
                 fHungIO = fTrue;
             }
 
-            // Ignore pages that can't be flushed because we are on the I/O thread.
+            // Ignore pages that can't be flushed because we are in an I/O completion.
             else if ( errFlush == errBFIPageFlushDisallowedOnIOThread )
             {
                 // We should only see this if we are on the I/O thread
                 Assert( !fPermanentErr );
-                Assert( FIOThread() );
-                FireWall( "ScavengeFromIoThread" );
+                Assert( Ptls()->fInBFAsyncIOCompletion );
+                FireWall( "ScavengeInIOCompletion" );
             }
 
             // If we got errDiskTilt then flush our I/O queue to hopefully get a head start on our I/O.
@@ -11700,7 +11774,6 @@ void BFIMaintScavengeTerm( void )
 CSemaphore      g_semMaintCheckpointDepthRequest( CSyncBasicInfo( _T( "g_semMaintCheckpointDepthRequest" ) ) );
 
 IFMP            g_ifmpMaintCheckpointDepthStart;
-ERR             errLastCheckpointMaint = JET_errSuccess;
 
 POSTIMERTASK    g_posttBFIMaintCheckpointDepthITask = NULL;
 
@@ -11710,20 +11783,47 @@ POSTIMERTASK    g_posttBFIMaintCheckpointDepthITask = NULL;
 //  requests that checkpoint depth maintenance be performed on dirty pages in
 //  the cache
 
-void BFIMaintCheckpointDepthRequest( FMP * pfmp, const BFCheckpointDepthMainReason eRequestReason )
+void BFIMaintCheckpointIDepthRequest_( BF * pbfImplicitlyPinnedDatabase, FMP * pfmp, const BFCheckpointDepthMainReason eRequestReason )
 {
-    //  if we are asking to remove clean entries then skip all these checks and
-    //  just try to schedule checkpoint depth maintenance
-
-    if ( eRequestReason != bfcpdmrRequestRemoveCleanEntries )
+    if ( eRequestReason == bfcpdmrRequestRemoveCleanEntries )
     {
+        //  if we are asking to remove clean entries then skip all these checks and
+        //  just try to schedule checkpoint depth maintenance.  So we don't need to
+        //  lock BF Context.
+    }
+    else if ( eRequestReason == bfcpdmrRequestIOThreshold )
+    {
+        if ( pbfImplicitlyPinnedDatabase == NULL )
+        {
+            FireWall( "CheckpointDepthIoThresholdProvidePinnedPbfArg" );
+            return;
+        }
+        Expected( Ptls()->fInBFAsyncIOCompletion );
+        Expected( !Ptls()->fCheckpoint );
+        Assert( pbfImplicitlyPinnedDatabase->err == wrnBFPageFlushPending );
+        Assert( NULL == pbfImplicitlyPinnedDatabase->pWriteSignalComplete );
 
+        // schedule immediately
+
+        // Restart checkpoint depth maint immediately.  We don't need to do all IFMPs 
+        // as we just need to find one IO to do, and the others will restart in 10 ms
+        // (dtickMaintCheckpointDepthRetry) if nothing else.
+        pfmp = &g_rgfmp[ pbfImplicitlyPinnedDatabase->ifmp ];
+        BFFMPContext* pbffmp = (BFFMPContext*)pfmp->DwBFContext();
+        if ( pbffmp && pbffmp->fCurrentlyAttached )
+        {
+            pbffmp->tickMaintCheckpointDepthNext = TickOSTimeCurrent();
+        }
+    }
+    else
+    {
         //  make sure this is not already the checkpoint maintenance thread
         //  (otherwise, we will likely deadlock trying to obtain
         //  pfmp->RwlIBFContext())
 
         if ( Ptls()->fCheckpoint )
         {
+            FireWall( "CheckpointMaintToRequestIsntRecursive" );
             return;
         }
 
@@ -11744,29 +11844,6 @@ void BFIMaintCheckpointDepthRequest( FMP * pfmp, const BFCheckpointDepthMainReas
             {
                 pfmp->LeaveBFContextAsReader();
                 return;
-            }
-        }
-        else if ( eRequestReason == bfcpdmrRequestIOThreshold )
-        {
-
-            //  Since the IO stack is globally we have to check globally if we stopped b/c
-            //  of this error.
-
-            if ( errLastCheckpointMaint != errDiskTilt )
-            {
-                pfmp->LeaveBFContextAsReader();
-                return;
-            }
-
-            // schedule immediately
-
-            // Ok, we did stop checkpoint advancement due to too much IO, restart it 
-            // immediately. We don't need to do all IFMPs as they will restart in 10ms 
-            // (dtickMaintCheckpointDepthRetry).
-            BFFMPContext* pbffmp = (BFFMPContext*)pfmp->DwBFContext();
-            if ( pbffmp && pbffmp->fCurrentlyAttached )
-            {
-                pbffmp->tickMaintCheckpointDepthNext = TickOSTimeCurrent();
             }
         }
         else if ( eRequestReason == bfcpdmrRequestConsumeSettings )
@@ -11817,6 +11894,31 @@ void BFIMaintCheckpointDepthRequest( FMP * pfmp, const BFCheckpointDepthMainReas
         g_semMaintCheckpointDepthRequest.Release();
     }
 
+}
+
+void BFIMaintCheckpointDepthRequest( FMP * pfmp, const BFCheckpointDepthMainReason bfcdmr )
+{
+    Assert( bfcdmr != bfcpdmrRequestIOThreshold );
+
+    BFIMaintCheckpointIDepthRequest_( NULL, pfmp, bfcdmr );
+}
+
+void BFIMaintCheckpointDepthRequest( BF * pbfImplicitlyPinnedDatabase, const BFCheckpointDepthMainReason bfcdmr )
+{
+    Assert( bfcdmr == bfcpdmrRequestIOThreshold );
+
+    //  This set of facts allows us to collective imply a implicit lock on the BFContext.
+
+    Assert( pbfImplicitlyPinnedDatabase != NULL );
+    Assert( pbfImplicitlyPinnedDatabase->err == wrnBFPageFlushPending );
+    Assert( NULL == pbfImplicitlyPinnedDatabase->pWriteSignalComplete );
+    Expected( Ptls()->fInBFAsyncIOCompletion );
+
+    g_rgfmp[ pbfImplicitlyPinnedDatabase->ifmp ].ImplicitBFContextPin();
+
+    BFIMaintCheckpointIDepthRequest_( pbfImplicitlyPinnedDatabase, NULL, bfcdmr );
+
+    g_rgfmp[ pbfImplicitlyPinnedDatabase->ifmp ].ImplicitBFContextUnpin();
 }
 
 //  executes an async request to perform checkpoint depth maintenance
@@ -12029,11 +12131,6 @@ void BFIMaintCheckpointDepthIFlushPages( TICK * pdtickNextSchedule )
 
         if ( err == errDiskTilt )
         {
-            //  Setting this allows the BFIMaintCheckpointDepthRequest() to ignore
-            //  the next schedule time and just immediately ask for more checkpoint
-            //  depth maint.
-            
-            errLastCheckpointMaint = err;
             break;
         }
 
@@ -12570,15 +12667,16 @@ ERR ErrBFIOB0MaintScan(
         {
             if ( fOperations & bfob0moFlushing )
             {
-                const INT iUrgentLevelWorst = IUrgentBFIMaintCheckpointPriority( PinstFromIfmp( pbf->ifmp )->m_plog, lgposNewest, cbCheckpointDepth, lgposOldestBegin0 );
+                INST* const pinst = PinstFromIfmp( pbf->ifmp );
+                const INT iUrgentLevelWorst = IUrgentBFIMaintCheckpointPriority( pinst->m_plog, lgposNewest, cbCheckpointDepth, lgposOldestBegin0 );
                 if ( iUrgentLevelWorst )
                 {
-                    PERFOptDeclare( const INT cioOutstandingMax = CioOSDiskPerfCounterIOMaxFromUrgentQOS( QosOSFileFromUrgentLevel( iUrgentLevelWorst ) ) );
-                    PERFOpt( cBFCheckpointMaintOutstandingIOMax.Set( PinstFromIfmp( pbf->ifmp ), cioOutstandingMax ) );
+                    PERFOptDeclare( const INT cioOutstandingMax = CioOSDiskPerfCounterIOMaxFromUrgentQOS( pinst->m_pfsconfig, QosOSFileFromUrgentLevel( iUrgentLevelWorst ) ) );
+                    PERFOpt( cBFCheckpointMaintOutstandingIOMax.Set( pinst, cioOutstandingMax ) );
                 }
                 else
                 {
-                    PERFOpt( cBFCheckpointMaintOutstandingIOMax.Set( PinstFromIfmp( pbf->ifmp ), 1 ) );
+                    PERFOpt( cBFCheckpointMaintOutstandingIOMax.Set( pinst, 1 ) );
                 }
             }
             fSetUrgentCtr = fTrue;
@@ -16763,7 +16861,7 @@ void BFIFreePage( PBF pbf, const BOOL fMRU, const BFFreePageFlags bffpfDangerous
     Enforce( pbf->err != wrnBFPageFlushPending );
     Enforce( pbf->pWriteSignalComplete == NULL );
     Enforce( PvBFIAcquireIOContext( pbf ) == NULL );
-    AssertTrack( !pbf->bfbitfield.FRangeLocked(), "BFFreeRangeStillLocked" );
+    AssertSz( !pbf->bfbitfield.FRangeLocked() || pbf->fAbandoned, "BFFreeRangeStillLocked" );
 
     Enforce( pbf->pbfTimeDepChainNext == NULL );
     Enforce( pbf->pbfTimeDepChainPrev == NULL );
@@ -16968,7 +17066,7 @@ ERR ErrBFICachePage(    PBF* const ppbf,
     pgnopbf.pbf->icbPage = icbPageSize;
     pgnopbf.pbf->tce = tce;
 
-    AssertTrack( !pgnopbf.pbf->bfbitfield.FRangeLocked(), "BFCacheRangeAlreadyLocked" );
+    AssertSz( !pgnopbf.pbf->bfbitfield.FRangeLocked(), "BFCacheRangeAlreadyLocked" );
     pgnopbf.pbf->bfbitfield.SetFRangeLocked( fFalse );
 
     PERFOpt( cBFCache.Inc( PinstFromIfmp( ifmp ), tce, ifmp ) );
@@ -21291,10 +21389,10 @@ ERR ErrBFIPrepareFlushPage(
         Call( ErrERRCheck( errBFIDependentPurged ) );
     }
 
-    //  if this is the I/O thread then do not allow the page to be flushed to
+    //  if this is an I/O completion then do not allow the page to be flushed to
     //  avoid a possible deadlock if the IOREQ pool is empty
 
-    if ( FIOThread() )
+    if ( ptls->fInBFAsyncIOCompletion )
     {
         AssertSz( fFalse, "We have changed the Buffer Manager so this should never happen.  Please tell SOMEONE if it does." );
         Call( ErrERRCheck( errBFIPageFlushDisallowedOnIOThread ) );
@@ -21568,7 +21666,7 @@ ERR ErrBFIPrepareFlushPage(
 
     //  get the active range lock
 
-    AssertTrack( !pbf->bfbitfield.FRangeLocked(), "BFPrepRangeAlreadyLocked" );
+    AssertSz( !pbf->bfbitfield.FRangeLocked(), "BFPrepRangeAlreadyLocked" );
 
     CMeteredSection::Group irangelock = CMeteredSection::groupTooManyActiveErr;
     pfmp = &g_rgfmp[ pbf->ifmp ];
@@ -21762,9 +21860,9 @@ HandleError:
 
     if ( ( err < JET_errSuccess ) && fRangeLocked )
     {
-        AssertTrack( pbf->bfbitfield.FRangeLocked(), "BFPrepFlushRangeNotLocked" );
-        pfmp->LeaveRangeLock( pbf->pgno, pbf->irangelock );
+        AssertSz( pbf->bfbitfield.FRangeLocked(), "BFPrepFlushRangeNotLocked" );
         pbf->bfbitfield.SetFRangeLocked( fFalse );
+        pfmp->LeaveRangeLock( pbf->pgno, pbf->irangelock );
         fRangeLocked = fFalse;
     }
 
@@ -22025,9 +22123,9 @@ void CBFOpportuneWriter::RevertBFs_( ULONG ibfStart )
         {
             Assert( pbf->sxwl.FOwnExclusiveLatch() );
 
-            AssertTrack( pbf->bfbitfield.FRangeLocked(), "BFRevertRangeNotLocked" );
-            g_rgfmp[ pbf->ifmp ].LeaveRangeLock( pbf->pgno, pbf->irangelock );
+            AssertSz( pbf->bfbitfield.FRangeLocked(), "BFRevertRangeNotLocked" );
             pbf->bfbitfield.SetFRangeLocked( fFalse );
+            g_rgfmp[ pbf->ifmp ].LeaveRangeLock( pbf->pgno, pbf->irangelock );
             pbf->sxwl.ReleaseExclusiveLatch();
         }
     }
@@ -22156,9 +22254,9 @@ bool CBFOpportuneWriter::FVerifyCleanBFs_()
                     AssertSz( fFalse, "Unexpected error here, this should have been clean by now as ErrBFIPrepareFlushPage() rejects BFs with errors." );
                 }
 
-                AssertTrack( pbf->bfbitfield.FRangeLocked(), "BFVerCleanRangeNotLocked" );
-                g_rgfmp[ pbf->ifmp ].LeaveRangeLock( pbf->pgno, pbf->irangelock );
+                AssertSz( pbf->bfbitfield.FRangeLocked(), "BFVerCleanRangeNotLocked" );
                 pbf->bfbitfield.SetFRangeLocked( fFalse );
+                g_rgfmp[ pbf->ifmp ].LeaveRangeLock( pbf->pgno, pbf->irangelock );
 
                 Assert( FBFIUpdatablePage( pbf ) );
 
@@ -22421,10 +22519,10 @@ ERR ErrBFIFlushPage(    __inout const PBF       pbf,
         //  See where this is passed to BFIOpportunisticallyFlushPage() - ErrBFIAcquireExclusiveLatchForFlush() should
         //  have completed the IO, and cleaned the page for this IORP ... so we should be in the if, just release the
         //  latch and return.
-        Expected( iorBase.Iorp() != iorpBFImpedingWriteCleanDoubleIo || 
-                     // There is an exception though - a write failure, may mean the page stayed dirty & in err state
-                     // causing us to attempt the double write.
-                     ( pbf->bfdf >= bfdfUntidy && pbf->err < JET_errSuccess ) ); 
+        //  Expected( iorBase.Iorp() != iorpBFImpedingWriteCleanDoubleIo || 
+        //              // There is an exception though - a write failure, may mean the page stayed dirty & in err state
+        //              // causing us to attempt the double write.
+        //              ( pbf->bfdf >= bfdfUntidy && pbf->err < JET_errSuccess ) ); 
 
         //  try to remove all dependencies on this BF.  if there is an
         //  issue, release our latch and fail with the error
@@ -22454,9 +22552,9 @@ ERR ErrBFIFlushPage(    __inout const PBF       pbf,
         }
         else if ( errDiskTilt == err )
         {
-            AssertTrack( pbf->bfbitfield.FRangeLocked(), "BFFlushRangeNotLocked" );
-            g_rgfmp[ pbf->ifmp ].LeaveRangeLock( pbf->pgno, pbf->irangelock );
+            AssertSz( pbf->bfbitfield.FRangeLocked(), "BFFlushRangeNotLocked" );
             pbf->bfbitfield.SetFRangeLocked( fFalse );
+            g_rgfmp[ pbf->ifmp ].LeaveRangeLock( pbf->pgno, pbf->irangelock );
             pbf->sxwl.ReleaseExclusiveLatch();
             Call( err );
         }
@@ -24381,6 +24479,9 @@ void BFIAsyncReadComplete(  const ERR           err,
                             const BYTE* const   pbData,
                             const PBF           pbf )
 {
+    TLS* const ptls = Ptls();
+
+    ptls->fInBFAsyncIOCompletion = fTrue;
 
     pbf->sxwl.ClaimOwnership( bfltWrite );
 
@@ -24468,6 +24569,8 @@ void BFIAsyncReadComplete(  const ERR           err,
     //  release our Write Latch on this BF
 
     pbf->sxwl.ReleaseWriteLatch();
+
+    ptls->fInBFAsyncIOCompletion = fFalse;
 }
 
 //  this function performs a Sync Write from the specified Exclusive Latched BF
@@ -24574,6 +24677,8 @@ void BFISyncWriteComplete(  const ERR           err,
 
             if ( fIsPagePatching && fIsFmRecoverable )
             {
+                //  OK to ignore errors because the sync write of a patched page can only be initiated once we
+                //  have already synchronously set its flush type to pgftUnknown.
                 (void)pfm->ErrSetPgnoFlushTypeAndWait( pbf->pgno, pgft, dbtime );
             }
             else
@@ -24585,9 +24690,9 @@ void BFISyncWriteComplete(  const ERR           err,
 
     //  release our reference count on the range lock now that our write has completed
 
-    AssertTrack( pbf->bfbitfield.FRangeLocked(), "BFSyncCompleteRangeNotLocked" );
-    g_rgfmp[ pbf->ifmp ].LeaveRangeLock( pbf->pgno, pbf->irangelock );
+    AssertSz( pbf->bfbitfield.FRangeLocked(), "BFSyncCompleteRangeNotLocked" );
     pbf->bfbitfield.SetFRangeLocked( fFalse );
+    g_rgfmp[ pbf->ifmp ].LeaveRangeLock( pbf->pgno, pbf->irangelock );
 
     //  write was successful
 
@@ -24663,14 +24768,8 @@ void BFISyncWriteComplete(  const ERR           err,
         g_asigBFFlush.Set();
     }
 
-    //  Sync IOs QOS doesn't have QOS signals back ... so can not check for qosIOCompleteWriteGameOn here, but
-    //  we shouldn't have Sync iorpBFCheckpointAdv IOs anyways, always signal just in case.  If we were getting
-    //  them here - would have to decide if we are signaling checkpoint adv unnecessarily or too much.
-    Expected( tc.etc.iorReason.Iorp() != iorpBFCheckpointAdv );
-    if ( tc.etc.iorReason.Iorp() == iorpBFCheckpointAdv )
-    {
-        BFIMaintCheckpointDepthRequest( &g_rgfmp[pbf->ifmp], bfcpdmrRequestIOThreshold );
-    }
+    //  We shouldn't have Sync iorpBFCheckpointAdv IOs here.
+    Assert( tc.etc.iorReason.Iorp() != iorpBFCheckpointAdv );
 
 }
 
@@ -24990,11 +25089,6 @@ JETUNITTEST( BF, LocklessWriteCompleteSignaling )
     pbf->sxwl.ReleaseOwnership( bfltWrite );
 }
 
-#ifdef DEBUG
-// Used to check entire page image on IOs that happen from the IO thread (which is 99% of them).
-void * g_pvIoThreadImageCheckCache = NULL;
-#endif
-
 //  remap a buffer page back (or map/reroute an allocated page) to the OS FS cache
 //
 //  There are two interesting cases:
@@ -25099,21 +25193,6 @@ BOOL FBFICacheRemapPage( __inout PBF pbf, IFileAPI* const pfapi )
     
 #ifdef DEBUG
     void * pvPageImageCheckPre = NULL;
-    if ( FIOThread() )
-    {
-        //  We only do this on the IO thread, so I can just keep the buffer around.  Note that there
-        //  is a case through IOChangeFileSizeComplete() where this happens on a different thread, and
-        //  so is not "implicitly locked".
-        if ( g_pvIoThreadImageCheckCache == NULL )
-        {
-            Expected( pbf->icbPage == g_icbCacheMax );  //  should be full sized
-            Assert( pbf->icbPage <= icbPageBiggest );   //  full size shouldn't outsize the biggest
-            //  Alloc the maximal we could possibly use ... because we're lazy
-            g_pvIoThreadImageCheckCache = PvOSMemoryPageAlloc( g_rgcbPageSize[icbPageBiggest], NULL );
-        }
-        //  This means 99.9% of all page images will be simply cached efficiently without memalloc/free
-        pvPageImageCheckPre = g_pvIoThreadImageCheckCache;
-    }
     if ( pvPageImageCheckPre == NULL )
     {
         pvPageImageCheckPre = PvOSMemoryPageAlloc( g_rgcbPageSize[icbPageBiggest], NULL );
@@ -25320,12 +25399,7 @@ BOOL FBFICacheRemapPage( __inout PBF pbf, IFileAPI* const pfapi )
                     dbtimeCheckPre, (DBTIME)ppghdrPreCopy->dbtimeDirtied, errReRead, errCheckPage );
         AssertSz( 0 == memcmp( pvPageImageCheckPre, pbf->pv, g_rgcbPageSize[pbf->icbPage] ), "Remap page image mismatch: %I64x != %I64x, errs = %d / %d",
                     pvPageImageCheckPre, pbf->pv, errReRead, errCheckPage );
-        if ( pvPageImageCheckPre != g_pvIoThreadImageCheckCache )
-        {
-            //  means we're not the IO thread (or first alloc failed and 2nd succeeded above), needs freeing
-            OSMemoryPageFree( pvPageImageCheckPre );
-        }
-        //  Note g_pvIoThreadImageCheckCache is released in BFTerm()
+        OSMemoryPageFree( pvPageImageCheckPre );
     }
 
     if ( errReRead >= JET_errSuccess && // must have successfully read to do this level of validation in RFS IO tests
@@ -25350,8 +25424,12 @@ void BFIAsyncWriteComplete( const ERR           err,
                             const BYTE* const   pbData,
                             const PBF           pbf )
 {
+    TLS* const  ptls    = Ptls();
+
     const IFMP  ifmp    = pbf->ifmp;
     FMP * const pfmp    = &g_rgfmp[ ifmp ];
+
+    ptls->fInBFAsyncIOCompletion = fTrue;
 
     Assert( pbf->err == wrnBFPageFlushPending );
     Expected( err <= JET_errSuccess );  //  no expected warnings
@@ -25433,9 +25511,9 @@ void BFIAsyncWriteComplete( const ERR           err,
     //  release our reference count on the range lock now that our write
     //  has completed
 
-    AssertTrack( pbf->bfbitfield.FRangeLocked(), "BFAsyncCompleteRangeNotLocked" );
-    pfmp->LeaveRangeLock( pbf->pgno, pbf->irangelock );
+    AssertSz( pbf->bfbitfield.FRangeLocked(), "BFAsyncCompleteRangeNotLocked" );
     pbf->bfbitfield.SetFRangeLocked( fFalse );
+    pfmp->LeaveRangeLock( pbf->pgno, pbf->irangelock );
 
     //  write was successful
 
@@ -25493,6 +25571,14 @@ void BFIAsyncWriteComplete( const ERR           err,
 
     Assert( !fRemappedWriteLatched || err >= JET_errSuccess );  //  we can't paste the right error if there was an IO error.
 
+    //  signal appropriate DB specific tasks have more work ...
+
+    if ( tc.etc.iorReason.Iorp() == iorpBFCheckpointAdv &&
+         ( ( err < JET_errSuccess ) || ( grbitQOS & qosIOCompleteWriteGameOn ) ) )
+    {
+        BFIMaintCheckpointDepthRequest( pbf, bfcpdmrRequestIOThreshold );
+    }
+
     //  declare success or the appropriate I/O error or that remapped (and needs page validation)
 
     ERR errSignal = ( err < JET_errSuccess ) ?
@@ -25514,13 +25600,7 @@ void BFIAsyncWriteComplete( const ERR           err,
 
     //  NOTE: Now definitely no pbf usage. :)
 
-    //  signal appropriate threads more work ...
-
-    if ( tc.etc.iorReason.Iorp() == iorpBFCheckpointAdv &&
-         ( ( err < JET_errSuccess ) || ( grbitQOS & qosIOCompleteWriteGameOn ) ) )
-    {
-        BFIMaintCheckpointDepthRequest( &g_rgfmp[ifmp], bfcpdmrRequestIOThreshold );
-    }
+    //  signal appropriate global threads more work ...
 
     //  request avail pool maintenance to possibly reclaim the page we just
     //  wrote
@@ -25534,6 +25614,8 @@ void BFIAsyncWriteComplete( const ERR           err,
     {
         g_asigBFFlush.Set();
     }
+
+    ptls->fInBFAsyncIOCompletion = fFalse;
 }
 
 //  Finalizes a flush on a pending (err == wrnBFPageFlushPending) BF that has

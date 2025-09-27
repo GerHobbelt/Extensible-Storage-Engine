@@ -2132,6 +2132,21 @@ PgnoFDP: %6%n
 Err: %7%n
 .
 
+MessageId=657
+SymbolicName=AUTO_INCREMENT_FAILED_TO_INITIALIZE_PERSISTED_VALUE_ID
+Language=English
+%1 (%2) %3Failed to initilize persisted auto-increment value.%n
+Database: %4%n
+Objid: %5%n
+PgnoFDP: %6%n
+Error: %7%n
+.
+
+MessageId=658
+SymbolicName=TASK_CAT_CHANGE_PGNOFDPLASTSETTIME_FAILED_ID
+Language=English
+%1 (%2) %3The task to update the time root page was last moved for table with objid %4 and type %5 failed due to error %6.%n
+.
 
 ;// !!! ARE YOU SURE you're adding this in the right place !!! ???
 
@@ -3038,7 +3053,7 @@ Unique id=%6%n
 MessageId=4001
 SymbolicName=BLOCK_CACHE_CACHING_FILE_OPEN_FAILURE_ID
 Language=English
-%1 (%2) %3The caching file at '%4' could not be opened due to error %5.  Caching cannot be performed for files backed by this cache.%n
+%1 (%2) %3The caching file at '%4' could not be opened via '%5' due to error %6.  The operation will complete with error %7.  Caching cannot be performed for files backed by this cache.%n
 .
 
 MessageId=4002
@@ -3061,6 +3076,12 @@ Language=English
 Volume id=%4%n
 File id=%5%n
 File serial=%6%n
+.
+
+MessageId=4004
+SymbolicName=BLOCK_CACHE_CACHING_UNEXPECTED_FAILURE_ID
+Language=English
+%1 (%2) %3The caching file at '%4' could not perform a caching operation '%5' due to an unexpected error %6.  The caching operation will fail with error %7.%n
 .
 
 ;///////////////////////////////////////////////////////////
@@ -3119,6 +3140,18 @@ MessageId=5008
 SymbolicName=RBS_LAG_AVAILABILITY_ID
 Language=English
 %1 (%2) %3The min RBS gen for given instance is %4 and max RBS gen is %5 and the oldest time we could revert to is %6. Total RBS disk space consumed is %7 and the free disk space is %8.
+.
+
+MessageId=5009
+SymbolicName=RBS_LARGE_REVERTABLE_DELETE_ID
+Language=English
+%1 (%2) %3The table %4 with root page at %5 and objid %6 which is being revertable deleted is of size %7 pages which is larger than the desired size %8 pages for revertable deletes.
+.
+
+MessageId=5010
+SymbolicName=RBS_NON_REVERTABLE_DELETE_FAILED_ID
+Language=English
+%1 (%2) %3The non-revertable table delete operation for %4 with root page at %5 and objid %6 failed due to error %7.
 .
 
 ;////////////////////////////////////////////////////////////////////////

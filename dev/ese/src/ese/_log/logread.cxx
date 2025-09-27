@@ -956,7 +956,6 @@ INLINE INT __cdecl LogPrereaderBase::ILGPICmpPagerefs(  const LogPrereaderBase::
 PCWSTR g_rgwszLogCorruptReason[] =
 {
     L"Unknown",
-    L"EmptySegmentHigherLgen",
     L"CorruptAfterEmptySegment",
     L"BadSegmentLgpos",
     L"ValidSegmentAfterEmpty",
@@ -992,7 +991,7 @@ LOCAL VOID LGIReportChecksumMismatch(
     OSStrCbFormatW( szError, sizeof(szError), L"%i (0x%08x)", err, err );
     
     rgpszT[ irgpsz++ ] = wszLogName;
-    rgpszT[ irgpsz++ ] = g_rgwszLogCorruptReason[ reason < eLCMax ? reason : 0 ];
+    rgpszT[ irgpsz++ ] = g_rgwszLogCorruptReason[ ( reason < eLCMax && reason > eLCUnknown ) ? reason : eLCUnknown ];
     rgpszT[ irgpsz++ ] = szLastValid;
     rgpszT[ irgpsz++ ] = szCurrent;
     rgpszT[ irgpsz++ ] = szChecksumStored;
@@ -1483,9 +1482,9 @@ LOG_READ_BUFFER::ErrLGCheckReadLastLogRecordFF(
                         // empty segments should be in non-increasing lGen's
                         if ( pSegHdr->le_lgposSegment.le_lGeneration > lGenLastEmptyPage )
                         {
-                            lLine = __LINE__;
-                            reason = eLCEmptySegmentHigherLgen;
-                            goto ReportCorruption;
+                            // This log had a lost write in a previous lifetime, do not error out because no data lost from current log,
+                            // assert so we can still complain about losing the write in the past.
+                            AssertTrack( FNegTest( fCorruptingLogFiles ), "CorruptLog: EmptySegmentHigherLgen" );
                         }
                         lGenLastEmptyPage = pSegHdr->le_lgposSegment.le_lGeneration;
                         fEmptyPageSeen = fTrue;
@@ -1525,9 +1524,9 @@ LOG_READ_BUFFER::ErrLGCheckReadLastLogRecordFF(
                     // empty segments should be in non-increasing lGen's
                     if ( pSegHdr->le_lgposSegment.le_lGeneration > lGenLastEmptyPage )
                     {
-                        lLine = __LINE__;
-                        reason = eLCEmptySegmentHigherLgen;
-                        goto ReportCorruption;
+                        // This log had a lost write in a previous lifetime, do not error out because no data lost from current log,
+                        // assert so we can still complain about losing the write in the past.
+                        AssertTrack( FNegTest( fCorruptingLogFiles ), "CorruptLog: EmptySegmentHigherLgen" );
                     }
                     lGenLastEmptyPage = pSegHdr->le_lgposSegment.le_lGeneration;
                     fEmptyPageSeen = fTrue;
@@ -1749,11 +1748,10 @@ ReportCorruption:
 
     //  prepare the event-log messages
 
-    OSStrCbFormatW( szCorruption, sizeof( szCorruption ), L"isec %d reason %ws", lgposCurrent.isec, g_rgwszLogCorruptReason[ reason < eLCMax ? reason : 0 ] );
+    OSStrCbFormatW( szCorruption, sizeof( szCorruption ), L"isec %d reason %ws", lgposCurrent.isec, g_rgwszLogCorruptReason[ reason < eLCMax ? reason : eLCUnknown ] );
 
-    //  this should only happen to edb.jtx/log...
     //  ... this can happen when doing bit-flip testing on logs
-    Assert( FNegTest( fCorruptingLogFiles ) );
+    AssertTrack( FNegTest( fCorruptingLogFiles ), OSFormat( "CorruptLog: %ls", g_rgwszLogCorruptReason[ reason < eLCMax ? reason : eLCUnknown ] ) );
 
     // SOFT_HARD: leave, at least for compatibility
     if ( m_pLog->FHardRestore() )
@@ -2507,8 +2505,8 @@ LOG::LGPrereadExecute(
         for ( DBID dbid = dbidUserLeast; dbid < dbidMax; dbid++ )
         {
             if ( FLGRICheckRedoConditionForDb( dbid, lgposPbNext ) &&
-                 // Experiment to only allocate the preread count to databases on HDD to see if it improves replay time.
-                 ( !BoolParam( m_pinst, JET_paramFlight_DisableReplayPrereadForSsd ) || g_rgfmp[ m_pinst->m_mpdbidifmp[ dbid ] ].FSeekPenalty() ) )
+                 // Only allocate the preread count to databases on HDD.
+                 g_rgfmp[ m_pinst->m_mpdbidifmp[ dbid ] ].FSeekPenalty() )
             {
                 //  Enabling an already-enabled database will wipe out the
                 //  current list.
@@ -2838,6 +2836,12 @@ ERR LOG::ErrLGIPrereadExecute( const BOOL fPgnosOnly )
                 // We only enable during attach/create phase, so we don't need to worry about it getting enabled in between.
                 if( m_pinst->m_mpdbidifmp[ dbid ] >= g_ifmpMax || 
                     !( g_rgfmp[ m_pinst->m_mpdbidifmp[ dbid ] ].FRBSOn() ) )
+                {
+                    break;
+                }
+
+                // If the extent freed LR is to capture the pages as empty, skip the preread.
+                if ( lrextentfreed.FEmptyPageFDPDeleted() )
                 {
                     break;
                 }

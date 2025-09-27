@@ -3025,6 +3025,14 @@ ERR LOG::ErrLGRIRedoNodeOperation( const LRNODE_ *plrnode, ERR *perr )
             data.SetPv( plrsetextheader->rgbData );
             data.SetCb( plrsetextheader->CbData() );
 
+            // Make sure that the ext-hdr being set is not too small to hold prefix for existing data
+            err = ErrNDValidateSetExternalHeader( csr.Cpage(), &data );
+            if ( err < JET_errSuccess )
+            {
+                OSUHAEmitFailureTag( m_pinst, HaDbFailureTagRecoveryRedoLogCorruption, L"630fa9f1-afcd-4998-bb82-db992a6eb22f" );
+                Call( err );
+            }
+
             err = ErrNDSetExternalHeader( pfucb, &csr, &data, dirflag | fDIRRedo, noderfWhole );
             CallS( err );
             Call( err );
@@ -6830,6 +6838,7 @@ ERR LOG::ErrLGRIRedoOperation( LR *plr )
 
             case JET_errOutOfMemory:
             case JET_errOutOfCursors:
+            case JET_errVersionStoreOutOfMemory:
                 break;
 
             default:
@@ -11321,7 +11330,11 @@ ERR LOG::ErrLGRIRedoExtentFreed( const LREXTENTFREED2 * const plrextentfreed )
     Assert( !( fTableRootPage && fEmptyPageFDPDeleted ) );
 
     // If RBS isn't enabled, clear redo map and return success.
-    if ( dbid == dbidTemp || !pfmp->FRBSOn() )
+    //
+    // Skip redo of ExtFreedLR if the database is ahead of the current log being replayed. Capturing RBS record here might cause us to revert the page to dbtimeRevert.
+    // But if there is a NewPage LR for that page immediately after, it might be skipped due to log being lower than min required.
+    // This will cause the page to be skipped from being initialized and cause recovery failure/wrong dbtime.
+    if ( dbid == dbidTemp || !pfmp->FRBSOn() || !FLGRICheckRedoConditionForDb( dbid, m_lgposRedo ) )
     {
         goto ClearLogRedoMapDbtimeRevert;
     }

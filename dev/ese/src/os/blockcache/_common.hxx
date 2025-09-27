@@ -5,7 +5,9 @@
 
 //  Block Cache Lock Ranks
 
-const INT rankFilePathHash = 0;
+const INT rankThrottleContexts = 0;
+const INT rankThrottleContext = 0;
+const INT rankFileFilterReferences = 0;
 const INT rankCachedFileHash = 0;
 const INT rankCacheThreadLocalStorage = 0;
 const INT rankClusterReferenceHash = 0;
@@ -15,12 +17,14 @@ const INT rankSlabWriteBackHash = 0;
 const INT rankSlabHash = 0;
 const INT rankCachedBlockWriteCounts = 0;
 const INT rankCacheRepository = 0;
+const INT rankRegisterIFilePerfAPI = 0;
 const INT rankFileFilter = 0;
 const INT rankFileIdentification = 0;
 const INT rankIOCompleteHash = 0;
 const INT rankJournalSegment = 0;
 const INT rankIORangeLock = 0;
 const INT rankCachedFileSparseMap = 0;
+const INT rankFilePathHash = 1;
 const INT rankSuspendedThreads = 1;
 const INT rankSlabsToWriteBack = 1;
 const INT rankIssued = 1;
@@ -81,13 +85,108 @@ class Buffer
 
 //  Error handling.
 
-#define BlockCacheInternalError( sz )               \
-{                                                   \
-    Error( ErrERRCheck( JET_errInternalError ) );   \
+INLINE void BlockCacheNotableEvent( _In_opt_    const WCHAR* const  wszCachingFilePath,
+                                    _In_        const char* const   szTag )
+{
+    WCHAR           wszSource[ 512 ]    = { 0 };
+    WCHAR           wszVersion[ 512 ]   = { 0 };
+    WCHAR           wszLocation[ 512 ]  = { 0 };
+    WCHAR           wszTag[ 512 ]       = { 0 };
+    const WCHAR*    rgpwsz[]            = { wszSource,
+                                            wszVersion,
+                                            L"",
+                                            wszLocation,
+                                            L"",
+                                            wszTag };
+
+    OSStrCbFormatW( wszSource,
+                    sizeof( wszSource ),
+                    L"%ws %ws",
+                    WszUtilProcessFriendlyName(),
+                    wszCachingFilePath ? wszCachingFilePath : L"" );
+    OSStrCbFormatW( wszVersion, 
+                    sizeof( wszVersion ),
+                    L",,,%u.%u.%u.%u",
+                    DwUtilImageVersionMajor(), 
+                    DwUtilImageVersionMinor(), 
+                    DwUtilImageBuildNumberMajor(),
+                    DwUtilImageBuildNumberMinor() );
+    OSStrCbFormatW( wszLocation,
+                    sizeof( wszLocation ), 
+                    L"%hs(%i)",
+                    strrchr( __FILE__, '\\' ) + 1,
+                    __LINE__ );
+    OSStrCbFormatW( wszTag, sizeof( wszTag ), L"ASSERTTRACKTAG:EBC_%hs", szTag );
+
+    OSEventReportEvent( WszUtilImageVersionName(),
+                        eventfacilityOsDiagTracking | eventfacilityRingBufferCache | eventfacilityOsEventTrace | eventfacilityOsTrace | eventfacilityReportOsEvent,
+                        eventWarning,
+                        GENERAL_CATEGORY,
+                        INTERNAL_TRACE_ID,
+                        _countof( rgpwsz ),
+                        rgpwsz );
 }
 
+INLINE void BlockCacheNotableEvent( _In_ IFileFilter* const pffCaching,
+                                    _In_ const char* const  szTag )
+{
+    WCHAR   wszCachingFilePath[ IFileSystemAPI::cchPathMax ]    = { 0 };
 
-INLINE ERR ErrIgnoreVerificationErrors( _In_ const ERR err )
+    if ( pffCaching )
+    {
+        CallS( pffCaching->ErrPath( wszCachingFilePath ) );
+    }
+
+    BlockCacheNotableEvent( wszCachingFilePath, szTag );
+}
+
+INLINE ERR ErrBlockCacheInternalError(  _In_ const WCHAR* const wszCachingFilePath,
+                                        _In_ const char* const  szTag )
+{
+    BlockCacheNotableEvent( wszCachingFilePath, szTag );
+    return ErrERRCheck( JET_errInternalError );
+}
+
+INLINE ERR ErrBlockCacheInternalError(  _In_ ICacheConfiguration* const pcconfig,
+                                        _In_ const char* const          szTag )
+{
+    WCHAR   wszCachingFilePath[ IFileSystemAPI::cchPathMax ]    = { 0 };
+
+    if ( pcconfig )
+    {
+        pcconfig->Path( wszCachingFilePath );
+    }
+
+    return ErrBlockCacheInternalError( wszCachingFilePath, szTag );
+}
+
+INLINE ERR ErrBlockCacheInternalError(  _In_ ICachedFileConfiguration* const    pcfconfig,
+                                        _In_ const char* const                  szTag )
+{
+    WCHAR   wszCachingFilePath[ IFileSystemAPI::cchPathMax ]    = { 0 };
+
+    if ( pcfconfig )
+    {
+        pcfconfig->CachingFilePath( wszCachingFilePath );
+    }
+
+    return ErrBlockCacheInternalError( wszCachingFilePath, szTag );
+}
+
+INLINE ERR ErrBlockCacheInternalError(  _In_ IFileFilter* const pffCaching,
+                                        _In_ const char* const  szTag )
+{
+    WCHAR   wszCachingFilePath[ IFileSystemAPI::cchPathMax ]    = { 0 };
+
+    if ( pffCaching )
+    {
+        CallS( pffCaching->ErrPath( wszCachingFilePath ) );
+    }
+
+    return ErrBlockCacheInternalError( wszCachingFilePath, szTag );
+}
+
+INLINE BOOL FVerificationError( _In_ const ERR err )
 {
     switch ( err )
     {
@@ -96,10 +195,21 @@ INLINE ERR ErrIgnoreVerificationErrors( _In_ const ERR err )
         case JET_errPageNotInitialized:
         case JET_errDiskReadVerificationFailure:
         case JET_errReadLostFlushVerifyFailure:
-            return JET_errSuccess;
+            return fTrue;
+
         default:
-            return err;
+            return fFalse;
     }
+}
+
+INLINE ERR ErrIgnoreVerificationErrors( _In_ const ERR err )
+{
+    return FVerificationError( err ) ? JET_errSuccess : err;
+}
+
+INLINE ERR ErrAccumulateError( _In_ const ERR errExisting, _In_ const ERR errNew )
+{
+    return errExisting < JET_errSuccess ? errExisting : ( errNew < JET_errSuccess ? errNew : JET_errSuccess );
 }
 
 
@@ -199,7 +309,7 @@ INLINE const char* OSFormatFileId( _In_ IFileFilter* const pff )
 
 INLINE const char* OSFormat( _In_ IFileFilter* const pff )
 {
-    WCHAR   wszAbsPath[ OSFSAPI_MAX_PATH ]  = { 0 };
+    WCHAR   wszAbsPath[ IFileSystemAPI::cchPathMax ]    = { 0 };
 
     CallS( pff->ErrPath( wszAbsPath ) );
 

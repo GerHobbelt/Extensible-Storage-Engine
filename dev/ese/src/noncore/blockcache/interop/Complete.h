@@ -13,7 +13,7 @@ namespace Internal
         {
             namespace Interop
             {
-                ref class Complete : MarshalByRefObject
+                ref class Complete : Remotable
                 {
                     public:
 
@@ -42,8 +42,8 @@ namespace Internal
 
                             if ( !this->isWrite && data != nullptr && data->Length > 0 )
                             {
-                                array<byte>^ bytes = data->ToArray();
-                                pin_ptr<const byte> rgbData = &bytes[ 0 ];
+                                array<BYTE>^ bytes = data->ToArray();
+                                pin_ptr<const BYTE> rgbData = &bytes[ 0 ];
                                 UtilMemCpy( this->pbData, (const BYTE*)rgbData, bytes->Length );
                             }
 

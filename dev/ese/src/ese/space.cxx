@@ -10652,6 +10652,38 @@ LOCAL ERR ErrSPIFreeAllOwnedExtents( FUCB* pfucbParent, FCB* pfcb, const BOOL fP
     if ( fRevertableFDP )
     {
         PERFOpt( cSPDeletedTreeSnapshottedPages.Add( PinstFromPfucb( pfucbParent ), cpgOwned ) );
+
+        if ( pfcb->FTypeTable() && cpgOwned > UlParam( PinstFromPfucb( pfucbParent ), JET_paramFlight_RBSLargeRevertableDeletePages ) )
+        {
+            OSTraceSuspendGC();
+            WCHAR wszTableName[JET_cbNameMost+1] = L"";
+
+            if ( pfcb->Ptdb() != NULL && pfcb->Ptdb()->SzTableName() != NULL )
+            {
+                OSStrCbFormatW( wszTableName, sizeof(wszTableName), L"%hs", pfcb->Ptdb()->SzTableName() );
+            }
+
+            const WCHAR* rgcwsz[] =
+            {
+                wszTableName,
+                OSFormatW( L"%I32u", pfcb->PgnoFDP() ),
+                OSFormatW( L"%I32u", pfcb->ObjidFDP() ),
+                OSFormatW( L"%I32u", cpgOwned ),
+                OSFormatW( L"%I32u", (ULONG)UlParam( PinstFromPfucb( pfucbParent ), JET_paramFlight_RBSLargeRevertableDeletePages ) ),
+            };
+
+            UtilReportEvent(
+                eventInformation,
+                GENERAL_CATEGORY,
+                RBS_LARGE_REVERTABLE_DELETE_ID,
+                _countof( rgcwsz ),
+                rgcwsz,
+                0,
+                NULL,
+                PinstFromPfucb( pfucbParent ) );
+
+            OSTraceResumeGC();
+        }
     }
 
     PERFOpt( cSPDeletedTreeFreedPages.Add( PinstFromPfucb( pfucbParent ), cpgOwned ) );
@@ -11442,7 +11474,6 @@ HandleError:
 
 
 LOCAL ERR ErrSPINewSize(
-    const TraceContext& tc,
     const IFMP  ifmp,
     const PGNO  pgnoLastCurr,
     const CPG   cpgReq, // cpgReq can be negative, which implies a shrink request.
@@ -11451,6 +11482,7 @@ LOCAL ERR ErrSPINewSize(
     ERR err = JET_errSuccess;
     BOOL fUpdateLgposResizeHdr = fFalse;
     LGPOS lgposResize = lgposMin;
+    TraceContextScope tcScope;
 
     OnDebug( g_rgfmp[ ifmp ].AssertSafeToChangeOwnedSize() );
     Assert( ( cpgReq <= 0 ) || !g_rgfmp[ ifmp ].FBeyondPgnoShrinkTarget( pgnoLastCurr + 1, cpgReq ) );
@@ -11461,7 +11493,7 @@ LOCAL ERR ErrSPINewSize(
 
     if ( cpgReq < 0 )
     {
-        Call( ErrBFPreparePageRangeForExternalZeroing( ifmp, pgnoLastCurr + cpgReq + 1, -1 * cpgReq, tc ) );
+        Call( ErrBFPreparePageRangeForExternalZeroing( ifmp, pgnoLastCurr + cpgReq + 1, -1 * cpgReq, *tcScope ) );
     }
 
     //  Log the operation to indicate that resizing the database file is about to be attempted.
@@ -11496,7 +11528,7 @@ LOCAL ERR ErrSPINewSize(
 
     Call( ErrIONewSize(
             ifmp,
-            tc,
+            *tcScope,
             pgnoLastCurr + cpgReq,
             cpgAsyncExtension,
             ( cpgReq >= 0 ) ? JET_bitResizeDatabaseOnlyGrow : JET_bitResizeDatabaseOnlyShrink ) );
@@ -11927,11 +11959,11 @@ LOCAL ERR ErrSPIExtendDB(
     }
 
     // Resize the database. Try smaller extensions if extending by the preferred size fails.
-    err = ErrSPINewSize( TcCurr(), pfucbRoot->ifmp, pgnoSELast, cpgSEReqAdj, cpgAsyncExtension );
+    err = ErrSPINewSize( pfucbRoot->ifmp, pgnoSELast, cpgSEReqAdj, cpgAsyncExtension );
 
     if ( err < JET_errSuccess )
     {
-        err = ErrSPINewSize( TcCurr(), pfucbRoot->ifmp, pgnoSELast, cpgSEMinAdj, 0 );
+        err = ErrSPINewSize( pfucbRoot->ifmp, pgnoSELast, cpgSEMinAdj, 0 );
         if ( err < JET_errSuccess )
         {
             //  we have failed to do a "big" allocation
@@ -11943,7 +11975,7 @@ LOCAL ERR ErrSPIExtendDB(
             do
             {
                 cpgT += cpgExtend;
-                Call( ErrSPINewSize( TcCurr(), pfucbRoot->ifmp, pgnoSELast, cpgT, 0 ) );
+                Call( ErrSPINewSize( pfucbRoot->ifmp, pgnoSELast, cpgT, 0 ) );
             }
             while ( cpgT < cpgSEMinAdj );
         }
@@ -12546,7 +12578,7 @@ ERR ErrSPShrinkTruncateLastExtent(
 
     Call( ErrFaultInjection( 40200 ) );
 
-    Call( ErrSPINewSize( *tcScopeT, ifmp, pgnoLastFileSystem, -1 * cpgShrunk, 0 ) );
+    Call( ErrSPINewSize( ifmp, pgnoLastFileSystem, -1 * cpgShrunk, 0 ) );
     }
 
     pfmp->ResetPgnoMaxTracking( speiLastAfterOE.PgnoLast() );
@@ -13897,6 +13929,7 @@ HandleError:
             "%hs: %s from [<parent>] for [0x%x:0x%x:%lu].",
             __FUNCTION__,
             ( err >= JET_errSuccess) ? "Got" : "Failed to get",
+            pfucb->ifmp,
             ObjidFDP( pfucb ),
             PgnoFDP( pfucb ) ) );
 
@@ -14362,7 +14395,7 @@ LOCAL ERR ErrSPITrimRegion(
         }
         else
         {
-            TraceContextScope tcScope( iorpDatabaseTrim );
+            PIBTraceContextScope tcScope( ppib );
             if ( tcScope->nParentObjectClass == pocNone )
             {
                 tcScope->nParentObjectClass = tceNone;

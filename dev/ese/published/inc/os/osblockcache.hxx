@@ -39,6 +39,9 @@ class IFileIdentification  //  fident
 {
     public:
 
+        static const size_t cwchKeyPathMax  = 49 + 256 + 1;  //  "\\?\Volume{00000000-0000-0000-0000-000000000000}\" + 256 char local path + "\0"
+        static const size_t cbKeyPathMax    = cwchKeyPathMax * sizeof( WCHAR );
+
         virtual ~IFileIdentification() {}
 
         //  Returns the unique volume id and file id of a file by path.
@@ -51,8 +54,8 @@ class IFileIdentification  //  fident
         //
         //  The unique path returned for the file is intended for use in a hash table not for file system access.
 
-        virtual ERR ErrGetFileKeyPath(  _In_z_                                  const WCHAR* const  wszPath,
-                                        _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const        wszKeyPath ) = 0;
+        virtual ERR ErrGetFileKeyPath(  _In_z_                                                  const WCHAR* const  wszPath,
+                                        _Out_bytecap_c_( IFileIdentification::cbKeyPathMax )    WCHAR* const        wszKeyPath ) = 0;
 
         //  Returns any absolute path and the unique path of a file by file id.
         //
@@ -60,10 +63,10 @@ class IFileIdentification  //  fident
         //
         //  The unique path returned for the file is intended for use in a hash table not for file system access.
 
-        virtual ERR ErrGetFilePathById( _In_                                    const VolumeId  volumeid,
-                                        _In_                                    const FileId    fileid,
-                                        _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const    wszAnyAbsPath,
-                                        _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )  WCHAR* const    wszKeyPath ) = 0;
+        virtual ERR ErrGetFilePathById( _In_                                                    const VolumeId  volumeid,
+                                        _In_                                                    const FileId    fileid,
+                                        _Out_bytecap_c_( cbOSFSAPI_MAX_PATHW )                  WCHAR* const    wszAnyAbsPath,
+                                        _Out_bytecap_c_( IFileIdentification::cbKeyPathMax )    WCHAR* const    wszKeyPath ) = 0;
 };
 
 //  File System Filter
@@ -721,8 +724,11 @@ enum class TouchNumber : DWORD  //  tono
 constexpr TouchNumber tonoInvalid = TouchNumber::tonoInvalid;
 
 INLINE TouchNumber operator+( _In_ const TouchNumber tono, _In_ const LONG i ) { return ( (LONG)tono + i == (LONG)tonoInvalid ) ? (TouchNumber)( (LONG)tonoInvalid + 1 ) : (TouchNumber)( (LONG)tono + i ); }
-INLINE BOOL operator<( _In_ const TouchNumber tonoA, _In_ const TouchNumber tonoB ) { return (LONG)tonoA - (LONG)tonoB < 0; }
-INLINE BOOL operator>( _In_ const TouchNumber tonoA, _In_ const TouchNumber tonoB ) { return (LONG)tonoA - (LONG)tonoB > 0; }
+INLINE int CmpTono( _In_ const TouchNumber tonoA, _In_ const TouchNumber tonoB ) { return (LONG)( (DWORD)tonoA - (DWORD)tonoB ); }
+INLINE BOOL operator<( _In_ const TouchNumber tonoA, _In_ const TouchNumber tonoB ) { return CmpTono( tonoA, tonoB ) < 0; }
+INLINE BOOL operator<=( _In_ const TouchNumber tonoA, _In_ const TouchNumber tonoB ) { return CmpTono( tonoA, tonoB ) <= 0; }
+INLINE BOOL operator>( _In_ const TouchNumber tonoA, _In_ const TouchNumber tonoB ) { return CmpTono( tonoA, tonoB ) > 0; }
+INLINE BOOL operator>=( _In_ const TouchNumber tonoA, _In_ const TouchNumber tonoB ) { return CmpTono( tonoA, tonoB ) >= 0; }
 
 //  Update Number
 //
@@ -740,8 +746,11 @@ constexpr UpdateNumber updnoInvalid = UpdateNumber::updnoInvalid;
 constexpr UpdateNumber updnoMax = UpdateNumber::updnoMax;
 
 INLINE UpdateNumber operator+( _In_ const UpdateNumber updno, _In_ const LONG i ) { return ( (LONG)updno + i > (LONG)updnoMax ) ? (UpdateNumber)( (LONG)updnoInvalid + 1 ) : (UpdateNumber)( (LONG)updno + i ); }
-INLINE BOOL operator<( _In_ const UpdateNumber updnoA, _In_ const UpdateNumber updnoB ) { return (LONG)updnoA - (LONG)updnoB < 0; }
-INLINE BOOL operator>( _In_ const UpdateNumber updnoA, _In_ const UpdateNumber updnoB ) { return (LONG)updnoA - (LONG)updnoB > 0; }
+INLINE int CmpUpdno( _In_ const UpdateNumber updnoA, _In_ const UpdateNumber updnoB ) { return (SHORT)( (USHORT)updnoA - (USHORT)updnoB ); }
+INLINE BOOL operator<( _In_ const UpdateNumber updnoA, _In_ const UpdateNumber updnoB ) { return CmpUpdno( updnoA, updnoB ) < 0; }
+INLINE BOOL operator<=( _In_ const UpdateNumber updnoA, _In_ const UpdateNumber updnoB ) { return CmpUpdno( updnoA, updnoB ) <= 0; }
+INLINE BOOL operator>( _In_ const UpdateNumber updnoA, _In_ const UpdateNumber updnoB ) { return CmpUpdno( updnoA, updnoB ) > 0; }
+INLINE BOOL operator>=( _In_ const UpdateNumber updnoA, _In_ const UpdateNumber updnoB ) { return CmpUpdno( updnoA, updnoB ) >= 0; }
 
 //  Cached Block
 
@@ -1279,7 +1288,9 @@ class IBlockCacheFactory  //  bcf
         virtual ERR ErrCreateFileFilter(    _Inout_                     IFileAPI** const                    ppfapiInner,
                                             _In_                        IFileSystemFilter* const            pfsf,
                                             _In_                        IFileSystemConfiguration* const     pfsconfig,
+                                            _In_                        IFileIdentification* const          pfident,
                                             _In_                        ICacheTelemetry* const              pctm,
+                                            _In_                        ICacheRepository* const             pcrep,
                                             _In_                        const VolumeId                      volumeid,
                                             _In_                        const FileId                        fileid,
                                             _Inout_                     ICachedFileConfiguration** const    ppcfconfig,
@@ -1348,7 +1359,8 @@ class IBlockCacheFactory  //  bcf
 
         virtual ERR ErrLoadCachedBlockWriteCountsManager(   _In_    IFileFilter* const                      pff,
                                                             _In_    const QWORD                             ib,
-                                                            _In_    const QWORD                             cb,
+                                                            _In_    const QWORD                             cb, 
+                                                            _In_    const QWORD                             ccbwcs,
                                                             _Out_   ICachedBlockWriteCountsManager** const  ppcbwcm ) = 0;
 
         virtual ERR ErrLoadCachedBlockSlab( _In_    IFileFilter* const                      pff,

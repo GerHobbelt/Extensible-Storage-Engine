@@ -476,7 +476,7 @@ ERR COSFile::ErrInitFile(   COSFileSystem* const                posfs,
     //  we should not fail here because the disk is supposed to have been created at this point, when the volume
     //  got connected
 
-    CallS( m_posv->ErrGetDisk( &(m_p_osf->m_posd) ) );
+    CallS( m_posv->ErrGetDisk( posfs->Pfsconfig(), &(m_p_osf->m_posd)));
     Assert( m_p_osf->m_posd );
     ASSERT_VALID( m_p_osf->m_posd );
 
@@ -1463,7 +1463,7 @@ ERR ErrIOWriteContiguous(   IFileAPI* const                         pfapi,
     Assert( !( pfapi->Fmf() & IFileAPI::fmfReadOnlyClient ) );
     Expected( !( pfapi->Fmf() & IFileAPI::fmfReadOnly ) ); // will fail at OS op, but unexpected.
 
-    Expected( ( grbitQOS & qosIOOptimizeCombinable ) );
+    Expected( !( grbitQOS & qosIOOptimizeCombinable ) );
 
     Assert( 0 == ( qosIOCompleteMask & grbitQOS ) ); // no completion signals should be set
 
@@ -1495,7 +1495,7 @@ ERR ErrIOWriteContiguous(   IFileAPI* const                         pfapi,
                                     ibOffsetCurrent,
                                     rgcbData[iData],
                                     rgpbData[iData],
-                                    grbitQOS,
+                                    grbitQOS | ( iData == 0 ? 0 : qosIOOptimizeCombinable ),
                                     IFileAPI::PfnIOComplete( IOWriteContiguousComplete_ ),
                                     DWORD_PTR( &rgIoComplete[iData] ) );
         Assert( err != errDiskTilt );

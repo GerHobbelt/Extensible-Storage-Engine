@@ -2120,7 +2120,7 @@ void CIsamSequenceDiagLog::SprintTimings( _Out_writes_bytes_(cbTimeSeq) WCHAR * 
                         dckbPagefileUsagePeak ||
                         dckbPrivateUsage ) )
             {
-                OSStrCbFormatW( pwszCurr, cbCurrLeft, L" +M(C:%I64dK, Fs:%d, WS:%IdK # %IdK, PF:%IdK # %IdK, P:%IdK)",
+                OSStrCbFormatW( pwszCurr, cbCurrLeft, L" +M(C:%I64dK, Fs:%d, WS:%IdK # %IdK, PF:%IdK # %IdK, P:%I64dK)",
                                     dckbCacheMem,
                                     m_rgDiagInfo[seq].memstat.cPageFaultCount - m_rgDiagInfo[seqBefore].memstat.cPageFaultCount,
                                     dckbWorkingSetSize,
@@ -3038,15 +3038,9 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
 
         CInstanceFileSystemConfiguration( INST * const pinst )
             :   m_pinst( pinst ),
-                //m_cioOutstandingMax( dwMax ),
+                m_cioOutstandingMax( dwMax ),
                 m_permillageSmoothIo( dwMax )
         {
-            WCHAR wszBuf[ 16 ] = { 0 };
-            if (    FOSConfigGet( L"DEBUG", L"BlockCacheEnabled", wszBuf, sizeof( wszBuf ) ) &&
-                    wszBuf[ 0 ] )
-            {
-                m_fBlockCacheEnabled = !!_wtol( wszBuf );
-            }
         }
 
     public:
@@ -3061,35 +3055,50 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
             return (TICK)UlParam( m_pinst, JET_paramAccessDeniedRetryPeriod );
         }
 
-        //ULONG CIOMaxOutstanding() override
-        //{
-        //    //  initialize this setting
-        //    if ( m_cioOutstandingMax == dwMax )
-        //    {
-        //        //  if default param, mix it up a bit ... though 256 isn't really mixing it up that much ... AND
-        //        //  the last problem we had with this param was setting it up, NOT down, so adding that ...
-        //        if ( FDefaultParam( m_pinst, JET_paramOutstandingIOMax ) )
-        //        {
-        //            DWORD cioT = 0;
-        //            switch( rand() % 5 )
-        //            {
+        ULONG CIOMaxOutstanding() override
+        {
+            //  initialize this setting
+            if ( m_cioOutstandingMax == dwMax )
+            {
+                m_cioOutstandingMax = (ULONG)UlParam( m_pinst, JET_paramOutstandingIOMax );
+                    
+#ifdef DEBUG
+                //  if default param, mix it up a bit ... though 256 isn't really mixing it up that much ... AND
+                //  the last problem we had with this param was setting it up, NOT down, so adding that ...
 
+                if ( FDefaultParam( JET_paramOutstandingIOMax ) )
+                {
+                    DWORD cioT = 0;
+                    switch( rand() % 5 )
+                    {
+                        case 0:     cioT = 324;     break;
+                        case 1:     cioT = 1024;    break;
+                        case 2:     cioT = 3072;    break;
+                        case 3:     cioT = 10000;   break;
+                        case 4:     cioT = 32764;   break;
+                    }
+                    m_cioOutstandingMax = min( (ULONG)UlParam( m_pinst, JET_paramOutstandingIOMax ), cioT );
+                }
+#endif // DEBUG
 
-        //            m_cioOutstandingMax = min( (ULONG)UlParam( m_pinst, JET_paramOutstandingIOMax ), cioT );
-        //        }
-        //        else
-        //        {
-        //            m_cioOutstandingMax = (ULONG)UlParam( m_pinst, JET_paramOutstandingIOMax );
-        //        }
-        //    }
+                //  the IO stack uses CMeteredSection so limit our IO max concurrency to avoid overflow
 
-        //    return m_cioOutstandingMax;
-        //}
+                m_cioOutstandingMax = min( m_cioOutstandingMax, CMeteredSection::cMaxActive - 1 );
+            }
 
-        //ULONG CIOMaxOutstandingBackground() override
-        //{
-        //    return (ULONG)UlParam( m_pinst, JET_paramCheckpointIOMax );
-        //}
+            return m_cioOutstandingMax;
+        }
+
+        ULONG CIOMaxOutstandingBackground() override
+        {
+            ULONG cioCheckpointMax = (ULONG)UlParam( m_pinst, JET_paramCheckpointIOMax );
+
+            //  the IO stack uses CMeteredSection so limit our IO max concurrency to avoid overflow
+
+            cioCheckpointMax = min( cioCheckpointMax, CMeteredSection::cMaxActive - 1 );
+
+            return cioCheckpointMax;
+        }
 
         ULONG DtickHungIOThreshhold() override
         {
@@ -3142,21 +3151,24 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
 
         BOOL FBlockCacheEnabled() override
         {
-            if ( m_pinst == pinstNil || !PvParam( m_pinst, JET_paramBlockCacheConfiguration ) )
-            {
-                return m_fBlockCacheEnabled;
-            }
+            BOOL fBlockCacheEnabled = fFalse;
 
-            return fTrue;
+            fBlockCacheEnabled = fBlockCacheEnabled || BoolParam( JET_paramEnableBlockCache );
+
+            fBlockCacheEnabled = fBlockCacheEnabled || m_pinst != pinstNil && PvParam( m_pinst, JET_paramBlockCacheConfiguration );
+
+            fBlockCacheEnabled = fBlockCacheEnabled || FBlockCacheTestEnabled();
+
+            return fBlockCacheEnabled;
         }
 
         ERR ErrGetBlockCacheConfiguration( _Out_ IBlockCacheConfiguration** const ppbcconfig ) override
         {
             ERR err = JET_errSuccess;
 
-            if ( m_pinst == pinstNil || !PvParam( m_pinst, JET_paramBlockCacheConfiguration ) )
+            if ( !FBlockCacheEnabled() || m_pinst == pinstNil || !PvParam( m_pinst, JET_paramBlockCacheConfiguration ) )
             {
-                Alloc( *ppbcconfig = new CInstanceBlockCacheConfiguration( m_pinst ) );
+                Alloc( *ppbcconfig = new CInstanceBlockCacheConfiguration( m_pinst, FBlockCacheTestEnabled() ) );
             }
             else
             {
@@ -3170,12 +3182,27 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
 
     private:
 
+        static BOOL FBlockCacheTestEnabled()
+        {
+            WCHAR wszBuf[16] = { 0 };
+#pragma prefast( suppress:6237, "The rest of the conditions do not have any side effects." )
+            if (    FOSConfigGet( L"DEBUG", L"BlockCacheEnabled", wszBuf, sizeof( wszBuf ) ) &&
+                    wszBuf[0] &&
+                    !!_wtol( wszBuf ) )
+            {
+                return fTrue;
+            }
+
+            return fFalse;
+        }
+
         class CInstanceBlockCacheConfiguration : public IBlockCacheConfiguration
         {
             public:
 
-                CInstanceBlockCacheConfiguration( _In_ INST* const pinst )
-                    :   m_pinst( pinst )
+                CInstanceBlockCacheConfiguration( _In_ INST* const pinst, _In_ const BOOL fBlockCacheTestEnabled )
+                    :   m_pinst( pinst ),
+                        m_fBlockCacheTestEnabled( fBlockCacheTestEnabled )
                 {
                 }
 
@@ -3186,7 +3213,7 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
                 {
                     ERR err = JET_errSuccess;
 
-                    Alloc( *ppcfconfig = new CInstanceCachedFileConfiguration( m_pinst, wszKeyPathCachedFile ) );
+                    Alloc( *ppcfconfig = new CInstanceCachedFileConfiguration( m_pinst, wszKeyPathCachedFile, m_fBlockCacheTestEnabled ) );
 
                 HandleError:
                     return err;
@@ -3197,7 +3224,7 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
                 {
                     ERR err = JET_errSuccess;
 
-                    Alloc( *ppcconfig = new CInstanceCacheConfiguration( m_pinst ) );
+                    Alloc( *ppcconfig = new CInstanceCacheConfiguration( m_pinst, m_fBlockCacheTestEnabled ) );
 
                 HandleError:
                     return err;
@@ -3206,6 +3233,7 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
             private:
 
                 INST* const m_pinst;
+                const BOOL  m_fBlockCacheTestEnabled;
         };
 
         static void GetCachingFileFromInst( _In_                                INST* const     pinst,
@@ -3241,8 +3269,9 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
         {
             public:
 
-                CInstanceCachedFileConfiguration(   _In_ INST* const            pinst,
-                                                    _In_z_  const WCHAR* const  wszKeyPathCachedFile )
+                CInstanceCachedFileConfiguration(   _In_    INST* const         pinst,
+                                                    _In_z_  const WCHAR* const  wszKeyPathCachedFile,
+                                                    _In_    const BOOL          fBlockCacheTestEnabled )
                 {
                     WCHAR rgwszExt[ OSFSAPI_MAX_PATH ] = { 0 };
 
@@ -3263,36 +3292,39 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
                         m_wszAbsPathCachingFile[ 0 ] = 0;
                     }
 
-                    m_fCachingEnabled = m_wszAbsPathCachingFile[ 0 ] != 0;
+                    m_fCachingEnabled = fBlockCacheTestEnabled && m_wszAbsPathCachingFile[ 0 ] != 0;
 
-                    if (    UtilCmpFileName(    rgwszExt,
-                                                ( UlParam( pinst, JET_paramLegacyFileNames ) & JET_bitESE98FileNames ) ?
-                                                    wszOldLogExt : 
-                                                    wszNewLogExt ) == 0 ||
-                            UtilCmpFileName( rgwszExt, wszResLogExt ) == 0 ||
-                            UtilCmpFileName( rgwszExt, wszSecLogExt ) == 0 ||
-                            UtilCmpFileName( rgwszExt, wszRBSExt ) == 0 )
+                    if ( m_fCachingEnabled )
                     {
-                        m_cbBlockSize = cbLogFileHeader;
-                        m_ulPinnedHeaderSizeInBytes = 1 * m_cbBlockSize;
-                    }
-                    else if ( UtilCmpFileName(  rgwszExt,
-                                                ( UlParam( pinst, JET_paramLegacyFileNames ) & JET_bitESE98FileNames ) ?
-                                                    wszOldChkExt : 
-                                                    wszNewChkExt ) == 0 )
-                    {
-                        m_cbBlockSize = cbCheckpoint;
-                        m_ulPinnedHeaderSizeInBytes = 2 * m_cbBlockSize;
-                    }
-                    else if ( UtilCmpFileName( rgwszExt, L".jfm" ) == 0 )  //  CFlushMap::s_wszFmFileExtension
-                    {
-                        m_cbBlockSize = 8192;  //  CFlushMap::s_cbFlushMapPageOnDisk
-                        m_ulPinnedHeaderSizeInBytes = 1 * m_cbBlockSize;
-                    }
-                    else
-                    {
-                        m_cbBlockSize = (ULONG)UlParam( JET_paramDatabasePageSize );
-                        m_ulPinnedHeaderSizeInBytes = 2 * m_cbBlockSize;
+                        if (    UtilCmpFileName(    rgwszExt,
+                                                    ( UlParam( pinst, JET_paramLegacyFileNames ) & JET_bitESE98FileNames ) ?
+                                                        wszOldLogExt : 
+                                                        wszNewLogExt ) == 0 ||
+                                UtilCmpFileName( rgwszExt, wszResLogExt ) == 0 ||
+                                UtilCmpFileName( rgwszExt, wszSecLogExt ) == 0 ||
+                                UtilCmpFileName( rgwszExt, wszRBSExt ) == 0 )
+                        {
+                            m_cbBlockSize = cbLogFileHeader;
+                            m_ulPinnedHeaderSizeInBytes = 1 * m_cbBlockSize;
+                        }
+                        else if ( UtilCmpFileName(  rgwszExt,
+                                                    ( UlParam( pinst, JET_paramLegacyFileNames ) & JET_bitESE98FileNames ) ?
+                                                        wszOldChkExt : 
+                                                        wszNewChkExt ) == 0 )
+                        {
+                            m_cbBlockSize = cbCheckpoint;
+                            m_ulPinnedHeaderSizeInBytes = 2 * m_cbBlockSize;
+                        }
+                        else if ( UtilCmpFileName( rgwszExt, L".jfm" ) == 0 )  //  CFlushMap::s_wszFmFileExtension
+                        {
+                            m_cbBlockSize = 8192;  //  CFlushMap::s_cbFlushMapPageOnDisk
+                            m_ulPinnedHeaderSizeInBytes = 1 * m_cbBlockSize;
+                        }
+                        else
+                        {
+                            m_cbBlockSize = (ULONG)UlParam( JET_paramDatabasePageSize );
+                            m_ulPinnedHeaderSizeInBytes = 2 * m_cbBlockSize;
+                        }
                     }
                 }
         };
@@ -3301,11 +3333,11 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
         {
             public:
 
-                CInstanceCacheConfiguration( _In_ INST* const pinst )
+                CInstanceCacheConfiguration( _In_ INST* const pinst, _In_ const BOOL fBlockCacheTestEnabled )
                 {
                     GetCachingFileFromInst( pinst, m_wszAbsPathCachingFile );
 
-                    m_fCacheEnabled = m_wszAbsPathCachingFile[ 0 ] != 0;
+                    m_fCacheEnabled = fBlockCacheTestEnabled && m_wszAbsPathCachingFile[ 0 ] != 0;
 
                     m_cbCachedFilePerSlab = (ULONG)UlParam( JET_paramDatabasePageSize );
                 }
@@ -3397,7 +3429,7 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
     private:
 
         INST* const m_pinst;
-        //ULONG       m_cioOutstandingMax;
+        ULONG       m_cioOutstandingMax;
         ULONG       m_permillageSmoothIo;
 };
 
@@ -4158,7 +4190,19 @@ class APICALL_SESID : public APICALL
                 m_ppib = (PIB *)sesid;
                 TLS* ptls = Ptls();
 
-                m_ppib->ptlsApi = ptls;
+                // Do not cache TLS in PIB if this is a callback, either it is already cached
+                // or we do not want to cache it because we are in parallel index rebuild and 
+                // the same PIB will be reused by multiple threads concurrently.
+                //
+                if ( !ptls->fInCallback )
+                {
+                    m_ppib->ptlsApi = ptls;
+                }
+                else
+                {
+                    Assert( m_ppib->ptlsApi == ptls || m_ppib->ptlsApi == NULL );
+                }
+
                 //  if someone else is already in the Jet API with
                 //  this session and this is not a callback, then
                 //  report a session-sharing violation
@@ -13079,6 +13123,10 @@ LOCAL JET_ERR JetGetDatabaseFileInfoEx(
             switch ( InfoLevel )
             {
                 case JET_DbInfoMisc:
+                    if ( pdbfilehdr->le_filetype != JET_filetypeDatabase )
+                    {
+                        Error( ErrERRCheck( JET_errFileInvalidType ) );
+                    }
                     UtilLoadDbinfomiscFromPdbfilehdr( ( JET_DBINFOMISC7* )pvResult, cbMax, ( DBFILEHDR_FIX* )pdbfilehdr );
                     break;
                 case JET_DbInfoPageSize:

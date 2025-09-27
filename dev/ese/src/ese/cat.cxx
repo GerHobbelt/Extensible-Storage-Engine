@@ -4119,10 +4119,13 @@ ERR ErrCATChangePgnoFDPLastSetTime(
     _In_ const __int64      ftCurrent )
 {
     ERR         err             = JET_errSuccess;
+    ERR         errNoMoreWrite  = JET_errSuccess;
     FUCB *      pfucbCatalog    = pfucbNil;
     BOOKMARK    bm;
     BYTE        *pbBookmark     = NULL;
     ULONG       cbBookmark;
+
+    Assert( ppib );
 
     BOOL    fBeginTrx           = fFalse;
     JET_GRBIT grbitCommitBefore = ppib->grbitCommitDefault;
@@ -4191,21 +4194,42 @@ HandleError:
         CallS( ErrCATClose( ppib, pfucbCatalog ) );
     }
 
-    if ( ppib )
+    if ( fBeginTrx )
     {
-        if ( fBeginTrx )
+        if ( err >= 0 )
         {
-            if ( err >= 0 )
-            {
-                err = ErrDIRCommitTransaction( ppib, NO_GRBIT );
-            }
-            if ( err < 0 )
-            {
-                CallSx( ErrDIRRollback( ppib ), JET_errRollbackError );
-            }
+            err = ErrDIRCommitTransaction( ppib, NO_GRBIT );
         }
+        if ( err < 0 )
+        {
+            CallSx( ErrDIRRollback( ppib ), JET_errRollbackError );
+        }
+    }
 
-        ppib->grbitCommitDefault = grbitCommitBefore;
+    ppib->grbitCommitDefault = grbitCommitBefore;
+
+    // Skip logging event if log writes are failing due to instance being in FailWrite mode
+    // which happens when the instance is about to be terminated.
+    if ( err < JET_errSuccess && !( PinstFromPpib( ppib )->m_plog->FNoMoreLogWrite( &errNoMoreWrite ) && errNoMoreWrite == errLogServiceStopped ) )
+    {
+        OSTraceSuspendGC();
+        const WCHAR* rgcwsz[] =
+        {
+            OSFormatW( L"%I32u", objid ),
+            OSFormatW( L"%hu", sysobj ),
+            OSFormatW( L"%d", err )
+        };
+
+        UtilReportEvent(
+            eventInformation,
+            GENERAL_CATEGORY,
+            TASK_CAT_CHANGE_PGNOFDPLASTSETTIME_FAILED_ID,
+            _countof( rgcwsz ),
+            rgcwsz,
+            0,
+            NULL,
+            PinstFromPpib( ppib ) );
+        OSTraceResumeGC();
     }
 
     return err;
@@ -6923,20 +6947,14 @@ LOCAL ERR ErrIndexUnicodeState(
         QWORD qwVersionCurrent;
         Call( ErrNORMGetSortVersion( wszLocaleName, &qwVersionCurrent, &sortID ) );
 
-        if ( ( NULL != psortID ) && !FSortIDEquals( psortID, &sortID ) )
+        if( !FNORMNLSVersionEquals( qwVersionCreated, qwVersionCurrent ) ||
+            ( ( NULL != psortID ) && !FSortIDEquals( psortID, &sortID ) ) )
         {
-            WCHAR wszSortIDPerssted[PERSISTED_SORTID_MAX_LENGTH] = L"";
+            WCHAR wszSortIDPersisted[PERSISTED_SORTID_MAX_LENGTH] = L"";
             WCHAR wszSortIDCurrent[PERSISTED_SORTID_MAX_LENGTH] = L"";
-            WszCATFormatSortID( *psortID, wszSortIDPerssted, _countof( wszSortIDPerssted ) );
+            WszCATFormatSortID( *psortID, wszSortIDPersisted, _countof( wszSortIDPersisted ) );
             WszCATFormatSortID( sortID, wszSortIDCurrent, _countof( wszSortIDCurrent ) );
-            //  the actual sort ID has changed. this index must be deleted
-            OSTrace( JET_tracetagCatalog,
-                OSFormat( "Setting to INDEX_UNICODE_DELETE because sort ID for locale=%ws has changed from catalog=%ws to current=%ws.\n",
-                          wszLocaleName, wszSortIDPerssted, wszSortIDCurrent ) );
-            *pState = INDEX_UNICODE_DELETE;
-        }
-        else if( !FNORMNLSVersionEquals( qwVersionCreated, qwVersionCurrent ) )
-        {
+
             NORM_LOCALE_VER nlv;
             OSStrCbCopyW( nlv.m_wszLocaleName, sizeof( nlv.m_wszLocaleName ), wszLocaleName );
             nlv.m_sortidCustomSortVersion = *psortID;
@@ -6947,16 +6965,16 @@ LOCAL ERR ErrIndexUnicodeState(
             {
                 //  the actual sort order has changed, but this sort order is still valid. This index could either be deleted or used with out-of-date sort order.
                 OSTrace( JET_tracetagCatalog,
-                    OSFormat( "Setting to INDEX_UNICODE_OUTOFDATE because sort version for locale=%ws has changed from catalog=%#I64x to current=%#I64x.\n",
-                              wszLocaleName, qwVersionCreated, qwVersionCurrent ) );
+                    OSFormat( "Setting to INDEX_UNICODE_OUTOFDATE because sort version/SortID for locale=%ws has changed from catalog=%#I64x,%ws to current=%#I64x,%ws.\n",
+                              wszLocaleName, qwVersionCreated, wszSortIDPersisted, qwVersionCurrent, wszSortIDCurrent ) );
                 *pState = INDEX_UNICODE_OUTOFDATE;
             }
             else
             {
                 //  the actual sort order has changed. this index must be deleted
                 OSTrace( JET_tracetagCatalog,
-                    OSFormat( "Setting to INDEX_UNICODE_DELETE because sort version for locale=%ws has changed from catalog=%#I64x to current=%#I64x.\n",
-                              wszLocaleName, qwVersionCreated, qwVersionCurrent ) );
+                    OSFormat( "Setting to INDEX_UNICODE_DELETE because sort version/SortID for locale=%ws has changed from catalog=%#I64x,%ws to current=%#I64x,%ws.\n",
+                              wszLocaleName, qwVersionCreated, wszSortIDPersisted, qwVersionCurrent, wszSortIDCurrent ) );
                 *pState = INDEX_UNICODE_DELETE;
             }
         }
@@ -9703,8 +9721,8 @@ HandleError:
 //  ================================================================
 LOCAL ERR ErrCATIDeleteOrUpdateLocalizedIndexesInTableByName(
     _In_ PIB          * const ppib,
-    _In_ const IFMP   ifmp,
-    _In_ const CHAR   * const szTableName,
+    _In_ const IFMP           ifmp,
+    _In_z_ const CHAR * const szTableName,
     _In_ CATCheckIndicesFlags catcifFlags,
     _Out_ BOOL        * const pfIndexesUpdated,
     _Out_ BOOL        * const pfIndexesDeleted )
@@ -13723,49 +13741,54 @@ BOOL FCATIExtentPageCountCacheCacheableObject(
     return fTrue;
 }
 
-
 //  ================================================================
 VOID CATIPossiblySetUpdatingExtentPageCountCacheFlag(
-    PIB * const ppib
+    PIB * const ppib,
+    BOOL *pfSetFlag
     )
 //  ================================================================
 {
+    *pfSetFlag = fFalse;
 #ifdef DEBUG
-    Assert( !ppib->FUpdatingExtentPageCountCache() );
 
-    // Set a flag saying we're messing with the ExtentPageCountCache.
-    if ( ppib->FBatchIndexCreation() )
+    if ( ppib->FUpdatingExtentPageCountCache() )
+    {
+        // We used to Assert this wasn't already set, but there are a few
+        // cases where we actually do end up here recursively.
+    }
+    else if ( ppib->FBatchIndexCreation() )
     {
         // We don't set this in BatchIndexCreation since that has multiple threads using
         // the same PIB.  We adjust the necessary asserts elsewhere to check for
         // BatchIndexCreation in addition to FUpdatingExtentPageCountCache  (see AssertDIRNoLatch() )
-        return;
     }
-
-    ppib->SetFUpdatingExtentPageCountCache();
+    else
+    {
+        // Set a flag saying we're messing with the ExtentPageCountCache.
+        ppib->SetFUpdatingExtentPageCountCache();
+        *pfSetFlag = fTrue;
+    }
 #endif
 }
 
 //  ================================================================
 VOID CATIPossiblyResetUpdatingExtentPageCountCacheFlag(
-    PIB * const ppib
+    PIB * const ppib,
+    BOOL fSetFlag
     )
 //  ================================================================
 {
 #ifdef DEBUG
-    if ( !ppib->FUpdatingExtentPageCountCache() )
+    if ( fSetFlag )
     {
-        // Didn't set the bit; happens in a number of code paths, generally when
-        // we got an answer (usually that we don't need to update the cache) without
-        // needing to do DB operations.
-        return;
-    }
+        // We should only be calling this in cases where we're sure we set it.
+        Assert( ppib->FUpdatingExtentPageCountCache() );
 
-    ppib->ResetFUpdatingExtentPageCountCache();
-    Assert( !ppib->FUpdatingExtentPageCountCache() );
+        ppib->ResetFUpdatingExtentPageCountCache();
+        Assert( !ppib->FUpdatingExtentPageCountCache() );
+    }
 #endif
 }
-
 VOID CATIExtentPageCountsCacheReportError(
     const PIB * const ppib,
     const IFMP ifmp,
@@ -13893,6 +13916,7 @@ VOID CATSetExtentPageCounts(
     PCWSTR          wszNote;
     FDPINFO         fdpinfo;
     BOOL            fReplace = fFalse;
+    BOOL            fSetUpdatingExtentPageCountCacheFlag;
     ExtentPageCountCacheEntryState epccesFlag;
     JET_SETCOLUMN   rgsetcolumn[] =
         {
@@ -13914,6 +13938,9 @@ VOID CATSetExtentPageCounts(
         return;
     }
 
+    // Maybe set a flag saying we're messing with the ExtentPageCountCache.
+    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib, &fSetUpdatingExtentPageCountCacheFlag );
+
     // Special case, we cache the DBRoot in memory only.
     if ( objidSystemRoot == objid )
     {
@@ -13933,9 +13960,6 @@ VOID CATSetExtentPageCounts(
     Assert ( FBFNotLatched( ifmp, pgnoFDPMSO ) );
     Assert ( pgnoNull != pfmp->PgnoExtentPageCountCacheFDP() );
     Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
-
-    // Set a flag saying we're messing with the ExtentPageCountCache.
-    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib );
 
     wszNote = L"LOOKING";
 
@@ -14056,7 +14080,7 @@ HandleError:
         Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
     }
 
-    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib );
+    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib, fSetUpdatingExtentPageCountCacheFlag );
 
     Assert( pfucbNil == pfucbExtentPageCountCache );
 
@@ -14102,6 +14126,7 @@ VOID CATResetExtentPageCounts(
     CPG                 cpgAEBefore    = cpgNil;
     PCWSTR              wszNote;
     FDPINFO             fdpinfo;
+    BOOL                fSetUpdatingExtentPageCountCacheFlag;
     JET_RETRIEVECOLUMN  rgretrievecolumn[] =
         {
             { columnidMSExtentPageCountCache_cpgAE, &cpgAEBefore, sizeof( cpgAEBefore ), 0, NO_GRBIT, 0, 1, 0, JET_errSuccess },
@@ -14117,6 +14142,9 @@ VOID CATResetExtentPageCounts(
         Assert( NULL != wszNote );
         return;
     }
+
+    // Maybe set a flag saying we're messing with the ExtentPageCountCache.
+    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib, &fSetUpdatingExtentPageCountCacheFlag );
 
     // Special case.  This is cached in memory.
     if ( objidSystemRoot == objid )
@@ -14137,9 +14165,6 @@ VOID CATResetExtentPageCounts(
     Assert ( FBFNotLatched( ifmp, pgnoFDPMSO ) );
     Assert ( pgnoNull != pfmp->PgnoExtentPageCountCacheFDP() );
     Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
-
-    // Set a flag saying we're messing with the ExtentPageCountCache.
-    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib );
 
     wszNote = L"LOOKING";
 
@@ -14216,7 +14241,7 @@ HandleError:
         Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
     }
 
-    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib );
+    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib, fSetUpdatingExtentPageCountCacheFlag );
 
     Assert( pfucbNil == pfucbExtentPageCountCache );
 
@@ -14266,6 +14291,7 @@ ERR _ErrCATAdjustExtentPageCountsPrepare(
     ExtentPageCountCacheEntryState epccesFlag;
     PCWSTR          wszNote;
     FDPINFO         fdpinfo;
+    BOOL            fSetUpdatingExtentPageCountCacheFlag;
 
     OnDebug( RCE *prceNewest = ppib->prceNewest );
 
@@ -14279,6 +14305,9 @@ ERR _ErrCATAdjustExtentPageCountsPrepare(
         Assert( NULL != wszNote );
         return JET_errSuccess;
     }
+
+    // Maybe set a flag saying we're messing with the ExtentPageCountCache.
+    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib, &fSetUpdatingExtentPageCountCacheFlag );
 
     // We expect to only be called from the Space Tree code, and it has to have a write lock
     // on the FDP of the pfucb for the update to be safe (in the Space Tree code).
@@ -14318,9 +14347,6 @@ ERR _ErrCATAdjustExtentPageCountsPrepare(
     // FBFNotLatched().
     Assert ( pgnoNull != pfmp->PgnoExtentPageCountCacheFDP() );
     Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
-
-    // Set a flag saying we're messing with the ExtentPageCountCache.
-    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib );
 
     wszNote = L"LOOKING";
 
@@ -14441,7 +14467,7 @@ HandleError:
         Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
     }
 
-    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib );
+    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib, fSetUpdatingExtentPageCountCacheFlag );
 
     Assert( pfucbNil == pfucbExtentPageCountCache );
 
@@ -14491,6 +14517,7 @@ VOID CATAdjustExtentPageCounts(
     CPG                 cpgOEAfter     = cpgNil;
     PCWSTR              wszNote;
     FDPINFO             fdpinfo;
+    BOOL                fSetUpdatingExtentPageCountCacheFlag;
     ExtentPageCountCacheEntryState epccesFlag;
     JET_RETRIEVECOLUMN  rgretrievecolumn[] =
         {
@@ -14513,6 +14540,9 @@ VOID CATAdjustExtentPageCounts(
         Assert( NULL != wszNote );
         return;
     }
+
+    // Maybe set a flag saying we're messing with the ExtentPageCountCache.
+    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib, &fSetUpdatingExtentPageCountCacheFlag );
 
     // We expect to only be called from the Space Tree code, and it has to have a write lock
     // on the FDP of the pfucb for the update to be safe (in the Space Tree code).
@@ -14552,9 +14582,6 @@ VOID CATAdjustExtentPageCounts(
     // FBFNotLatched().
     Assert ( pgnoNull != pfmp->PgnoExtentPageCountCacheFDP() );
     Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
-
-    // Set a flag saying we're messing with the ExtentPageCountCache.
-    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib );
 
     wszNote = L"LOOKING";
 
@@ -14668,7 +14695,7 @@ HandleError:
         Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
     }
 
-    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib );
+    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib, fSetUpdatingExtentPageCountCacheFlag );
 
     Assert( pfucbNil == pfucbExtentPageCountCache );
 
@@ -14722,6 +14749,7 @@ ERR ErrCATGetExtentPageCounts(
     FDPINFO             fdpinfo;
     CPG                 cpgAE;
     CPG                 cpgOE;
+    BOOL                fSetUpdatingExtentPageCountCacheFlag;
     ExtentPageCountCacheEntryState epccesFlag;
     JET_RETRIEVECOLUMN  rgretrievecolumn[] =
         {
@@ -14729,6 +14757,9 @@ ERR ErrCATGetExtentPageCounts(
             { columnidMSExtentPageCountCache_cpgOE,      &cpgOE,      sizeof( cpgOE ),      0, NO_GRBIT, 0, 1, 0, JET_errSuccess },
             { columnidMSExtentPageCountCache_epccesFlag, &epccesFlag, sizeof( epccesFlag ), 0, NO_GRBIT, 0, 1, 0, JET_errSuccess },
         };
+
+    // Maybe set a flag saying we're messing with the ExtentPageCountCache.
+    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib, &fSetUpdatingExtentPageCountCacheFlag );
 
     if( !FCATIExtentPageCountCacheCacheableObject( ppib, ifmp, objid, &wszNote ) )
     {
@@ -14749,9 +14780,6 @@ ERR ErrCATGetExtentPageCounts(
             Error( ErrERRCheck( JET_errRecordNotFound ) );
         }
     }
-
-    // Set a flag saying we're messing with the ExtentPageCountCache.
-    CATIPossiblySetUpdatingExtentPageCountCacheFlag( ppib );
 
     Assert ( pgnoNull != pfmp->PgnoExtentPageCountCacheFDP() );
     Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
@@ -14853,7 +14881,7 @@ HandleError:
         Assert ( FBFNotLatched( ifmp, pfmp->PgnoExtentPageCountCacheFDP() ) );
     }
 
-    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib );
+    CATIPossiblyResetUpdatingExtentPageCountCacheFlag( ppib, fSetUpdatingExtentPageCountCacheFlag );
 
     Assert( pfucbNil == pfucbExtentPageCountCache );
 

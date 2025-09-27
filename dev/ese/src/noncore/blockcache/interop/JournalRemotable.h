@@ -13,7 +13,7 @@ namespace Internal
         {
             namespace Interop
             {
-                ref class JournalRemotable : MarshalByRefObject, IJournal
+                ref class JournalRemotable : Remotable, IJournal
                 {
                     public:
 
@@ -47,7 +47,7 @@ namespace Internal
                         }
 
                         virtual JournalPosition AppendEntry(
-                            array<ArraySegment<byte>>^ payload,
+                            array<ArraySegment<BYTE>>^ payload,
                             [Out] JournalPosition% journalPositionEnd )
                         {
                             return this->target->AppendEntry( payload, journalPositionEnd );

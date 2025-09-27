@@ -85,7 +85,7 @@ HandleError:
 LOCAL ERR ErrRBSAbsRootDir( INST* pinst, __out_bcount( cbRBSRootDir ) PWSTR wszRBSRootDirPath, LONG cbRBSRootDir )
 {
     ERR err                 = JET_errSuccess;
-    PCWSTR wszRBSFilePath   = FDefaultParam( pinst, JET_paramRBSFilePath ) ? SzParam( pinst, JET_paramLogFilePath ) : SzParam( pinst, JET_paramRBSFilePath );
+    PCWSTR wszRBSFilePath   = SzParam( pinst, JET_paramRBSFilePath );
     WCHAR wszAbsDirRootPath[ IFileSystemAPI::cchPathMax ];
 
     if ( NULL == wszRBSFilePath || 0 == *wszRBSFilePath )
@@ -764,17 +764,40 @@ LOCAL VOID RBSLogCreateOrLoadEvent( INST* pinst, PCWSTR wszRBSFilePath, BOOL fNe
             pinst );
 }
 
+LOCAL VOID RBSLogRBSRemovedEvent( const INST* pinst, PCWSTR wszDirPath, PCWSTR wszRBSRemoveReason )
+{
+    Assert( pinst );
+
+    PCWSTR rgcwsz[ 2 ];
+    rgcwsz[ 0 ] = wszDirPath;
+    rgcwsz[ 1 ] = wszRBSRemoveReason;
+
+    UtilReportEvent(
+        eventInformation,
+        GENERAL_CATEGORY,
+        RBSCLEANER_REMOVEDRBS_ID,
+        2,
+        rgcwsz,
+        0,
+        NULL,
+        pinst );
+}
+
 LOCAL ERR ErrRBSLoadRbsGen(
-    INST*               pinst,
-    PWSTR               wszRBSAbsFilePath,
-    LONG                lRBSGen,
+    _In_ const INST*    pinst,
+    _In_ PCWSTR         wszRBSAbsDirPath,
+    _In_ PCWSTR         wszRBSAbsFilePath,
+    _In_ const LONG     lRBSGen,
+    _In_ const BOOL     fDeleteCorruptUninitializedRBS,
     _Out_ RBSFILEHDR *  prbshdr, 
     _Out_ IFileAPI**    ppfapiRBS )
 {
     Assert( ppfapiRBS );
     Assert( wszRBSAbsFilePath );
+    Assert( wszRBSAbsDirPath || !fDeleteCorruptUninitializedRBS );
 
-    ERR err = JET_errSuccess;
+    ERR err             = JET_errSuccess;
+    IFileAPI* pfapiRBS  = NULL;
 
     Call( CIOFilePerf::ErrFileOpen( 
             pinst->m_pfsapi,
@@ -783,9 +806,31 @@ LOCAL ERR ErrRBSLoadRbsGen(
             BoolParam( pinst, JET_paramUseFlushForWriteDurability ) ? IFileAPI::fmfStorageWriteBack : IFileAPI::fmfRegular,
             iofileRBS,
             QwInstFileID( qwRBSFileID, pinst->m_iInstance, lRBSGen ),
-            ppfapiRBS ) );
+            &pfapiRBS ) );
 
-    Call( ErrUtilReadShadowedHeader( pinst, pinst->m_pfsapi, *ppfapiRBS, (BYTE*) prbshdr, sizeof( RBSFILEHDR ), -1, urhfNoAutoDetectPageSize ) );
+    err = ErrUtilReadShadowedHeader( pinst, pinst->m_pfsapi, pfapiRBS, (BYTE*) prbshdr, sizeof( RBSFILEHDR ), -1, urhfNoAutoDetectPageSize | urhfNoEventLogging );
+
+    if ( fDeleteCorruptUninitializedRBS && err == JET_errReadVerifyFailure )
+    {
+        QWORD cbFileSize;
+        QWORD cbDefaultFileSize = QWORD( 2 * sizeof( RBSFILEHDR ) );
+
+        Call( pfapiRBS->ErrSize( &cbFileSize, IFileAPI::filesizeLogical ));
+
+        // Go ahead and delete the current RBS directory as it looks like there is no data on the file.
+        // Most likely a crash happened before we initialized the file.
+        if ( cbFileSize <= cbDefaultFileSize )
+        {
+            // Release file handle so that it can be deleted.
+            delete pfapiRBS;
+            pfapiRBS = NULL;
+            Call( ErrRBSDeleteAllFiles( pinst->m_pfsapi, wszRBSAbsDirPath, NULL, fTrue ) );
+            RBSLogRBSRemovedEvent( pinst, wszRBSAbsDirPath, L"CorruptUninitializedRBS");
+            Error( ErrERRCheck( errRBSCorruptUninitializedRBSRemoved ) );
+        }
+    }
+
+    Call( err );
 
     // check filetype
     if (  JET_filetypeSnapshot != prbshdr->rbsfilehdr.le_filetype )
@@ -806,7 +851,17 @@ LOCAL ERR ErrRBSLoadRbsGen(
         Call( ErrERRCheck( JET_errRBSInvalidSign ) );
     }
 
+    *ppfapiRBS = pfapiRBS;
+    return JET_errSuccess;
+
 HandleError:
+    *ppfapiRBS = NULL;
+
+    if ( pfapiRBS != NULL )
+    {
+        delete pfapiRBS;
+    }
+
     return err;
 }
 
@@ -1201,6 +1256,7 @@ ERR CRevertSnapshot::ErrRBSCreateOrLoadRbsGen(
     long lRBSGen, 
     LOGTIME tmPrevGen,
     _In_ const SIGNATURE signPrevRBSHdrFlush,
+    _In_ const BOOL fDeleteCorruptUninitializedRBS,
     _Out_bytecap_c_(cbOSFSAPI_MAX_PATHW) PWSTR wszRBSAbsFilePath,
     _Out_bytecap_c_(cbOSFSAPI_MAX_PATHW) PWSTR wszRBSAbsLogDirPath )
 {
@@ -1246,17 +1302,26 @@ ERR CRevertSnapshot::ErrRBSCreateOrLoadRbsGen(
         // TODO SOMEONE: Check how is this being used and what params to set.
         TraceContextScope tcHeader( iorpRBS, iorsHeader );
 
-        // TODO SOMEONE: If this is the first snapshot then it is expected. If not, we got interrupted after creating the snapshot directory and before creating the snapshot file. 
-        // How do we handle the interruption case? Need to consider snapshot rolling failure scenarios.
-        // For now just create the snapshot file if doesn't exist.
-        Call( CIOFilePerf::ErrFileCreate(
-            m_pinst->m_pfsapi,
-            m_pinst,
-            wszRBSAbsFilePath,
-            BoolParam( m_pinst, JET_paramUseFlushForWriteDurability ) ? IFileAPI::fmfStorageWriteBack : IFileAPI::fmfRegular,
-            iofileRBS,
-            QwInstFileID( qwRBSFileID, m_pinst->m_iInstance, lRBSGen ),
-            &m_pfapiRBS ) );
+        // Used to test missing RBS file.
+        CallR( ErrFaultInjection( 51912 ) );
+
+        if ( fDeleteCorruptUninitializedRBS )
+        {
+            Call( ErrRBSDeleteAllFiles( m_pinst->m_pfsapi, wszRBSAbsDirPath, NULL, fTrue ) );
+            RBSLogRBSRemovedEvent( m_pinst, wszRBSAbsDirPath, L"MissingRBSFile" );
+            Error( ErrERRCheck( errRBSCorruptUninitializedRBSRemoved ) );
+        }
+        else
+        {
+            Call( CIOFilePerf::ErrFileCreate(
+                m_pinst->m_pfsapi,
+                m_pinst,
+                wszRBSAbsFilePath,
+                BoolParam( m_pinst, JET_paramUseFlushForWriteDurability ) ? IFileAPI::fmfStorageWriteBack : IFileAPI::fmfRegular,
+                iofileRBS,
+                QwInstFileID( qwRBSFileID, m_pinst->m_iInstance, lRBSGen ),
+                &m_pfapiRBS ) );
+        }
 
         fRBSFileCreated = true;
 
@@ -1265,11 +1330,14 @@ ERR CRevertSnapshot::ErrRBSCreateOrLoadRbsGen(
 
         RBSInitFileHdr( lRBSGen, m_prbsfilehdrCurrent, tmPrevGen, signPrevRBSHdrFlush );
 
+        // Used to test corrupt uninitialized RBS handling.
+        CallR( ErrFaultInjection( 51913 ) );
+
         Call( ErrUtilWriteRBSHeaders( m_pinst, m_pinst->m_pfsapi, NULL, m_prbsfilehdrCurrent, m_pfapiRBS ) );
     }
     else
     {
-        Call( ErrRBSLoadRbsGen( m_pinst, wszRBSAbsFilePath, lRBSGen, m_prbsfilehdrCurrent, &m_pfapiRBS ) );
+        Call( ErrRBSLoadRbsGen( m_pinst, wszRBSAbsDirPath, wszRBSAbsFilePath, lRBSGen, fDeleteCorruptUninitializedRBS, m_prbsfilehdrCurrent, &m_pfapiRBS ) );
     }
 
     // Set the file time create of current RBS gen on the cleaner.
@@ -1298,6 +1366,10 @@ ERR CRevertSnapshot::ErrRBSCreateOrLoadRbsGen(
 HandleError:
 
     RBSLogCreateOrLoadEvent( m_pinst, wszRBSAbsFilePath, fRBSFileCreated, fFalse, err );
+
+    // It is possible that the file is opened and we get access denied trying to delete the file.
+    FreeFileApi();
+
     if ( fRBSFileCreated )
     {
         CallSx( m_pinst->m_pfsapi->ErrFileDelete( wszRBSAbsFilePath ), JET_errFileNotFound );
@@ -1345,24 +1417,29 @@ ERR CRevertSnapshot::ErrRBSInit( BOOL fRBSCreateIfRequired, ERR createSkippedErr
     Assert( LOSStrLengthW( wszAbsDirRootPath ) > 0 );
     Assert( LOSStrLengthW( m_wszRBSBaseName ) > 0 );
 
-    Call( ErrRBSGetLowestAndHighestGen_( m_pinst->m_pfsapi, wszAbsDirRootPath, m_wszRBSBaseName, &rbsGenMin, &rbsGenMax ) );
+    do {
+        Call( ErrRBSGetLowestAndHighestGen_( m_pinst->m_pfsapi, wszAbsDirRootPath, m_wszRBSBaseName, &rbsGenMin, &rbsGenMax ) );
+        Call( ErrResetHdr() );
 
-    Call( ErrResetHdr() );
-
-    // We don't have any snapshot directory. Lets create one if allowed.
-    if ( rbsGenMax == 0 )
-    {
-        // We should not create snapshot if not allowed.
-        if ( !fRBSCreateIfRequired )
+        // We don't have any snapshot directory. Lets create one if allowed.
+        if ( rbsGenMax == 0 )
         {
-            RBSLogCreateSkippedEvent( m_pinst, SzParam( m_pinst, JET_paramRBSFilePath ), createSkippedError, JET_errFileNotFound );
-            Error( ErrERRCheck( createSkippedError ) );
+            // We should not create snapshot if not allowed.
+            if ( !fRBSCreateIfRequired )
+            {
+                RBSLogCreateSkippedEvent( m_pinst, SzParam( m_pinst, JET_paramRBSFilePath ), createSkippedError, JET_errFileNotFound );
+                Error( ErrERRCheck( createSkippedError ) );
+            }
+
+            rbsGenMax = 1;
         }
 
-        rbsGenMax = 1;
-    }
+        // Skip creating or remove any missing/uninitialized snapshot as long as we rbsGenMin > 0 i.e., there is an existing snapshot.
+        // This is because if we go ahead and create the RBS gen with max, we will lose snapshot chaining and
+        // thereby lose the ability to go back in time beyond this RBS. But it is highly likely that the previous RBS might be in sync the databases.
+        err = ErrRBSCreateOrLoadRbsGen( rbsGenMax, defaultLogTime, defaultSign, rbsGenMin > 0, wszRBSAbsFilePath, wszRBSAbsLogDirPath );
 
-    err = ErrRBSCreateOrLoadRbsGen( rbsGenMax, defaultLogTime, defaultSign, wszRBSAbsFilePath, wszRBSAbsLogDirPath );
+    } while ( err == errRBSCorruptUninitializedRBSRemoved );
     
     // Current snapshot is corrupted. We can't use any snapshot beyond this point.
     // We will start a fresh snapshot and let RBSCleaner cleanup any of the older snapshots.
@@ -1379,7 +1456,7 @@ ERR CRevertSnapshot::ErrRBSInit( BOOL fRBSCreateIfRequired, ERR createSkippedErr
         if ( fRBSCreateIfRequired )
         {
             // Increase the gen by 1.
-            Call( ErrRBSCreateOrLoadRbsGen( rbsGenMax + 1, defaultLogTime, defaultSign, wszRBSAbsFilePath, wszRBSAbsLogDirPath ) );
+            Call( ErrRBSCreateOrLoadRbsGen( rbsGenMax + 1, defaultLogTime, defaultSign, fFalse, wszRBSAbsFilePath, wszRBSAbsLogDirPath ) );
         }
         else
         {
@@ -2665,6 +2742,7 @@ VOID CRevertSnapshotForAttachedDbs::RBSCheckSpaceUsage()
         OSUHAEmitFailureTag( m_pinst, HaDbFailureTagRBSRollRequired, L"13aa7a33-59d7-4f1e-bea5-1020fd5a9819" );
     }
 
+    OSTraceSuspendGC();
     const WCHAR* rgcwsz[] =
     {
         m_wszRBSCurrentFile,
@@ -2683,6 +2761,8 @@ VOID CRevertSnapshotForAttachedDbs::RBSCheckSpaceUsage()
         0,
         NULL,
         m_pinst );
+
+    OSTraceResumeGC();
 }
 
 ERR CRevertSnapshotForAttachedDbs::ErrRBSRecordDbAttach( _In_ FMP* const pfmp )
@@ -2849,9 +2929,10 @@ ERR CRevertSnapshotForAttachedDbs::ErrRBSInitFromRstmap( INST* const pinst )
 
     if ( pinst->m_plog->FLogDisabled() ||
         !BoolParam( pinst, JET_paramEnableRBS ) || 
-        !pinst->m_plog->FRBSFeatureEnabledFromRstmap() )
+        !pinst->m_plog->FRBSFeatureEnabledFromRstmap() ||
+        FDefaultParam( pinst, JET_paramRBSFilePath ) )
     {
-        // We will skip setting up the revert snapshot if either it is not enabled, not supported or if the required range is too wide.
+        // We will skip setting up the revert snapshot if either it is not enabled, RBSFilePath isn't set, not supported or if the required range is too wide.
         // Enable/disable is only allowed during db attach/create
         return JET_errSuccess;
     }
@@ -3040,6 +3121,7 @@ ERR CRevertSnapshotForAttachedDbs::ErrRollSnapshot( BOOL fPrevRBSValid, BOOL fIn
         lRBSGen,
         logtimePrevGen,
         signPrevRBSHdrFlush,
+        fFalse,
         wszRBSAbsFilePath, 
         wszRBSAbsLogDirPath ) );
 
@@ -3202,8 +3284,8 @@ ERR CRevertSnapshotForPatch::ErrRBSInitForPatch( INST* const pinst )
 {
     Assert( pinst );
 
-    // If either RBS is disabled or already initialized skip initialization.
-    if ( !BoolParam( pinst, JET_paramEnableRBS ) || ( pinst->m_prbsfp && pinst->m_prbsfp->FInitialized() ) )
+    // If either RBS is disabled, RBSFilePath isn't set or already initialized, skip initialization.
+    if ( !BoolParam( pinst, JET_paramEnableRBS ) || FDefaultParam( pinst, JET_paramRBSFilePath ) || ( pinst->m_prbsfp && pinst->m_prbsfp->FInitialized() ) )
     {
         return JET_errSuccess;
     }
@@ -3257,7 +3339,7 @@ ERR RBSCleanerFactory::ErrRBSCleanerCreate( INST*  pinst, _Out_ RBSCleaner ** pr
 {
      ERR err = JET_errSuccess;
 
-    if ( pinst && prbscleaner )
+    if ( pinst && prbscleaner && !FDefaultParam( pinst, JET_paramRBSFilePath ) )
     {
         unique_ptr<RBSCleanerIOOperator> prbscleaneriooperator( new RBSCleanerIOOperator( pinst ) );
         unique_ptr<RBSCleanerState> prbscleanerstate( new RBSCleanerState() );
@@ -3332,20 +3414,8 @@ ERR RBSCleanerIOOperator::ErrRemoveFolder( PCWSTR wszDirPath, PCWSTR wszRBSRemov
 
     ERR err = JET_errSuccess;
     Call( ErrRBSDeleteAllFiles( m_pinst->m_pfsapi, wszDirPath, NULL, fTrue ) );
+    RBSLogRBSRemovedEvent( m_pinst, wszDirPath, wszRBSRemoveReason );
 
-    PCWSTR rgcwsz[2];
-    rgcwsz[0] = wszDirPath;
-    rgcwsz[1] = wszRBSRemoveReason;
-
-    UtilReportEvent(
-            eventInformation,
-            GENERAL_CATEGORY,
-            RBSCLEANER_REMOVEDRBS_ID,
-            2,
-            rgcwsz,
-            0,
-            NULL,
-            m_pinst );
 HandleError:
     return err;
 }
@@ -3754,8 +3824,9 @@ ERR RBSCleaner::ErrDoOneCleanupPass()
     }
 
 HandleError:  
-    if ( BoolParam( m_pinst, JET_paramEnableRBS ) )
+    if ( err >= JET_errSuccess && !m_msigRBSCleanerStop.FIsSet() && BoolParam( m_pinst, JET_paramEnableRBS ) )
     {
+        OSTraceSuspendGC();
         WCHAR wszTimeRevertPossible[ 32 ], wszDateRevertPossible[ 32 ];
         size_t  cchRequired;
 
@@ -3781,6 +3852,7 @@ HandleError:
             0,
             NULL,
             m_pinst );
+        OSTraceResumeGC();
     }
     else if ( err == JET_errFileNotFound )
     {
@@ -4908,7 +4980,16 @@ ERR CRBSRevertContext::ErrComputeRBSRangeToApply( PCWSTR wszRBSAbsRootDirPath, L
         RBSFILEHDR rbsfilehdr;
 
         Call( ErrRBSFilePathForGen_( wszRBSAbsRootDirPath, m_wszRBSBaseName, m_pinst->m_pfsapi, wszRBSAbsDirPath, sizeof( wszRBSAbsDirPath ), wszRBSAbsFilePath, cbOSFSAPI_MAX_PATHW, rbsGen ) );
-        Call( ErrRBSLoadRbsGen( m_pinst, wszRBSAbsFilePath, rbsGen, &rbsfilehdr, &pfileapi ) );
+        err = ErrRBSLoadRbsGen( m_pinst, wszRBSAbsDirPath, wszRBSAbsFilePath, rbsGen, rbsGen == lRBSGenMax, &rbsfilehdr, &pfileapi );
+
+        if ( rbsGen == lRBSGenMax && err == errRBSCorruptUninitializedRBSRemoved )
+        {
+            Call( ErrRBSGetLowestAndHighestGen_( m_pinst->m_pfsapi, wszRBSAbsRootDirPath, m_wszRBSBaseName, &lRBSGenMin, &lRBSGenMax ) );
+            continue;
+        }
+
+        Call( err );
+
         Call( ErrRBSDBRCInitFromAttachInfo( rbsfilehdr.rgbAttach, &rbsfilehdr.rbsfilehdr.signRBSHdrFlush ) );
 
         if ( rbsGen == lRBSGenMax )
@@ -5936,6 +6017,7 @@ ERR CRBSRevertContext::ErrExecuteRevert( JET_GRBIT grbit, JET_RBSREVERTINFOMISC*
     Call( ErrRevertCheckpointCleanup() );    
 
 HandleError:
+    OSTraceSuspendGC();
     __int64 fileTimeRevertFrom  = ConvertLogTimeToFileTime( &m_prbsrchk->rbsrchkfilehdr.tmExecuteRevertBegin );
     __int64 fileTimeRevertTo    = ConvertLogTimeToFileTime( &m_ltRevertTo );
 
@@ -5995,6 +6077,8 @@ HandleError:
             wszDateTo,
             m_prbsrchk->rbsrchkfilehdr.le_cPagesReverted + le_cPagesRevertedCurRBSGen );
     }
+
+    OSTraceResumeGC();
 
     return err;
 }

@@ -13,12 +13,22 @@ template< class I >
 class TFileFilter  //  ff
     :   public TFileWrapper<I>
 {
+    public:
+
+        //  IO throttling override.
+
+        static const OSFILEQOS qosBypassIOQuota = 0x8000000000000000L;
+
+        C_ASSERT( ( qosBypassIOQuota & ( qosIOInMask | qosIOCompleteMask ) ) == 0 );
+
     public:  //  specialized API
 
         TFileFilter(    _Inout_     IFileAPI** const                    ppfapi,
                         _In_        IFileSystemFilter* const            pfsf,
                         _In_        IFileSystemConfiguration* const     pfsconfig,
+                        _In_        IFileIdentification* const          pfident,
                         _In_        ICacheTelemetry* const              pctm,
+                        _In_        ICacheRepository* const             pcrep,
                         _In_        const VolumeId                      volumeid,
                         _In_        const FileId                        fileid,
                         _Inout_opt_ ICachedFileConfiguration** const    ppcfconfig,
@@ -27,22 +37,35 @@ class TFileFilter  //  ff
 
         virtual ~TFileFilter();
 
+        static void Cleanup();
+
+        ICache* Pc() { return m_pc; }
+
         void SetFileId( _In_ const VolumeId volumeid, _In_ const FileId fileid )
         {
             m_volumeid = volumeid;
             m_fileid = fileid;
         }
 
+        void SetEverEligibleForCaching( _In_ const BOOL fEverEligible )
+        {
+            m_fEverEligibleForCaching = fEverEligible;
+        }
+
         void SetCacheState( _Inout_     ICachedFileConfiguration** const    ppcfconfig,
-                            _Inout_     ICache** const                      ppc,
+                            _Inout_opt_ ICache** const                      ppc,
                             _Inout_opt_ CCachedFileHeader** const           ppcfh )
         {
             m_pcfconfig = *ppcfconfig;
-            m_pc = *ppc;
-            m_pcfh = ppcfh ? *ppcfh : NULL;
-
             *ppcfconfig = NULL;
-            *ppc = NULL;
+
+            if ( ppc && *ppc )
+            {
+                m_pc = &m_cWrapper;
+                m_cWrapper.SetCache( ppc );
+            }
+
+            m_pcfh = ppcfh ? *ppcfh : NULL;
             if ( ppcfh )
             {
                 *ppcfh = NULL;
@@ -80,6 +103,12 @@ class TFileFilter  //  ff
                         _In_ const QWORD            ibOffset,
                         _In_ const QWORD            cbToFree ) override;
 
+        ERR ErrReserveIOREQ(    _In_    const QWORD     ibOffset,
+                                _In_    const DWORD     cbData,
+                                _In_    const OSFILEQOS grbitQOS,
+                                _Out_   VOID **         ppioreq ) override;
+        VOID ReleaseUnusedIOREQ( _In_ VOID * pioreq ) override;
+
         ERR ErrIORead(  _In_                    const TraceContext&             tc,
                         _In_                    const QWORD                     ibOffset,
                         _In_                    const DWORD                     cbData,
@@ -98,6 +127,8 @@ class TFileFilter  //  ff
                         _In_opt_                const DWORD_PTR                 keyIOComplete,
                         _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff ) override;
         ERR ErrIOIssue() override;
+
+        void RegisterIFilePerfAPI( _In_ IFilePerfAPI* const pfpapi ) override;
 
     public:  //  IFileFilter
 
@@ -156,10 +187,10 @@ class TFileFilter  //  ff
 
             private:
 
-                typename CInvasiveList<CWaiter, OffsetOfILE>::CElement  m_ile;
-                COffsets                                                m_offsets;
-                CManualResetSignal                                      m_sig;
-                CMeteredSection::Group                                  m_group;
+                typename CInvasiveList<CWaiter, CWaiter::OffsetOfILE>::CElement m_ile;
+                COffsets                                                        m_offsets;
+                CManualResetSignal                                              m_sig;
+                CMeteredSection::Group                                          m_group;
         };
 
         //  Context for a write back from the cache.
@@ -254,15 +285,15 @@ class TFileFilter  //  ff
 
             private:
 
-                typename CCountedInvasiveList<CWriteBack, OffsetOfILE>::CElement    m_ile;
-                FullTraceContext                                                    m_tc;
-                const QWORD                                                         m_ibOffset;
-                const DWORD                                                         m_cbData;
-                const BYTE* const                                                   m_pbData;
-                const OSFILEQOS                                                     m_grbitQOS;
-                const IFileAPI::PfnIOComplete                                       m_pfnIOComplete;
-                const DWORD_PTR                                                     m_keyIOComplete;
-                const IFileAPI::PfnIOHandoff                                        m_pfnIOHandoff;
+                typename CCountedInvasiveList<CWriteBack, CWriteBack::OffsetOfILE>::CElement    m_ile;
+                FullTraceContext                                                                m_tc;
+                const QWORD                                                                     m_ibOffset;
+                const DWORD                                                                     m_cbData;
+                const BYTE* const                                                               m_pbData;
+                const OSFILEQOS                                                                 m_grbitQOS;
+                const IFileAPI::PfnIOComplete                                                   m_pfnIOComplete;
+                const DWORD_PTR                                                                 m_keyIOComplete;
+                const IFileAPI::PfnIOHandoff                                                    m_pfnIOHandoff;
         };
 
         //  Context for a sync write back completion.
@@ -362,6 +393,10 @@ class TFileFilter  //  ff
             return pff->ErrAttach( offsetsFirstWrite );
         }
         ERR ErrAttach( _In_ const COffsets& offsetsFirstWrite );
+        ERR ErrGetConfiguredCache();
+        ERR ErrCacheOpenFailure(    _In_ const char* const                  szFunction,
+                                    _In_ const ERR                          errFromCall,
+                                    _In_ const ERR                          errToReturn );
 
         ERR ErrTryEnqueueWriteBack( _In_                    const TraceContext&             tc,
                                     _In_                    const QWORD                     ibOffset,
@@ -400,7 +435,7 @@ class TFileFilter  //  ff
                             _In_opt_                const IFileAPI::PfnIOComplete   pfnIOComplete,
                             _In_opt_                const DWORD_PTR                 keyIOComplete,
                             _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
-                            _In_opt_                const VOID *                    pioreq,
+                            _Inout_                 const void** const              ppioreq,
                             _Inout_                 CMeteredSection::Group* const   pgroup,
                             _Inout_                 CSemaphore** const              ppsem );
         ERR ErrCacheMiss(   _In_                    const TraceContext&             tc,
@@ -408,12 +443,15 @@ class TFileFilter  //  ff
                             _In_                    const DWORD                     cbData,
                             _Out_writes_( cbData )  BYTE* const                     pbData,
                             _In_                    const OSFILEQOS                 grbitQOS,
+                            _In_                    const OSFILEQOS                 grbitQOSInput,
+                            _In_                    const OSFILEQOS                 grbitQOSOutput,
                             _In_opt_                const IFileAPI::PfnIOComplete   pfnIOComplete,
                             _In_opt_                const DWORD_PTR                 keyIOComplete,
                             _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
-                            _In_opt_                const VOID *                    pioreq,
+                            _Inout_                 const void** const              ppioreq,
                             _Inout_                 CMeteredSection::Group* const   pgroup,
-                            _Inout_                 CSemaphore** const              ppsem );
+                            _Inout_                 CSemaphore** const              ppsem,
+                            _Inout_opt_             BOOL* const                     pfThrottleReleaser );
 
         ERR ErrCacheWrite(  _In_                    const TraceContext&             tc,
                             _In_                    const QWORD                     ibOffset,
@@ -430,11 +468,14 @@ class TFileFilter  //  ff
                                 _In_                    const DWORD                     cbData,
                                 _In_reads_( cbData )    const BYTE* const               pbData,
                                 _In_                    const OSFILEQOS                 grbitQOS,
+                                _In_                    const OSFILEQOS                 grbitQOSInput,
+                                _In_                    const OSFILEQOS                 grbitQOSOutput,
                                 _In_opt_                const IFileAPI::PfnIOComplete   pfnIOComplete,
                                 _In_opt_                const DWORD_PTR                 keyIOComplete,
                                 _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
                                 _Inout_                 CMeteredSection::Group* const   pgroup,
-                                _Inout_                 CSemaphore** const              ppsem );
+                                _Inout_                 CSemaphore** const              ppsem,
+                                _Inout_opt_             BOOL* const                     pfThrottleReleaser );
         ERR ErrWriteBack(   _In_                    const TraceContext&             tc,
                             _In_                    const QWORD                     ibOffset,
                             _In_                    const DWORD                     cbData,
@@ -449,12 +490,15 @@ class TFileFilter  //  ff
                             _In_                    const DWORD                     cbData,
                             _In_reads_( cbData )    const BYTE* const               pbData,
                             _In_                    const OSFILEQOS                 grbitQOS,
+                            _In_                    const OSFILEQOS                 grbitQOSInput,
+                            _In_                    const OSFILEQOS                 grbitQOSOutput,
                             _In_opt_                const IFileAPI::PfnIOComplete   pfnIOComplete,
                             _In_opt_                const DWORD_PTR                 keyIOComplete,
                             _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
                             _Inout_opt_             CMeteredSection::Group* const   pgroup,
                             _Inout_opt_             CSemaphore** const              ppsem,
-                            _In_opt_                CWriteBack* const               pwriteback );
+                            _In_opt_                CWriteBack* const               pwriteback,
+                            _Inout_opt_             BOOL* const                     pfThrottleReleaser );
 
         void SetCacheParameters()
         {
@@ -476,18 +520,1464 @@ class TFileFilter  //  ff
             return (ICacheTelemetry::BlockNumber)( ibOffset / CbBlockSize() );
         }
 
+        ERR ErrBlockCacheInternalError( _In_ const char* const szTag )
+        {
+            return ::ErrBlockCacheInternalError( this, szTag );
+        }
+
+    private:
+
+        class CCacheWrapper : public ICache
+        {
+            public:  //  specialized API
+
+                CCacheWrapper( _In_ TFileFilter<I>* const pff, _Inout_ ICache** const ppc )
+                    :   m_pff( pff ),
+                        m_pcInner( ppc ? *ppc : NULL )
+                {
+                    if ( ppc )
+                    {
+                        *ppc = NULL;
+                    }
+                }
+
+                virtual ~CCacheWrapper()
+                {
+                    delete m_pcInner;
+                }
+
+                void SetCache( _Inout_ ICache** const ppc )
+                {
+                    m_pcInner = *ppc;
+                    *ppc = NULL;
+                }
+
+            public:  //  ICache
+
+                ERR ErrCreate() override
+                {
+                    return ErrToErr( "Create", m_pcInner->ErrCreate() );
+                }
+
+                ERR ErrMount() override
+                {
+                    return ErrToErr( "Mount", m_pcInner->ErrMount() );
+                }
+
+                ERR ErrDump( _In_ CPRINTF* const pcprintf ) override
+                {
+                    return ErrToErr( "Dump", m_pcInner->ErrDump( pcprintf ) );
+                }
+
+                ERR ErrGetCacheType( _Out_writes_( cbGuid ) BYTE* const rgbCacheType ) override
+                {
+                    return ErrToErr( "GetCacheType", m_pcInner->ErrGetCacheType( rgbCacheType ) );
+                }
+
+                ERR ErrGetPhysicalId(   _Out_                   VolumeId* const pvolumeid,
+                                        _Out_                   FileId* const   pfileid,
+                                        _Out_writes_( cbGuid )  BYTE* const     rgbUniqueId ) override
+                {
+                    return ErrToErr( "GetPhysicalId", m_pcInner->ErrGetPhysicalId( pvolumeid, pfileid, rgbUniqueId ) );
+                }
+                        
+                ERR ErrClose(   _In_ const VolumeId     volumeid,
+                                _In_ const FileId       fileid,
+                                _In_ const FileSerial   fileserial ) override
+                {
+                    return ErrToErr( "Close", m_pcInner->ErrClose( volumeid, fileid, fileserial ) );
+                }
+
+                ERR ErrFlush(   _In_ const VolumeId     volumeid,
+                                _In_ const FileId       fileid,
+                                _In_ const FileSerial   fileserial ) override
+                {
+                    return ErrToErr( "Flush", m_pcInner->ErrFlush( volumeid, fileid, fileserial ) );
+                }
+
+                ERR ErrInvalidate(  _In_ const VolumeId     volumeid,
+                                    _In_ const FileId       fileid,
+                                    _In_ const FileSerial   fileserial,
+                                    _In_ const QWORD        ibOffset,
+                                    _In_ const QWORD        cbData ) override
+                {
+                    return ErrToErr( "Invalidate", m_pcInner->ErrInvalidate( volumeid, fileid, fileserial, ibOffset, cbData ) );
+                }
+
+                ERR ErrRead(    _In_                    const TraceContext&         tc,
+                                _In_                    const VolumeId              volumeid,
+                                _In_                    const FileId                fileid,
+                                _In_                    const FileSerial            fileserial,
+                                _In_                    const QWORD                 ibOffset,
+                                _In_                    const DWORD                 cbData,
+                                _Out_writes_( cbData )  BYTE* const                 pbData,
+                                _In_                    const OSFILEQOS             grbitQOS,
+                                _In_                    const ICache::CachingPolicy cp,
+                                _In_opt_                const ICache::PfnComplete   pfnComplete,
+                                _In_opt_                const DWORD_PTR             keyComplete ) override
+                {
+                    return ErrToErr( "Read", m_pcInner->ErrRead( tc, volumeid, fileid, fileserial, ibOffset, cbData, pbData, grbitQOS, cp, pfnComplete, keyComplete ) );
+                }
+
+                ERR ErrWrite(   _In_                    const TraceContext&         tc,
+                                _In_                    const VolumeId              volumeid,
+                                _In_                    const FileId                fileid,
+                                _In_                    const FileSerial            fileserial,
+                                _In_                    const QWORD                 ibOffset,
+                                _In_                    const DWORD                 cbData,
+                                _In_reads_( cbData )    const BYTE* const           pbData,
+                                _In_                    const OSFILEQOS             grbitQOS,
+                                _In_                    const ICache::CachingPolicy cp,
+                                _In_opt_                const ICache::PfnComplete   pfnComplete,
+                                _In_opt_                const DWORD_PTR             keyComplete ) override
+                {
+                    return ErrToErr( "Write", m_pcInner->ErrWrite( tc, volumeid, fileid, fileserial, ibOffset, cbData, pbData, grbitQOS, cp, pfnComplete, keyComplete ) );
+                }
+        
+                ERR ErrIssue(   _In_ const VolumeId     volumeid,
+                                _In_ const FileId       fileid,
+                                _In_ const FileSerial   fileserial ) override
+                {
+                    return ErrToErr( "Issue", m_pcInner->ErrIssue( volumeid, fileid, fileserial ) );
+                }
+
+            private:
+
+                ERR ErrToErr( _In_ const char* const szFunction, _In_ const ERR err )
+                {
+                    if ( err >= JET_errSuccess )
+                    {
+                        return err;
+                    }
+
+                    if ( FVerificationError( err ) )
+                    {
+                        return err;
+                    }
+
+                    switch ( err )
+                    {
+                        case JET_errOutOfMemory:
+                        case JET_errFileIOBeyondEOF:
+                            return err;
+
+                        default:
+                            return ErrUnexpectedCacheFailure( szFunction, err, ErrERRCheck( JET_errDiskIO ) );
+                    }
+                }
+
+                ERR ErrUnexpectedCacheFailure(  _In_ const char* const  szFunction, 
+                                                _In_ const ERR          errFromCall,
+                                                _In_ const ERR          errToReturn )
+                {
+                    WCHAR           wszCachingFile[ IFileSystemAPI::cchPathMax ]    = { 0 };
+                    WCHAR           wszFunction[ 256 ]                              = { 0 };
+                    WCHAR           wszErrorFromCall[ 64 ]                          = { 0 };
+                    WCHAR           wszErrorToReturn[ 64 ]                          = { 0 };
+                    const WCHAR*    rgpwsz[]                                        = { wszCachingFile, wszFunction, wszErrorFromCall, wszErrorToReturn };
+
+                    m_pff->m_pcfconfig->CachingFilePath( wszCachingFile );
+                    OSStrCbFormatW( wszFunction, sizeof( wszFunction ), L"%hs", szFunction );
+                    OSStrCbFormatW( wszErrorFromCall, sizeof( wszErrorFromCall ), L"%i (0x%08x)", errFromCall, errFromCall );
+                    OSStrCbFormatW( wszErrorToReturn, sizeof( wszErrorToReturn ), L"%i (0x%08x)", errToReturn, errToReturn );
+
+                    m_pff->m_pfsconfig->EmitEvent(  eventWarning,
+                                                    BLOCK_CACHE_CATEGORY,
+                                                    BLOCK_CACHE_CACHING_UNEXPECTED_FAILURE_ID,
+                                                    _countof( rgpwsz ),
+                                                    rgpwsz,
+                                                    JET_EventLoggingLevelMin );
+
+                    OSTraceSuspendGC();
+                    BlockCacheNotableEvent( wszCachingFile,
+                                            OSFormat(   "UnexpectedCacheFailure:%hs:%i:%i", 
+                                                        szFunction, 
+                                                        errFromCall, 
+                                                        errToReturn ) );
+                    OSTraceResumeGC();
+
+#if defined( USE_HAPUBLISH_API )
+                    m_pff->m_pfsconfig->EmitFailureTag( HaDbFailureTagIoHard, L"834f46a3-37e7-4bb8-b8a7-a5af4394a9c6" );
+#endif
+
+                    return errToReturn;
+                }
+
+            private:
+
+                TFileFilter<I>* const   m_pff;
+                ICache*                 m_pcInner;
+        };
+
+    private:
+
+        //  global scoped thread local storage used for async IO run accounting
+
+        class CThreadLocalStorage  //  ctls
+            :   public CCacheThreadLocalStorageBase
+        {
+            public:
+
+                CThreadLocalStorage( _In_ const CacheThreadId ctid )
+                    :   CCacheThreadLocalStorageBase( ctid )
+                {
+                }
+
+                static void Release( _Inout_ CThreadLocalStorage** const ppctls )
+                {
+                    CCacheThreadLocalStorageBase::Release( (CCacheThreadLocalStorageBase** const)ppctls );
+                }
+
+                ERR ErrRequest( _In_    IFileSystemConfiguration* const pfsconfig,
+                                _In_    const VolumeId                  volumeid,
+                                _In_    const FileId                    fileid,
+                                _In_    const FileSerial                fileserial,
+                                _In_    const BOOL                      fAsync,
+                                _In_    const BOOL                      fRead,
+                                _In_    const COffsets&                 offsets,
+                                _In_    const OSFILEQOS                 grbitQOS,
+                                _In_    const BOOL                      fMustCombineIO,
+                                _Out_   BOOL* const                     pfCombined )
+                {
+                    ERR         err         = JET_errSuccess;
+                    CRequest*   prequest    = NULL;
+                    BOOL        fCombined   = fFalse;
+
+                    *pfCombined = fFalse;
+
+                    if ( !fAsync )
+                    {
+                        Error( JET_errSuccess );
+                    }
+
+                    Alloc( prequest = new CRequest( volumeid, fileid, fileserial, fRead, offsets ) );
+
+                    Call( ErrRequest( pfsconfig, fRead, grbitQOS, fMustCombineIO, &prequest, &fCombined ) );
+
+                    *pfCombined = fCombined;
+
+                HandleError:
+                    delete prequest;
+                    if ( err < JET_errSuccess )
+                    {
+                        *pfCombined = fFalse;
+                    }
+                    return err;
+                }
+
+                void ClearRequests()
+                {
+                    while ( CRequest* prequestIO = IlIORequested().PrevMost() )
+                    {
+                        while ( CRequest* prequest = prequestIO->IlRequestsByIO().PrevMost() )
+                        {
+                            prequestIO->IlRequestsByIO().Remove( prequest );
+
+                            if ( prequest != prequestIO )
+                            {
+                                delete prequest;
+                            }
+                        }
+
+                        IlIORequested().Remove( prequestIO );
+
+                        delete prequestIO;
+                    }
+                }
+
+            protected:
+
+                ~CThreadLocalStorage()
+                {
+                    ClearRequests();
+                }
+
+            private:
+
+                class CRequest
+                {
+                    public:
+
+                        CRequest(   _In_ const VolumeId         volumeid,
+                                    _In_ const FileId           fileid,
+                                    _In_ const FileSerial       fileserial,
+                                    _In_ const BOOL             fRead,
+                                    _In_ const COffsets&        offsets )
+                            :   m_volumeid( volumeid ),
+                                m_fileid( fileid ),
+                                m_fileserial( fileserial ),
+                                m_fRead( fRead ),
+                                m_offsets( offsets )
+                        {
+                            m_ilRequestsByIO.InsertAsPrevMost( this );
+                        }
+
+                        VolumeId Volumeid() const { return m_volumeid; }
+                        FileId Fileid() const { return m_fileid; }
+                        FileSerial Fileserial() const { return m_fileserial; }
+                        BOOL FRead() const { return m_fRead; }
+                        const COffsets& Offsets() const { return m_offsets; }
+
+                        COffsets OffsetsForIO() const
+                        {
+                            CRequest* const prequestIOFirst = m_ilRequestsByIO.PrevMost();
+                            const QWORD     ibStartIOFirst = prequestIOFirst->Offsets().IbStart();
+                            CRequest* const prequestIOLast = m_ilRequestsByIO.NextMost();
+                            const QWORD     ibEndIOLast = prequestIOLast->Offsets().IbEnd();
+
+                            return COffsets( ibStartIOFirst, ibEndIOLast );
+                        }
+
+                        static SIZE_T OffsetOfIOs() { return OffsetOf( CRequest, m_ileIOs ); }
+                        static SIZE_T OffsetOfRequestsByIO() { return OffsetOf( CRequest, m_ileRequestsByIO ); }
+
+                        CCountedInvasiveList<CRequest, CRequest::OffsetOfRequestsByIO>& IlRequestsByIO() { return m_ilRequestsByIO; }
+
+                    private:
+
+                        const VolumeId                                                          m_volumeid;
+                        const FileId                                                            m_fileid;
+                        const FileSerial                                                        m_fileserial;
+                        const BOOL                                                              m_fRead;
+                        const COffsets                                                          m_offsets;
+                        typename CCountedInvasiveList<CRequest, OffsetOfIOs>::CElement          m_ileIOs;
+                        CCountedInvasiveList<CRequest, OffsetOfRequestsByIO>                    m_ilRequestsByIO;
+                        typename CCountedInvasiveList<CRequest, OffsetOfRequestsByIO>::CElement m_ileRequestsByIO;
+                };
+
+            private:
+
+                ERR ErrRequest( _In_    IFileSystemConfiguration* const pfsconfig,
+                                _In_    const BOOL                      fRead,
+                                _In_    const OSFILEQOS                 grbitQOS,
+                                _In_    const BOOL                      fMustCombineIO,
+                                _Inout_ CRequest** const                pprequest,
+                                _Out_   BOOL* const                     pfCombined )
+                {
+                    ERR         err             = JET_errSuccess;
+                    CRequest*   prequest        = *pprequest;
+                    CRequest*   prequestIO      = NULL;
+                    CRequest*   prequestIOPrev  = NULL;
+                    BOOL        fCombined       = fFalse;
+
+                    *pprequest = NULL;
+                    *pfCombined = fFalse;
+
+                    //  insert the request and combine with any other requests if possible
+
+                    IlIORequested().InsertAsNextMost( prequest );
+
+                    prequestIO = prequest;
+                    for (   prequestIOPrev = IlIORequested().Prev( prequestIO );
+                            prequestIOPrev && !FConflicting( prequestIOPrev, prequestIO );
+                            prequestIOPrev = IlIORequested().Prev( prequestIOPrev ) )
+                    {
+                        if ( FCombinable( pfsconfig, grbitQOS, prequestIOPrev, prequestIO ) )
+                        {
+                            if ( prequestIOPrev->OffsetsForIO().IbStart() > prequestIO->OffsetsForIO().IbStart() )
+                            {
+                                while ( CRequest* prequestT = prequestIO->IlRequestsByIO().NextMost() )
+                                {
+                                    prequestIO->IlRequestsByIO().Remove( prequestT );
+                                    prequestIOPrev->IlRequestsByIO().InsertAsPrevMost( prequestT );
+                                }
+                            }
+                            else
+                            {
+                                while ( CRequest* prequestT = prequestIO->IlRequestsByIO().PrevMost() )
+                                {
+                                    prequestIO->IlRequestsByIO().Remove( prequestT );
+                                    prequestIOPrev->IlRequestsByIO().InsertAsNextMost( prequestT );
+                                }
+                            }
+
+                            IlIORequested().Remove( prequestIO );
+                            prequestIO = prequestIOPrev;
+
+                            fCombined = fTrue;
+                        }
+                        else if ( CmpRequestIO( prequestIOPrev, prequestIO ) > 0 )
+                        {
+                            IlIORequested().Remove( prequestIO );
+                            IlIORequested().Insert( prequestIO, prequestIOPrev );
+                            prequestIOPrev = prequestIO;
+                        }
+                    }
+
+                    //  determine if this request could be combined via IO gap coalescing
+
+                    if (    IlIORequested().Prev( prequestIO ) &&
+                            FBridgeableGap( pfsconfig, grbitQOS, IlIORequested().Prev( prequestIO ), prequestIO ) )
+                    {
+                        fCombined = fTrue;
+                    }
+
+                    if (    IlIORequested().Next( prequestIO ) &&
+                            FBridgeableGap( pfsconfig, grbitQOS, prequestIO, IlIORequested().Next( prequestIO ) ) )
+                    {
+                        fCombined = fTrue;
+                    }
+
+                    //  if this request could not be combined with another yet this is requested then don't accept it
+
+                    if ( !fCombined && ( ( grbitQOS & qosIOOptimizeCombinable ) || fMustCombineIO ) )
+                    {
+                        IlIORequested().Remove( prequest );
+                        *pprequest = prequest;
+                        Error( ErrERRCheck( errDiskTilt ) );
+                    }
+
+                    *pfCombined = fCombined;
+
+                HandleError:
+                    if ( err < JET_errSuccess )
+                    {
+                        *pfCombined = fFalse;
+                    }
+                    return err;
+                }
+
+                BOOL FConflicting( _In_ CRequest* const prequestIOA, _In_ CRequest* const prequestIOB )
+                {
+                    //  IOs for different cached file cannot conflict
+
+                    if ( prequestIOA->Volumeid() != prequestIOB->Volumeid() )
+                    {
+                        return fFalse;
+                    }
+
+                    if ( prequestIOA->Fileid() != prequestIOB->Fileid() )
+                    {
+                        return fFalse;
+                    }
+
+                    if ( prequestIOA->Fileserial() != prequestIOB->Fileserial() )
+                    {
+                        return fFalse;
+                    }
+
+                    //  IOs with disjoint offset ranges cannot conflict
+
+                    if ( !prequestIOA->OffsetsForIO().FOverlaps( prequestIOB->OffsetsForIO() ) )
+                    {
+                        return fFalse;
+                    }
+
+                    return fTrue;
+                }
+
+                BOOL FCombinable(   _In_ IFileSystemConfiguration* const    pfsconfig, 
+                                    _In_ const OSFILEQOS                    grbitQOS,
+                                    _In_ CRequest* const                    prequestIOA, 
+                                    _In_ CRequest* const                    prequestIOB )
+                {
+                    //  IOs from different cached files cannot be combined
+
+                    if ( prequestIOA->Volumeid() != prequestIOB->Volumeid() )
+                    {
+                        return fFalse;
+                    }
+
+                    if ( prequestIOA->Fileid() != prequestIOB->Fileid() )
+                    {
+                        return fFalse;
+                    }
+
+                    if ( prequestIOA->Fileserial() != prequestIOB->Fileserial() )
+                    {
+                        return fFalse;
+                    }
+
+                    //  IOs with different types cannot be combined
+
+                    if ( prequestIOA->FRead() != prequestIOB->FRead() )
+                    {
+                        return fFalse;
+                    }
+
+                    //  IOs with overlapping offsets cannot be combined
+
+                    const COffsets offsetsIOA = prequestIOA->OffsetsForIO();
+                    const COffsets offsetsIOB = prequestIOB->OffsetsForIO();
+
+                    if ( offsetsIOA.FOverlaps( offsetsIOB ) )
+                    {
+                        return fFalse;
+                    }
+
+                    //  IOs with non-adjacent offsets cannot be combined
+
+                    if ( offsetsIOA.IbEnd() + 1 != offsetsIOB.IbStart() && offsetsIOB.IbEnd() + 1 != offsetsIOA.IbStart() )
+                    {
+                        return fFalse;
+                    }
+
+                    //  IOs that are too large cannot be combined
+
+                    const QWORD cbMaxSize = prequestIOA->FRead() ? pfsconfig->CbMaxReadSize() : pfsconfig->CbMaxWriteSize();
+
+                    if ( offsetsIOA.Cb() + offsetsIOB.Cb() > cbMaxSize )
+                    {
+                        if ( !FOverrideMaxSize( grbitQOS, prequestIOA->FRead() ) )
+                        {
+                            return fFalse;
+                        }
+                    }
+
+                    return fTrue;
+                }
+
+                BOOL FOverrideMaxSize(  _In_ const OSFILEQOS grbitQOS, _In_ const BOOL fRead )
+                {
+                    if ( fRead )
+                    {
+                        return fFalse;
+                    }
+
+                    if ( !( grbitQOS & qosIOOptimizeOverrideMaxIOLimits ) )
+                    {
+                        return fFalse;
+                    }
+
+                    return fTrue;
+                }
+
+                int CmpRequestIO( _In_ CRequest* const prequestIOA, _In_ CRequest* const prequestIOB )
+                {
+                    //  IOs from different cached files are ordered by their volume id and file id for deterministic behavior
+
+                    if ( prequestIOA->Volumeid() < prequestIOB->Volumeid() )
+                    {
+                        return -1;
+                    }
+                    else if ( prequestIOA->Volumeid() > prequestIOB->Volumeid() )
+                    {
+                        return 1;
+                    }
+
+                    if ( prequestIOA->Fileid() < prequestIOB->Fileid() )
+                    {
+                        return -1;
+                    }
+                    else if ( prequestIOA->Fileid() > prequestIOB->Fileid() )
+                    {
+                        return 1;
+                    }
+
+                    if ( prequestIOA->Fileserial() < prequestIOB->Fileserial() )
+                    {
+                        return -1;
+                    }
+                    else if ( prequestIOA->Fileserial() > prequestIOB->Fileserial() )
+                    {
+                        return 1;
+                    }
+
+                    //  IOs whose offsets are in ascending order are not out of order
+
+                    if ( prequestIOA->OffsetsForIO().IbStart() < prequestIOB->OffsetsForIO().IbStart() )
+                    {
+                        return -1;
+                    }
+                    else if ( prequestIOA->OffsetsForIO().IbStart() > prequestIOB->OffsetsForIO().IbStart() )
+                    {
+                        return 1;
+                    }
+
+                    return 0;
+                }
+
+                BOOL FBridgeableGap(    _In_ IFileSystemConfiguration* const    pfsconfig,
+                                        _In_ const OSFILEQOS                    grbitQOS,
+                                        _In_ CRequest* const                    prequestIOA, 
+                                        _In_ CRequest* const                    prequestIOB )
+                {
+                    //  IOs from different cached files cannot be combined via a gap
+
+                    if ( prequestIOA->Volumeid() != prequestIOB->Volumeid() )
+                    {
+                        return fFalse;
+                    }
+
+                    if ( prequestIOA->Fileid() != prequestIOB->Fileid() )
+                    {
+                        return fFalse;
+                    }
+
+                    if ( prequestIOA->Fileserial() != prequestIOB->Fileserial() )
+                    {
+                        return fFalse;
+                    }
+
+                    //  IOs with different types cannot be combined via a gap
+
+                    if ( prequestIOA->FRead() != prequestIOB->FRead() )
+                    {
+                        return fFalse;
+                    }
+
+                    //  IOs with overlapping offsets cannot be combined via a gap
+
+                    const COffsets offsetsIOA = prequestIOA->OffsetsForIO();
+                    const COffsets offsetsIOB = prequestIOB->OffsetsForIO();
+
+                    if ( offsetsIOA.FOverlaps( offsetsIOB ) )
+                    {
+                        return fFalse;
+                    }
+
+                    //  writes cannot be combined via a gap
+
+                    if ( !prequestIOA->FRead() )
+                    {
+                        return fFalse;
+                    }
+
+                    //  reads with non-adjacent offsets that are too far apart cannot be combined via a gap
+
+                    const QWORD cbGap = offsetsIOA.IbStart() < offsetsIOB.IbStart() ?
+                                            offsetsIOB.IbStart() - offsetsIOA.IbEnd() - 1 :
+                                            offsetsIOA.IbStart() - offsetsIOB.IbEnd() - 1;
+
+                    if ( cbGap > pfsconfig->CbMaxReadGapSize() )
+                    {
+                        return fFalse;
+                    }
+
+                    //  reads that are too large cannot be combined via a gap
+
+                    if ( offsetsIOA.Cb() + offsetsIOB.Cb() + cbGap > pfsconfig->CbMaxReadSize() )
+                    {
+                        if ( !FOverrideMaxSize( grbitQOS, prequestIOA->FRead() ) )
+                        {
+                            return fFalse;
+                        }
+                    }
+
+                    return fTrue;
+                }
+
+                CCountedInvasiveList<CRequest, CRequest::OffsetOfIOs>& IlIORequested() { return m_ilIORequested; }
+
+            private:
+
+                CCountedInvasiveList<CRequest, CRequest::OffsetOfIOs>   m_ilIORequested;
+        };
+
+        class CThreadLocalStorageRepository
+        {
+            public:
+
+                static ERR ErrGetThreadLocalStorage( _Out_ CThreadLocalStorage** const ppctls )
+                {
+                    return s_tls.ErrGetThreadLocalStorage( ppctls );
+                }
+
+                static void Cleanup()
+                {
+                    s_tls.Cleanup();
+                }
+
+            private:
+
+                using CStaticThreadLocalStorage = TCacheThreadLocalStorage<CThreadLocalStorage>;
+
+                static CStaticThreadLocalStorage    s_tls;
+        };
+
+    private:
+
+        class CReservedIOREQ
+        {
+            public:
+
+                CReservedIOREQ( _In_    TFileFilter<I>* const   pff,
+                                _In_    const OSFILEQOS         grbitQOSOutput,
+                                _Inout_ BOOL* const             pfThrottleReleaser )
+                    :   m_pff( pff ),
+                        m_grbitQOSOutput( grbitQOSOutput ),
+                        m_fThrottleReleaser( *pfThrottleReleaser )
+                {
+                    *pfThrottleReleaser = fFalse;
+                }
+
+                ~CReservedIOREQ()
+                {
+                    (void)m_pff->FThrottleRelease( fTrue, fTrue, m_grbitQOSOutput, &m_fThrottleReleaser );
+                }
+
+                void Capture( _Out_ BOOL* const pfThrottleReleaser, _Out_ OSFILEQOS* const pgrbitQOSOutput )
+                {
+                    *pfThrottleReleaser = m_fThrottleReleaser;
+                    m_fThrottleReleaser = fFalse;
+
+                    *pgrbitQOSOutput = m_grbitQOSOutput;
+                }
+
+            private:
+
+                TFileFilter<I>* const   m_pff;
+                const OSFILEQOS         m_grbitQOSOutput;
+                BOOL                    m_fThrottleReleaser;
+        };
+
+        void ReleaseUnusedIOREQ( _Inout_ const void** const ppioreq )
+        {
+            ReleaseUnusedIOREQ( (void**)ppioreq );
+        }
+
+        void ReleaseUnusedIOREQ( _Inout_ void** const ppioreq )
+        {
+            CReservedIOREQ* preservedIOREQ = (CReservedIOREQ*)*ppioreq;
+
+            *ppioreq = NULL;
+
+            ReleaseUnusedIOREQ( &preservedIOREQ );
+        }
+
+        void ReleaseUnusedIOREQ( _Inout_ CReservedIOREQ** const ppreservedIOREQ )
+        {
+            CReservedIOREQ* const preservedIOREQ = *ppreservedIOREQ;
+
+            *ppreservedIOREQ = NULL;
+
+            delete preservedIOREQ;
+        }
+
+    private:
+
+        class CThrottleContext
+        {
+            public:
+
+                CThrottleContext(   _In_ IFileSystemConfiguration* const    pfsconfig,
+                                    _In_ const ULONG_PTR                    ulDiskId )
+                    :   m_ulDiskId( ulDiskId ),
+                        m_cIOMax( pfsconfig->CIOMaxOutstanding() ),
+                        m_cIOBackgroundMax( pfsconfig->CIOMaxOutstandingBackground() ),
+                        m_cIOBackgroundLow( CioBackgroundIOLow( m_cIOBackgroundMax ) ),
+                        m_cIOUrgentBackgroundMax( CioDefaultUrgentOutstandingIOMax( m_cIOMax ) ),
+                        m_crit( CLockBasicInfo( CSyncBasicInfo( "TFileFilter<I>::CThrottleContext::m_crit" ), rankThrottleContext, 0 ) ),
+                        m_cIO( 0 ),
+                        m_cIOBackground( 0 ),
+                        m_cIOUrgentBackground( 0 )
+                {
+                }
+
+                ULONG_PTR UlDiskId() const { return m_ulDiskId; }
+
+                class CWaiter;
+
+                BOOL FRequest(  _In_ const BOOL         fAsync,
+                                _In_ const BOOL         fRead,
+                                _In_ const OSFILEQOS    grbitQOS,
+                                _In_ CWaiter* const     pwaiter )
+                {
+                    BOOL                                                fAcquiredIO                 = fFalse;
+                    BOOL                                                fAcquiredBackground         = fFalse;
+                    BOOL                                                fAcquiredUrgentBackground   = fFalse;
+                    BOOL                                                fSucceeded                  = fFalse;
+                    CInvasiveList<CWaiter, CWaiter::OffsetOfToComplete> ilToComplete;
+
+                    m_crit.Enter();
+
+                    fAcquiredBackground = FRequestBackgroundIO( fRead, grbitQOS );
+                    fAcquiredUrgentBackground = FRequestUrgentBackgroundIO( fRead, grbitQOS );
+
+                    if ( fAcquiredBackground && fAcquiredUrgentBackground )
+                    {
+                        fAcquiredIO = FRequestIO( fAsync, fRead, grbitQOS, pwaiter );
+                    }
+                    else
+                    {
+                        pwaiter->Complete();
+                    }
+
+                    fSucceeded = fAcquiredIO && fAcquiredBackground && fAcquiredUrgentBackground;
+
+                    if ( !fSucceeded )
+                    {
+                        if ( fAcquiredBackground )
+                        {
+                            (void)FReleaseBackgroundIO( fRead, grbitQOS );
+                        }
+                        if ( fAcquiredUrgentBackground )
+                        {
+                            (void)FReleaseUrgentBackgroundIO( fRead, grbitQOS );
+                        }
+                        if ( fAcquiredIO )
+                        {
+                            ReleaseIO( grbitQOS, pwaiter );
+                            GetIOWaitersToComplete( pwaiter, ilToComplete );
+                        }
+                    }
+
+                    m_crit.Leave();
+
+                    CompleteIOWaiters( ilToComplete );
+
+                    return fSucceeded;
+                }
+
+                BOOL FRelease(  _In_        const BOOL      fAsync,
+                                _In_        const BOOL      fRead,
+                                _In_        const OSFILEQOS grbitQOS,
+                                _Inout_opt_ BOOL* const     pfThrottleReleaser,   
+                                _In_opt_    CWaiter* const  pwaiter )
+                {
+                    const BOOL                                          fThrottleReleaser   = pfThrottleReleaser ? *pfThrottleReleaser : fFalse;
+                    BOOL                                                fQuotaAvailable     = fFalse;
+                    CInvasiveList<CWaiter, CWaiter::OffsetOfToComplete> ilToComplete;
+
+                    if ( pfThrottleReleaser )
+                    {
+                        *pfThrottleReleaser = fFalse;
+                    }
+
+                    if ( fThrottleReleaser )
+                    {
+                        m_crit.Enter();
+
+                        if ( fThrottleReleaser )
+                        {
+                            if ( FReleaseBackgroundIO( fRead, grbitQOS ) )
+                            {
+                                fQuotaAvailable = fTrue;
+                            }
+
+                            if ( FReleaseUrgentBackgroundIO( fRead, grbitQOS ) )
+                            {
+                                fQuotaAvailable = fTrue;
+                            }
+
+                            ReleaseIO( grbitQOS, pwaiter );
+                        }
+
+                        GetIOWaitersToComplete( pwaiter, ilToComplete );
+
+                        m_crit.Leave();
+                    }
+
+                    CompleteIOWaiters( ilToComplete );
+
+                    return fQuotaAvailable;
+                }
+
+                static SIZE_T OffsetOfILE() { return OffsetOf( CThrottleContext, m_ile ); }
+
+            public:
+
+                //  Wait context.
+
+                class CWaiter
+                {
+                    public:
+
+                        CWaiter()
+                            :   m_sig( CSyncBasicInfo( "TFileFilter<I>::CThrottleContext::CWaiter::m_sig" ) )
+                        {
+                        }
+
+                        ~CWaiter()
+                        {
+                            Wait();
+                        }
+
+                        BOOL FWaiting() const { return !m_ileWaiting.FUninitialized(); }
+
+                        BOOL FComplete() const { return m_sig.FIsSet(); }
+
+                        void Complete()
+                        {
+                            m_sig.Set();
+                        }
+
+                        void Wait()
+                        {
+                            m_sig.Wait();
+                        }
+
+                        static SIZE_T OffsetOfWaiting() { return OffsetOf( CWaiter, m_ileWaiting ); }
+                        static SIZE_T OffsetOfToComplete() { return OffsetOf( CWaiter, m_ileToComplete ); }
+
+                    private:
+
+                        typename CInvasiveList<CWaiter, CWaiter::OffsetOfWaiting>::CElement     m_ileWaiting;
+                        typename CInvasiveList<CWaiter, CWaiter::OffsetOfToComplete>::CElement  m_ileToComplete;
+                        CManualResetSignal                                                      m_sig;
+                };
+
+            private:
+
+                BOOL FRequestIO(    _In_ const BOOL         fAsync,
+                                    _In_ const BOOL         fRead,
+                                    _In_ const OSFILEQOS    grbitQOS, 
+                                    _In_ CWaiter* const     pwaiter )
+                { 
+                    if ( grbitQOS & qosBypassIOQuota )
+                    {
+                        pwaiter->Complete();
+                        return fTrue;
+                    }
+
+                    if ( FIncrementMax( m_cIO, m_cIOMax ) )
+                    {
+                        pwaiter->Complete();
+                        return fTrue;
+                    }
+
+                    if ( fAsync && !fRead )
+                    {
+                        if (    ( grbitQOS & ( qosIODispatchBackground | qosIODispatchUrgentBackgroundMask ) ) != 0 ||
+                                ( grbitQOS & qosIOOptimizeCombinable ) != 0 )
+                        {
+                            pwaiter->Complete();
+                            return fFalse;
+                        }
+                    }
+
+                    m_ilWaiting.InsertAsNextMost( pwaiter );
+
+                    return fTrue;
+                }
+
+                void ReleaseIO( _In_ const OSFILEQOS grbitQOS, _In_opt_ CWaiter* const pwaiter )
+                {
+                    if ( grbitQOS & qosBypassIOQuota )
+                    {
+                        return;
+                    }
+
+                    if ( !pwaiter || !pwaiter->FWaiting() )
+                    {
+                        DecrementMin( m_cIO, 0 );
+                    }
+                }
+
+                void GetIOWaitersToComplete(    _In_opt_    CWaiter* const                                          pwaiter,
+                                                _Inout_     CInvasiveList<CWaiter, CWaiter::OffsetOfToComplete>&    ilToComplete )
+                {
+                    if ( pwaiter && pwaiter->FWaiting() )
+                    {
+                        m_ilWaiting.Remove( pwaiter );
+                        ilToComplete.InsertAsPrevMost( pwaiter );
+                    }
+
+                    while ( m_ilWaiting.PrevMost() && FIncrementMax( m_cIO, m_cIOMax ) )
+                    {
+                        CWaiter* const pwaiterToComplete = m_ilWaiting.PrevMost();
+                        m_ilWaiting.Remove( pwaiterToComplete );
+                        ilToComplete.InsertAsPrevMost( pwaiterToComplete );
+                    }
+                }
+
+                void CompleteIOWaiters( _Inout_ CInvasiveList<CWaiter, CWaiter::OffsetOfToComplete>& ilToComplete )
+                {
+                    while ( ilToComplete.PrevMost() )
+                    {
+                        CWaiter* const pwaiterToComplete = ilToComplete.PrevMost();
+                        ilToComplete.Remove( pwaiterToComplete );
+                        pwaiterToComplete->Complete();
+                    }
+                }
+
+                BOOL FRequestBackgroundIO( _In_ const BOOL fRead, _In_ const OSFILEQOS grbitQOS )
+                { 
+                    if ( fRead )
+                    {
+                        return fTrue;
+                    }
+
+                    if ( !( grbitQOS & qosIODispatchBackground ) )
+                    {
+                        return fTrue;
+                    }
+
+                    if ( FIncrementMax( m_cIOBackground, m_cIOBackgroundMax ) )
+                    {
+                        return fTrue;
+                    }
+
+                    return fFalse;
+                }
+
+                BOOL FReleaseBackgroundIO( _In_ const BOOL fRead, _In_ const OSFILEQOS grbitQOS )
+                {
+                    if ( fRead )
+                    {
+                        return fFalse;
+                    }
+
+                    if ( !( grbitQOS & qosIODispatchBackground ) )
+                    {
+                        return fFalse;
+                    }
+
+                    DecrementMin( m_cIOBackground, 0 );
+
+                    return m_cIOBackground <= m_cIOBackgroundLow;
+                }
+
+                BOOL FRequestUrgentBackgroundIO( _In_ const BOOL fRead, _In_ const OSFILEQOS grbitQOS )
+                {
+                    if ( fRead )
+                    {
+                        return fTrue;
+                    }
+
+                    if ( !( grbitQOS & qosIODispatchUrgentBackgroundMask ) )
+                    {
+                        return fTrue;
+                    }
+
+                    const ULONG iUrgent = IOSDiskIUrgentLevelFromQOS( grbitQOS );
+                    const DWORD cIOUrgentBackgroundMax = CioOSDiskIFromUrgentLevel( iUrgent, m_cIOUrgentBackgroundMax );
+
+                    if ( FIncrementMax( m_cIOUrgentBackground, cIOUrgentBackgroundMax, m_cIOUrgentBackgroundMax ) )
+                    {
+                        return fTrue;
+                    }
+
+                    return fFalse;
+                }
+
+                BOOL FReleaseUrgentBackgroundIO( _In_ const BOOL fRead, _In_ const OSFILEQOS grbitQOS )
+                {
+                    if ( fRead )
+                    {
+                        return fFalse;
+                    }
+
+                    if ( !( grbitQOS & qosIODispatchUrgentBackgroundMask ) )
+                    {
+                        return fFalse;
+                    }
+
+                    const ULONG iUrgentLower = max( 2, IOSDiskIUrgentLevelFromQOS( grbitQOS ) ) - 1;
+                    const DWORD cIOUrgentBackgroundMax = CioOSDiskIFromUrgentLevel( iUrgentLower, m_cIOUrgentBackgroundMax );
+
+                    DecrementMin( m_cIOUrgentBackground, 0 );
+                    
+                    return m_cIOUrgentBackground <= cIOUrgentBackgroundMax;
+                }
+
+                BOOL FIncrementMax( _Inout_ DWORD& dwTarget, _In_ const DWORD dwTargetMax )
+                {
+                    return FIncrementMax( dwTarget, dwTargetMax, dwTargetMax );
+                }
+
+                BOOL FIncrementMax( _Inout_ DWORD& dwTarget, _In_ const DWORD dwTargetMax, _In_ const DWORD dwTargetMaxMax )
+                {
+                    Assert( dwTarget <= dwTargetMaxMax );
+
+                    if ( dwTarget >= dwTargetMax )
+                    {
+                        return fFalse;
+                    }
+
+                    dwTarget++;
+
+                    return fTrue;
+                }
+
+                void DecrementMin( _Inout_ DWORD& dwTarget, _In_ const DWORD dwTargetMin )
+                {
+                    Assert( dwTarget > dwTargetMin );
+
+                    if ( dwTarget > dwTargetMin )
+                    {
+                        dwTarget--;
+                    }
+                }
+
+            private:
+
+                const ULONG_PTR                                                                             m_ulDiskId;
+                const DWORD                                                                                 m_cIOMax;
+                const DWORD                                                                                 m_cIOBackgroundMax;
+                const DWORD                                                                                 m_cIOBackgroundLow;
+                const DWORD                                                                                 m_cIOUrgentBackgroundMax;
+                typename CCountedInvasiveList<CThrottleContext, CThrottleContext::OffsetOfILE>::CElement    m_ile;
+                CCriticalSection                                                                            m_crit;
+                CCountedInvasiveList<CWaiter, CWaiter::OffsetOfWaiting>                                     m_ilWaiting;
+                DWORD                                                                                       m_cIO;
+                DWORD                                                                                       m_cIOBackground;
+                DWORD                                                                                       m_cIOUrgentBackground;
+        };
+
+        class CThrottleContextRepository
+        {
+            public:
+
+                static ERR ErrGetThrottleContext(   _In_    IFileSystemConfiguration* const pfsconfig,
+                                                    _In_    const ULONG_PTR                 ulDiskId,
+                                                    _Out_   CThrottleContext** const        pptc )
+                {
+                    ERR                 err             = JET_errSuccess;
+                    BOOL                fLeaveReader    = fFalse;
+                    CThrottleContext*   ptcCached       = NULL;
+
+                    *pptc = NULL;
+
+                    s_rwlThrottleContexts.EnterAsReader();
+                    fLeaveReader = fTrue;
+
+                    for (   ptcCached = s_ilThrottleContexts.PrevMost();
+                            ptcCached != NULL && ptcCached->UlDiskId() != ulDiskId;
+                            ptcCached = s_ilThrottleContexts.Next( ptcCached ) )
+                    {
+                    }
+
+                    s_rwlThrottleContexts.LeaveAsReader();
+                    fLeaveReader = fFalse;
+
+                    if ( !ptcCached )
+                    {
+                        Call( ErrGetThrottleContextSlowly( pfsconfig, ulDiskId, &ptcCached ) );
+                    }
+
+                    *pptc = ptcCached;
+
+                HandleError:
+                    if ( fLeaveReader )
+                    {
+                        s_rwlThrottleContexts.LeaveAsReader();
+                    }
+                    if ( err < JET_errSuccess )
+                    {
+                        *pptc = NULL;
+                    }
+                    return err;
+                }
+
+                static void Cleanup()
+                {
+                    while ( s_ilThrottleContexts.PrevMost() )
+                    {
+                        CThrottleContext* const ptc = s_ilThrottleContexts.PrevMost();
+                        s_ilThrottleContexts.Remove( ptc );
+                        delete ptc;
+                    }
+                }
+
+            private:
+
+                static ERR ErrGetThrottleContextSlowly( _In_    IFileSystemConfiguration* const pfsconfig,
+                                                        _In_    const ULONG_PTR                 ulDiskId,
+                                                        _Out_   CThrottleContext** const        pptc )
+                {
+                    ERR                 err             = JET_errSuccess;
+                    CThrottleContext*   ptcCached       = NULL;
+                    CThrottleContext*   ptcNew          = NULL;
+                    BOOL                fLeaveWriter    = fFalse;
+
+                    *pptc = NULL;
+
+                    s_rwlThrottleContexts.EnterAsWriter();
+                    fLeaveWriter = fTrue;
+
+                    for (   ptcCached = s_ilThrottleContexts.PrevMost();
+                            ptcCached != NULL && ptcCached->UlDiskId() != ulDiskId;
+                            ptcCached = s_ilThrottleContexts.Next( ptcCached ) )
+                    {
+                    }
+
+                    if ( !ptcCached )
+                    {
+                        Alloc( ptcCached = ptcNew = new CThrottleContext( pfsconfig, ulDiskId ) );
+
+                        s_ilThrottleContexts.InsertAsNextMost( ptcNew );
+                        ptcNew = NULL;
+                    }
+
+                    *pptc = ptcCached;
+
+                HandleError:
+                    if ( fLeaveWriter )
+                    {
+                        s_rwlThrottleContexts.LeaveAsWriter();
+                    }
+                    delete ptcNew;
+                    if ( err < JET_errSuccess )
+                    {
+                        *pptc = NULL;
+                    }
+                    return err;
+                }
+
+            private:
+
+                using CThrottleContextList = CCountedInvasiveList<CThrottleContext, CThrottleContext::OffsetOfILE>;
+
+                static CReaderWriterLock    s_rwlThrottleContexts;
+                static CThrottleContextList s_ilThrottleContexts;
+        };
+
+    private:
+
+        static ERR ErrCombineCheck( _In_    IFileSystemConfiguration* const             pfsconfig,
+                                    _In_    const VolumeId                              volumeid,
+                                    _In_    const FileId                                fileid,
+                                    _In_    const FileSerial                            fileserial,
+                                    _In_    const BOOL                                  fAsync,
+                                    _In_    const BOOL                                  fRead,
+                                    _In_    const COffsets&                             offsets,
+                                    _In_    const OSFILEQOS                             grbitQOS,
+                                    _In_    const BOOL                                  fMustCombine,
+                                    _Out_   BOOL* const                                 pfCombined )
+        {
+            ERR                     err                 = JET_errSuccess;
+            CThreadLocalStorage*    pctls               = NULL;
+            BOOL                    fCombined           = fFalse;
+
+            *pfCombined = fFalse;
+
+            Call( CThreadLocalStorageRepository::ErrGetThreadLocalStorage( &pctls ) );
+
+            //  determine if we can combine this request with an existing request
+
+            Call( pctls->ErrRequest(    pfsconfig, 
+                                        volumeid, 
+                                        fileid, 
+                                        fileserial, 
+                                        fAsync, 
+                                        fRead, 
+                                        offsets, 
+                                        grbitQOS, 
+                                        fMustCombine, 
+                                        &fCombined ) );
+
+            //  indicate to the caller if we combined the IO
+
+            *pfCombined = fCombined;
+
+        HandleError:
+            CThreadLocalStorage::Release( &pctls );
+            if ( err < JET_errSuccess )
+            {
+                *pfCombined = fFalse;
+            }
+            return err;
+        }
+
+        static ERR ErrThrottleCheck(    _In_    IFileSystemConfiguration* const             pfsconfig,
+                                        _In_    const ULONG_PTR                             ulDiskId,
+                                        _In_    const VolumeId                              volumeid,
+                                        _In_    const FileId                                fileid,
+                                        _In_    const FileSerial                            fileserial,
+                                        _In_    const BOOL                                  fAsync,
+                                        _In_    const BOOL                                  fRead,
+                                        _In_    const COffsets&                             offsets,
+                                        _In_    const OSFILEQOS                             grbitQOS,
+                                        _In_    typename CThrottleContext::CWaiter* const   pwaiter,
+                                        _Out_   BOOL* const                                 pfThrottleReleaser,
+                                        _Out_   BOOL* const                                 pfCombined )
+        {
+            ERR                 err                 = JET_errSuccess;
+            CThrottleContext*   ptc                 = NULL;
+            BOOL                fThrottleAcquired   = fFalse;
+            BOOL                fCombined           = fFalse;
+
+            *pfThrottleReleaser = fFalse;
+            *pfCombined = fFalse;
+
+            Call( CThrottleContextRepository::ErrGetThrottleContext( pfsconfig, ulDiskId, &ptc ) );
+
+            //  try to acquire a throttle count
+
+            fThrottleAcquired = ptc->FRequest( fAsync, fRead, grbitQOS, pwaiter );
+
+            //  check if we can combine this request with an existing request.  if we failed to acquire a throttle
+            //  count then this must succeed for the IO to be allowed
+
+            Call( ErrCombineCheck(  pfsconfig, 
+                                    volumeid, 
+                                    fileid,
+                                    fileserial, 
+                                    fAsync, 
+                                    fRead, 
+                                    offsets, 
+                                    grbitQOS, 
+                                    !fThrottleAcquired,
+                                    &fCombined ) );
+
+            //  if the request was combined with an existing request and we acquired a throttle count then release it
+
+            if ( fCombined )
+            {
+                (void)ptc->FRelease( fAsync, fRead, grbitQOS, &fThrottleAcquired, pwaiter );
+            }
+
+            //  if we still have a throttle count then indicate to the caller that they own releasing it
+
+            *pfThrottleReleaser = fThrottleAcquired;
+            fThrottleAcquired = fFalse;
+            *pfCombined = fCombined;
+
+        HandleError:
+            if ( ptc )
+            {
+                (void)ptc->FRelease( fAsync, fRead, grbitQOS, &fThrottleAcquired, pwaiter );
+            }
+            if ( err < JET_errSuccess )
+            {
+                if ( ptc )
+                {
+                    (void)ptc->FRelease( fAsync, fRead, grbitQOS, pfThrottleReleaser, pwaiter );
+                }
+                *pfCombined = fFalse;
+            }
+            return err;
+        }
+
+        static BOOL FThrottleRelease(   _In_        IFileSystemConfiguration* const             pfsconfig,
+                                        _In_        const ULONG_PTR                             ulDiskId,
+                                        _In_        const BOOL                                  fAsync,
+                                        _In_        const BOOL                                  fRead,
+                                        _In_        const OSFILEQOS                             grbitQOS,
+                                        _Inout_     BOOL* const                                 pfThrottleReleaser,
+                                        _In_opt_    typename CThrottleContext::CWaiter* const   pwaiter             = NULL )
+        {
+            BOOL                fThrottleReleaser   = *pfThrottleReleaser;
+            CThrottleContext*   ptc                 = NULL;
+
+            *pfThrottleReleaser = fFalse;
+
+            if ( !fThrottleReleaser )
+            {
+                return fFalse;
+            }
+
+            CallSx( CThrottleContextRepository::ErrGetThrottleContext( pfsconfig, ulDiskId, &ptc ), JET_errOutOfMemory );
+
+            if ( !ptc )
+            {
+                return fFalse;
+            }
+
+            return ptc->FRelease( fAsync, fRead, grbitQOS, &fThrottleReleaser, pwaiter );
+        }
+
+        ERR ErrThrottleCheck(   _In_    const BOOL          fAsync,
+                                _In_    const BOOL          fRead,
+                                _In_    const COffsets&     offsets,
+                                _In_    const OSFILEQOS     grbitQOS,
+                                _Out_   BOOL* const         pfThrottleReleaser,
+                                _Out_   BOOL* const         pfCombined )
+        {
+            ERR                         err                 = JET_errSuccess;
+            ULONG_PTR                   ulDiskId            = 0;
+            CThrottleContext::CWaiter   waiter;
+            BOOL                        fThrottleAcquired   = fFalse;
+            BOOL                        fCombined           = fFalse;
+
+            *pfThrottleReleaser = fFalse;
+            *pfCombined = fFalse;
+
+            //  try to acquire a throttle count for the disk backing this file
+
+            Call( ErrDiskId( &ulDiskId ) );
+
+            Call( ErrThrottleCheck( m_pfsconfig, 
+                                    ulDiskId, 
+                                    m_volumeid, 
+                                    m_fileid,
+                                    m_fileserial, 
+                                    fAsync, 
+                                    fRead, 
+                                    offsets, 
+                                    grbitQOS, 
+                                    &waiter,
+                                    &fThrottleAcquired,
+                                    &fCombined ) );
+
+            //  if we need to wait to get a throttle count then we must issue to avoid deadlocks
+
+            if ( !waiter.FComplete() )
+            {
+                Assert( fThrottleAcquired && !fCombined );
+
+                //  issue any IO queued for this thread
+
+                Call( ErrIOIssue() );
+
+                //  either register this request for future checks or fail if the request must be combined because we
+                //  just issued all our IO
+
+                Call( ErrCombineCheck(  m_pfsconfig, 
+                                        m_volumeid, 
+                                        m_fileid,
+                                        m_fileserial, 
+                                        fAsync, 
+                                        fRead, 
+                                        offsets, 
+                                        grbitQOS, 
+                                        fFalse,
+                                        &fCombined ) );
+
+                Assert( fThrottleAcquired && !fCombined );
+            }
+
+            //  if we need to wait to get a throttle count then do so
+
+            waiter.Wait();
+
+            //  if we still have a throttle count then indicate to the caller that they own releasing it
+
+            *pfThrottleReleaser = fThrottleAcquired;
+            fThrottleAcquired = fFalse;
+            *pfCombined = fCombined;
+
+        HandleError:
+            (void)FThrottleRelease( m_pfsconfig, ulDiskId, fAsync, fRead, grbitQOS, &fThrottleAcquired, &waiter );
+            if ( err < JET_errSuccess )
+            {
+                err = ErrERRCheck( errDiskTilt );
+
+                (void)FThrottleRelease( m_pfsconfig, ulDiskId, fAsync, fRead, grbitQOS, pfThrottleReleaser, &waiter );
+                *pfCombined = fFalse;
+            }
+            return err;
+        }
+
+        BOOL FThrottleRelease(  _In_    const BOOL      fAsync,
+                                _In_    const BOOL      fRead,
+                                _In_    const OSFILEQOS grbitQOS,
+                                _Inout_ BOOL* const     pfThrottleReleaser )
+        {
+            BOOL        fThrottleReleaser   = *pfThrottleReleaser;
+            ULONG_PTR   ulDiskId            = 0;
+
+            *pfThrottleReleaser = fFalse;
+
+            if ( !fThrottleReleaser )
+            {
+                return fFalse;
+            }
+
+            CallS( ErrDiskId( &ulDiskId ) );
+
+            return FThrottleRelease( m_pfsconfig, ulDiskId, fAsync, fRead, grbitQOS, &fThrottleReleaser );
+        }
+
     private:
 
         typedef CInitOnce< ERR, decltype( &ErrAttach_ ), TFileFilter<I>* const, const COffsets& > CInitOnceAttach;
 
         IFileSystemFilter* const                                    m_pfsf;
         IFileSystemConfiguration* const                             m_pfsconfig;
+        IFileIdentification* const                                  m_pfident;
         ICacheTelemetry* const                                      m_pctm;
+        ICacheRepository* const                                     m_pcrep;
+        CReaderWriterLock                                           m_rwlRegisterIFilePerfAPI;
+        BOOL                                                        m_fRegisteredIFilePerfAPI;
         VolumeId                                                    m_volumeid;
         FileId                                                      m_fileid;
         FileSerial                                                  m_fileserial;
+        BOOL                                                        m_fEverEligibleForCaching;
         ICachedFileConfiguration*                                   m_pcfconfig;
         ICache*                                                     m_pc;
+        CCacheWrapper                                               m_cWrapper;
         CCachedFileHeader*                                          m_pcfh;
         ICacheTelemetry::FileNumber                                 m_filenumber;
         ULONG                                                       m_cbBlockSize;
@@ -508,6 +1998,62 @@ class TFileFilter  //  ff
         CInitOnceAttach                                             m_initOnceAttach;
         CSemaphore                                                  m_semCachedFileHeader;
 
+    private:
+
+        void BeginIORequest()
+        {
+            //  disallow registration of IFilePerfAPI during any IO request
+
+            CLockDeadlockDetectionInfo::DisableOwnershipTracking();
+            CLockDeadlockDetectionInfo::DisableDeadlockDetection();
+            m_rwlRegisterIFilePerfAPI.EnterAsReader();
+            CLockDeadlockDetectionInfo::EnableDeadlockDetection();
+            CLockDeadlockDetectionInfo::EnableOwnershipTracking();
+        }
+
+        void EndIORequest()
+        {
+            //  disallow registration of IFilePerfAPI during any IO request
+
+            CLockDeadlockDetectionInfo::DisableOwnershipTracking();
+            CLockDeadlockDetectionInfo::DisableDeadlockDetection();
+            m_rwlRegisterIFilePerfAPI.LeaveAsReader();
+            CLockDeadlockDetectionInfo::EnableDeadlockDetection();
+            CLockDeadlockDetectionInfo::EnableOwnershipTracking();
+        }
+
+        //  context used to track pending IO requests
+
+        class CIORequestPending
+        {
+            public:
+
+                CIORequestPending( _In_ TFileFilter<I>* const pff )
+                    :   m_pff( pff ),
+                        m_fComplete( fFalse )
+                {
+                    m_pff->BeginIORequest();
+                }
+
+                ~CIORequestPending()
+                {
+                    Complete();
+                }
+
+                void Complete()
+                {
+                    if ( AtomicCompareExchange( (LONG*)&m_fComplete, fFalse, fTrue ) == fFalse )
+                    {
+                        m_pff->EndIORequest();
+                    }
+                }
+
+            private:
+
+                TFileFilter<I>* const   m_pff;
+                volatile BOOL           m_fComplete;
+        };
+
     protected:
 
         //  IO completion context for an IFileFilter implementation.
@@ -520,9 +2066,11 @@ class TFileFilter  //  ff
                 CIOComplete(    _In_                    const BOOL                      fIsHeapAlloc,
                                 _In_                    TFileFilter<I>* const           pff,
                                 _In_                    const BOOL                      fWrite,
+                                _In_                    const OSFILEQOS                 grbitQOS,
                                 _Inout_opt_             CMeteredSection::Group* const   pgroupPendingWriteBacks,
                                 _Inout_opt_             CSemaphore** const              ppsemCachedFileHeader,
                                 _In_opt_                CWriteBack* const               pwriteback,
+                                _Inout_opt_             BOOL* const                     pfThrottleReleaser,
                                 _In_                    const QWORD                     ibOffset,
                                 _In_                    const DWORD                     cbData,
                                 _In_reads_( cbData )    const BYTE* const               pbData,
@@ -538,12 +2086,16 @@ class TFileFilter  //  ff
                                                         pfnIOHandoff,
                                                         keyIOComplete ),
                         m_pff( pff ),
+                        m_fAsync( pfnIOComplete != NULL ),
                         m_fWrite( fWrite ),
+                        m_grbitQOS( grbitQOS ),
                         m_groupPendingWriteBacks( pgroupPendingWriteBacks ? *pgroupPendingWriteBacks : CMeteredSection::groupInvalidNil ),
                         m_psemCachedFileHeader( ppsemCachedFileHeader ? *ppsemCachedFileHeader : NULL ),
                         m_pwriteback( pwriteback ),
                         m_fReleaseWriteback( m_pwriteback != NULL ),
-                        m_fReleaseResources( fTrue )
+                        m_fThrottleReleaser( pfThrottleReleaser ? *pfThrottleReleaser : fFalse ),
+                        m_fReleaseResources( fTrue ),
+                        m_iorequestpending( pff )
                 {
                     if ( pgroupPendingWriteBacks )
                     {
@@ -553,6 +2105,10 @@ class TFileFilter  //  ff
                     {
                         *ppsemCachedFileHeader = NULL;
                     }
+                    if ( pfThrottleReleaser )
+                    {
+                        *pfThrottleReleaser = fFalse;
+                    }
                 }
 
                 BOOL FAccessingHeader() const { return m_psemCachedFileHeader != NULL; }
@@ -561,7 +2117,7 @@ class TFileFilter  //  ff
                 {
                     m_fReleaseWriteback = fFalse;
                 }
-                
+ 
                 static void Complete_(  _In_                    const ERR               err,
                                         _In_                    const VolumeId          volumeid,
                                         _In_                    const FileId            fileid,
@@ -578,6 +2134,39 @@ class TFileFilter  //  ff
 
                     CIOComplete* const piocomplete = (CIOComplete*)keyComplete;
                     piocomplete->IOComplete( err, tc, grbitQOS );
+                }
+
+                static void IOComplete_(    _In_                    const ERR               err,
+                                            _In_                    IFileAPI* const         pfapi,
+                                            _In_                    const FullTraceContext& tc,
+                                            _In_                    const OSFILEQOS         grbitQOS,
+                                            _In_                    const QWORD             ibOffset,
+                                            _In_                    const DWORD             cbData,
+                                            _In_reads_( cbData )    const BYTE* const       pbData,
+                                            _In_                    const DWORD_PTR         keyIOComplete )
+                {
+                    IFileAPI::PfnIOComplete pfnIOComplete = IOComplete_;
+                    Unused( pfnIOComplete );
+
+                    CIOComplete* const piocomplete = (CIOComplete*)keyIOComplete;
+                    piocomplete->IOComplete( err, tc, grbitQOS );
+                }
+
+                static void IOHandoff_( _In_                    const ERR               err,
+                                        _In_                    IFileAPI* const         pfapi,
+                                        _In_                    const FullTraceContext& tc,
+                                        _In_                    const OSFILEQOS         grbitQOS,
+                                        _In_                    const QWORD             ibOffset,
+                                        _In_                    const DWORD             cbData,
+                                        _In_reads_( cbData )    const BYTE* const       pbData,
+                                        _In_                    const DWORD_PTR         keyIOComplete,
+                                        _In_                    void* const             pvIOContext )
+                {
+                    IFileAPI::PfnIOHandoff pfnIOHandoff = IOHandoff_;
+                    Unused( pfnIOHandoff );
+
+                    CIOComplete* const piocomplete = (CIOComplete*)keyIOComplete;
+                    piocomplete->IOHandoff( err, tc, grbitQOS );
                 }
 
             protected:
@@ -602,20 +2191,66 @@ class TFileFilter  //  ff
                 {
                     if ( AtomicCompareExchange( (LONG*)&m_fReleaseResources, fTrue, fFalse ) == fTrue )
                     {
+                        (void)FReleaseThrottle();
                         m_pff->EndAccess( &m_groupPendingWriteBacks, &m_psemCachedFileHeader );
                         m_pff->CompleteWriteBack( m_fReleaseWriteback ? m_pwriteback : NULL );
+                        m_iorequestpending.Complete();
                     }
+                }
+
+                BOOL FReleaseThrottle()
+                {
+                    return m_pff->FThrottleRelease( m_fAsync, m_fWrite == fFalse, m_grbitQOS, &m_fThrottleReleaser );
+                }
+
+                void IOComplete(    _In_ const ERR                  err,
+                                    _In_ const FullTraceContext&    tc,
+                                    _In_ const OSFILEQOS            grbitQOS )
+                {
+                    //  pass on the return signals from the lower layer
+
+                    OSFILEQOS grbitQOSOutput = m_grbitQOS & qosIOInMask;
+                    grbitQOSOutput |= ( grbitQOS & qosIOCompleteMask & ~( qosIOCompleteIoCombined | qosIOCompleteWriteGameOn ) );
+
+                    //  if throttling has dropped low enough then send the signal to resume background writes
+
+                    if ( FReleaseThrottle() )
+                    {
+                        grbitQOSOutput |= qosIOCompleteWriteGameOn;
+                    }
+
+                    //  continue the completion
+
+                    TFileWrapper<I>::CIOComplete::IOComplete( err, tc, grbitQOSOutput );
+                }
+                
+                void IOHandoff( _In_ const ERR                  err,
+                                _In_ const FullTraceContext&    tc,
+                                _In_ const OSFILEQOS            grbitQOS )
+                {
+                    //  pass on the return signals from the lower layer
+
+                    OSFILEQOS grbitQOSOutput = m_grbitQOS & qosIOInMask;
+                    grbitQOSOutput |= ( grbitQOS & qosIOCompleteMask & ~( qosIOCompleteIoCombined | qosIOCompleteWriteGameOn ) );
+
+                    //  continue the completion
+
+                    TFileWrapper<I>::CIOComplete::IOHandoff( err, tc, grbitQOSOutput );
                 }
 
             private:
 
                 TFileFilter<I>* const   m_pff;
+                const BOOL              m_fAsync;
                 const BOOL              m_fWrite;
+                const OSFILEQOS         m_grbitQOS;
                 CMeteredSection::Group  m_groupPendingWriteBacks;
                 CSemaphore*             m_psemCachedFileHeader;
                 CWriteBack* const       m_pwriteback;
                 BOOL                    m_fReleaseWriteback;
+                BOOL                    m_fThrottleReleaser;
                 volatile BOOL           m_fReleaseResources;
+                CIORequestPending       m_iorequestpending;
         };
 };
 
@@ -623,7 +2258,9 @@ template< class I >
 TFileFilter<I>::TFileFilter(    _Inout_     IFileAPI** const                    ppfapi,
                                 _In_        IFileSystemFilter* const            pfsf,
                                 _In_        IFileSystemConfiguration* const     pfsconfig,
+                                _In_        IFileIdentification* const          pfident,
                                 _In_        ICacheTelemetry* const              pctm,
+                                _In_        ICacheRepository* const             pcrep,
                                 _In_        const VolumeId                      volumeid,
                                 _In_        const FileId                        fileid,
                                 _Inout_opt_ ICachedFileConfiguration** const    ppcfconfig,
@@ -632,16 +2269,22 @@ TFileFilter<I>::TFileFilter(    _Inout_     IFileAPI** const                    
     :   TFileWrapper<I>( (I** const)ppfapi ),
         m_pfsf( pfsf ),
         m_pfsconfig( pfsconfig ),
+        m_pfident( pfident ),
         m_pctm( pctm ),
+        m_pcrep( pcrep ),
+        m_rwlRegisterIFilePerfAPI( CLockBasicInfo( CSyncBasicInfo( "TFileFilter<I>::m_rwlRegisterIFilePerfAPI" ), rankRegisterIFilePerfAPI, 0 ) ),
+        m_fRegisteredIFilePerfAPI( fFalse ),
         m_volumeid( volumeid ),
         m_fileid( fileid ),
         m_fileserial( fileserialInvalid ),
+        m_fEverEligibleForCaching( fFalse ),
         m_pcfconfig( ppcfconfig ? *ppcfconfig : NULL ),
-        m_pc( ppc ? *ppc : NULL ),
+        m_pc( ppc && *ppc ? &m_cWrapper : NULL ),
+        m_cWrapper( this, ppc ),
         m_pcfh( ppcfh ? *ppcfh : NULL ),
         m_filenumber( filenumberInvalid ),
-        m_cbBlockSize( 0 ),
-        m_offsetsCachedFileHeader( 0, sizeof( CCachedFileHeader ) ),
+        m_cbBlockSize( cbCachedBlock ),
+        m_offsetsCachedFileHeader( 0, sizeof( CCachedFileHeader ) - 1 ),
         m_critWaiters( CLockBasicInfo( CSyncBasicInfo( "TFileFilter<I>::m_critWaiters" ), rankFileFilter, 0 ) ),
         m_critPendingWriteBacks( CLockBasicInfo( CSyncBasicInfo( "TFileFilter<I>::m_critPendingWriteBacks" ), rankFileFilter, 0 ) ),
         m_cPendingWriteBacksMax( 0 ),
@@ -662,10 +2305,6 @@ TFileFilter<I>::TFileFilter(    _Inout_     IFileAPI** const                    
     {
         *ppcfconfig = NULL;
     }
-    if ( ppc )
-    {
-        *ppc = NULL;
-    }
     if ( ppcfh )
     {
         *ppcfh = NULL;
@@ -679,8 +2318,15 @@ TFileFilter<I>::~TFileFilter()
 
     m_semRequestWriteBacks.Acquire();
     delete m_pcfh;
-    delete m_pc;
     delete m_pcfconfig;
+}
+
+template<class I>
+void TFileFilter<I>::Cleanup()
+{
+    CIOComplete::Cleanup();
+    CThreadLocalStorageRepository::Cleanup();
+    CThrottleContextRepository::Cleanup();
 }
 
 template< class I >
@@ -800,6 +2446,54 @@ HandleError:
     return err;
 }
 
+ 
+template< class I >
+ERR TFileFilter<I>::ErrReserveIOREQ(    _In_    const QWORD     ibOffset,
+                                        _In_    const DWORD     cbData,
+                                        _In_    const OSFILEQOS grbitQOS,
+                                        _Out_   VOID **         ppioreq )
+{
+    ERR                     err                 = JET_errSuccess;
+    OSFILEQOS               grbitQOSOutput      = grbitQOS & ( qosIOInMask | qosBypassIOQuota );
+    COffsets                offsets             = COffsets( ibOffset, ibOffset + cbData - 1 );
+    BOOL                    fThrottleReleaser   = fFalse;
+    BOOL                    fCombined           = fFalse;
+    CReservedIOREQ*         preservedIOREQ      = NULL;
+
+    *ppioreq = NULL;
+
+    Call( ErrThrottleCheck( fTrue, fTrue, offsets, grbitQOS, &fThrottleReleaser, &fCombined ) );
+
+    //  set the IO combined state for output
+
+    if ( fCombined )
+    {
+        grbitQOSOutput |= qosIOCompleteIoCombined;
+    }
+
+    Alloc( preservedIOREQ = new CReservedIOREQ( this, grbitQOSOutput, &fThrottleReleaser ) );
+
+    *ppioreq = preservedIOREQ;
+    preservedIOREQ = NULL;
+
+HandleError:
+    ReleaseUnusedIOREQ( &preservedIOREQ );
+    (void)FThrottleRelease( fTrue, fTrue, grbitQOS, &fThrottleReleaser );
+    if ( err < JET_errSuccess )
+    {
+        err = ErrERRCheck( errDiskTilt );
+
+        ReleaseUnusedIOREQ( ppioreq );
+    }
+    return err;
+}
+
+template< class I >
+VOID TFileFilter<I>::ReleaseUnusedIOREQ( _In_ VOID * pioreq )
+{
+    ReleaseUnusedIOREQ( &pioreq );
+}
+
 template< class I >
 ERR TFileFilter<I>::ErrIORead(  _In_                    const TraceContext&                 tc,
                                 _In_                    const QWORD                         ibOffset,
@@ -834,6 +2528,33 @@ ERR TFileFilter<I>::ErrIOIssue()
 }
 
 template< class I >
+void TFileFilter<I>::RegisterIFilePerfAPI( _In_ IFilePerfAPI* const pfpapi )
+{
+    //  ensure any previously requested IO is issued to avoid deadlock during registration
+
+    CallS( ErrIOIssue() );
+
+    //  disallow registration of IFilePerfAPI during any IO request
+
+    m_rwlRegisterIFilePerfAPI.EnterAsWriter();
+
+    //  if we already registered an IFilePerfAPI then drop this one, otherwise register it
+
+    if ( m_fRegisteredIFilePerfAPI )
+    {
+        delete pfpapi;
+    }
+    else
+    {
+        TFileWrapper<I>::RegisterIFilePerfAPI( pfpapi );
+
+        m_fRegisteredIFilePerfAPI = fTrue;
+    }
+
+    m_rwlRegisterIFilePerfAPI.LeaveAsWriter();
+}
+
+template< class I >
 ERR TFileFilter<I>::ErrRead(    _In_                    const TraceContext&             tc,
                                 _In_                    const QWORD                     ibOffset,
                                 _In_                    const DWORD                     cbData,
@@ -845,11 +2566,11 @@ ERR TFileFilter<I>::ErrRead(    _In_                    const TraceContext&     
                                 _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
                                 _In_opt_                const VOID *                    pioreq )
 {
-    ERR                     err         = JET_errSuccess;
-    BOOL                    fIOREQUsed  = fFalse;
-    COffsets                offsets     = COffsets( ibOffset, ibOffset + cbData - 1 );
-    CMeteredSection::Group  group       = CMeteredSection::groupInvalidNil;
-    CSemaphore*             psem        = NULL;
+    ERR                     err                 = JET_errSuccess;
+    COffsets                offsets             = COffsets( ibOffset, ibOffset + cbData - 1 );
+    CIORequestPending       iorequestpending( this );
+    CMeteredSection::Group  group               = CMeteredSection::groupInvalidNil;
+    CSemaphore*             psem                = NULL;
 
     Assert( cbData > 0 );  //  underlying impl also asserts no zero length IO
     Assert( iom == iomRaw || iom == iomEngine || iom == iomCacheMiss );
@@ -863,26 +2584,22 @@ ERR TFileFilter<I>::ErrRead(    _In_                    const TraceContext&     
     if ( iom == iomEngine )
     {
         Call( ErrBeginAccess( offsets, fFalse, &group, &psem ) );
-        fIOREQUsed = fTrue;
-        Call( ErrCacheRead( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, pioreq, &group, &psem ) );
+        Call( ErrCacheRead( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, &pioreq, &group, &psem ) );
     }
     else if ( iom == iomCacheMiss )
     {
         Call( ErrVerifyAccess( offsets ) );
-        fIOREQUsed = fTrue;
-        Call( ErrCacheMiss( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, pioreq, &group, &psem ) );
+        Call( ErrCacheMiss( tc, ibOffset, cbData, pbData, grbitQOS, grbitQOS, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, &pioreq, &group, &psem, NULL ) );
     }
     else
     {
-        fIOREQUsed = fTrue;
-        Call( TFileWrapper<I>::ErrIORead( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, pioreq ) );
+        ReleaseUnusedIOREQ( &pioreq);
+
+        Call( TFileWrapper<I>::ErrIORead( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, NULL ) );
     }
 
 HandleError:
-    if ( group != CMeteredSection::groupInvalidNil )
-    {
-        EndAccess( &group, &psem );
-    }
+    EndAccess( &group, &psem );
     OSTrace( JET_tracetagBlockCache,
         OSFormat( "%s ErrIORead ib=%llu cb=%u fZeroed=%s fCachedFileHeader=%s iom=%d",
             OSFormat( this ),
@@ -900,7 +2617,6 @@ HandleError:
                                 keyIOComplete, 
                                 pfnIOHandoff,
                                 pioreq,
-                                fIOREQUsed,
                                 err );
 }
 
@@ -915,10 +2631,11 @@ ERR TFileFilter<I>::ErrWrite(   _In_                    const TraceContext&     
                                 _In_opt_                const DWORD_PTR                 keyIOComplete,
                                 _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff )
 {
-    ERR                     err     = JET_errSuccess;
-    COffsets                offsets = COffsets( ibOffset, ibOffset + cbData - 1 );
-    CMeteredSection::Group  group   = CMeteredSection::groupInvalidNil;
-    CSemaphore*             psem    = NULL;
+    ERR                     err                 = JET_errSuccess;
+    COffsets                offsets             = COffsets( ibOffset, ibOffset + cbData - 1 );
+    CIORequestPending       iorequestpending( this );
+    CMeteredSection::Group  group               = CMeteredSection::groupInvalidNil;
+    CSemaphore*             psem                = NULL;
 
     Assert( cbData > 0 );  //  underlying impl also asserts no zero length IO
     Assert( iom == iomRaw ||
@@ -950,7 +2667,7 @@ ERR TFileFilter<I>::ErrWrite(   _In_                    const TraceContext&     
     else if ( iom == iomCacheWriteThrough )
     {
         Call( ErrVerifyAccess( offsets ) );
-        Call( ErrWriteThrough( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, &group, &psem ) );
+        Call( ErrWriteThrough( tc, ibOffset, cbData, pbData, grbitQOS, grbitQOS, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, &group, &psem, NULL ) );
     }
     else if ( iom == iomCacheWriteBack )
     {
@@ -962,19 +2679,17 @@ ERR TFileFilter<I>::ErrWrite(   _In_                    const TraceContext&     
     }
 
 HandleError:
-    if ( group != CMeteredSection::groupInvalidNil )
-    {
-        EndAccess( &group, &psem );
-    }
+    EndAccess( &group, &psem );
     return err;
 }
 
 template< class I >
 ERR TFileFilter<I>::ErrIssue( _In_ const IFileFilter::IOMode iom )
 {
-    ERR     err         = JET_errSuccess;
-    BOOL    fIssue      = fFalse;
-    BOOL    fIssueCache = fFalse;
+    ERR                     err         = JET_errSuccess;
+    CThreadLocalStorage*    pctls       = NULL;
+    BOOL                    fIssue      = fFalse;
+    BOOL                    fIssueCache = fFalse;
 
     Assert( iom == iomRaw ||
             iom == iomEngine ||
@@ -983,6 +2698,12 @@ ERR TFileFilter<I>::ErrIssue( _In_ const IFileFilter::IOMode iom )
             iom == iomCacheWriteBack );
 
     OSTrace( JET_tracetagBlockCache, OSFormat( "%s ErrIOIssue iom=%u", OSFormat( this ), iom ) );
+
+    CallSx( CThreadLocalStorageRepository::ErrGetThreadLocalStorage( &pctls ), JET_errOutOfMemory );
+    if ( pctls )
+    {
+        pctls->ClearRequests();
+    }
 
     switch ( iom )
     {
@@ -1022,6 +2743,7 @@ ERR TFileFilter<I>::ErrIssue( _In_ const IFileFilter::IOMode iom )
     }
 
 HandleError:
+    CThreadLocalStorage::Release( &pctls );
     return err;
 }
 
@@ -1095,7 +2817,7 @@ ERR TFileFilter<I>::ErrBeginAccess( _In_    const COffsets&                 offs
     //  if this is a write and the file is cached and not yet attached then expand the offset range to include the
     //  header so that we can write our cached file header
 
-    const BOOL fNotYetAttached = m_pc && !m_pcfh && !m_initOnceAttach.FIsInit();
+    const BOOL fNotYetAttached = !m_pcfh && !m_initOnceAttach.FIsInit();
     const BOOL fNeedsAttach = fWrite && fNotYetAttached;
     if ( fNeedsAttach )
     {
@@ -1200,14 +2922,14 @@ ERR TFileFilter<I>::ErrVerifyAccessIgnoringWriteBack( _In_ const COffsets& offse
 
     if ( !FAttached() )
     {
-        BlockCacheInternalError( "IllegalCachedFileAccess" );
+        Error( ErrBlockCacheInternalError( "IllegalCachedFileAccess" ) );
     }
 
     //  the cache is not allowed to access the cached file header
 
     if ( FAttached() && offsets.FOverlaps( m_offsetsCachedFileHeader ) )
     {
-        BlockCacheInternalError( "IllegalCachedFileHeaderAccess" );
+        Error( ErrBlockCacheInternalError( "IllegalCachedFileHeaderAccess" ) );
     }
 
 HandleError:
@@ -1229,7 +2951,7 @@ ERR TFileFilter<I>::ErrVerifyAccess( _In_ const COffsets& offsets )
     const CMeteredSection::Group group = m_msPendingWriteBacks.GroupActive();
     if ( !FAccessPermitted( offsets, group ) )
     {
-        BlockCacheInternalError( "CachedFileIORangeConflict" );
+        Error( ErrBlockCacheInternalError( "CachedFileIORangeConflict" ) );
     }
 
 HandleError:
@@ -1313,20 +3035,20 @@ HandleError:
 template< class I >
 ERR TFileFilter<I>::ErrAttach( _In_ const COffsets& offsetsFirstWrite )
 {
-    ERR                 err                         = JET_errSuccess;
-    QWORD               cbSize                      = 0;
-    QWORD               cbSizeWithFirstWrite        = 0;
-    void*               pvData                      = NULL;
-    TraceContextScope   tcScope( iorpBlockCache );
-    CCachedFileHeader*  pcfh                        = NULL;
-    BOOL                fPresumeCached              = fFalse;
-    BOOL                fPresumeAttached            = fFalse;
+    ERR                         err                         = JET_errSuccess;
+    QWORD                       cbSize                      = 0;
+    QWORD                       cbSizeWithFirstWrite        = 0;
+    void*                       pvData                      = NULL;
+    TraceContextScope           tcScope( iorpBlockCache );
+    CCachedFileHeader*          pcfh                        = NULL;
+    BOOL                        fPresumeCached              = fFalse;
+    BOOL                        fPresumeAttached            = fFalse;
 
     //  we do not currently support caching files opened for write through
 
     if ( ( Fmf() & fmfStorageWriteBack ) == 0 )
     {
-        goto HandleError;
+        Error( JET_errSuccess );
     }
 
     //  get the size of the cached file and extend to include the proposed write.  if it is smaller than the header
@@ -1338,7 +3060,30 @@ ERR TFileFilter<I>::ErrAttach( _In_ const COffsets& offsetsFirstWrite )
 
     if ( cbSizeWithFirstWrite < m_offsetsCachedFileHeader.Cb() )
     {
-        goto HandleError;
+        Error( JET_errSuccess );
+    }
+
+    //  if the file is not marked as having ever been eligible for caching then we cannot attach the cache
+
+    if ( !m_fEverEligibleForCaching )
+    {
+        Error( JET_errSuccess );
+    }
+
+    //  try to open the cache for this file.  if we can't then we will use access the file without caching.  this
+    //  is intentionally best effort only to allow continued operation if the caching storage is failed
+
+    err = ErrGetConfiguredCache();
+    if ( err < JET_errSuccess )
+    {
+        Error( ErrCacheOpenFailure( "Open", err, JET_errSuccess ) );
+    }
+
+    //  if we didn't get a cache because caching is not enabled then we cannot attach the cache
+
+    if ( !m_pc )
+    {
+        Error( JET_errSuccess );
     }
 
     //  read the data to be displaced by the cached file header, if any
@@ -1431,6 +3176,105 @@ HandleError:
     delete pcfh;
     OSMemoryPageFree( pvData );
     return fPresumeAttached ? err : JET_errSuccess;
+}
+
+template< class I >
+ERR TFileFilter<I>::ErrGetConfiguredCache()
+{
+    ERR                             err                                                 = JET_errSuccess;
+    const DWORD                     cwchAbsPathCachedFileMax                            = IFileSystemAPI::cchPathMax;
+    WCHAR                           wszAbsPathCachedFile[ cwchAbsPathCachedFileMax ]    = { 0 };
+    const DWORD                     cwchKeyPathCachedFileMax                            = IFileIdentification::cwchKeyPathMax;
+    WCHAR                           wszKeyPathCachedFile[ cwchKeyPathCachedFileMax ]    = { 0 };
+    IBlockCacheConfiguration*       pbcconfig                                           = NULL;
+    ICachedFileConfiguration*       pcfconfig                                           = NULL;
+    const DWORD                     cwchAbsPathCachingFileMax                           = IFileSystemAPI::cchPathMax;
+    WCHAR                           wszAbsPathCachingFile[ cwchAbsPathCachingFileMax ]  = { 0 };
+    const DWORD                     cwchKeyPathCachingFileMax                           = IFileIdentification::cwchKeyPathMax;
+    WCHAR                           wszKeyPathCachingFile[ cwchKeyPathCachingFileMax ]  = { 0 };
+    ICacheConfiguration*            pcconfig                                            = NULL;
+    ICache*                         pc                                                  = NULL;
+
+    //  if we already have a cache then we're done
+
+    if ( m_pc )
+    {
+        Error( JET_errSuccess );
+    }
+
+    //  get the caching configuration for this file
+
+    Call( ErrPath( wszAbsPathCachedFile ) );
+    Call( m_pfident->ErrGetFileKeyPath( wszAbsPathCachedFile, wszKeyPathCachedFile ) );
+    Call( m_pfsconfig->ErrGetBlockCacheConfiguration( &pbcconfig ) );
+    Call( pbcconfig->ErrGetCachedFileConfiguration( wszKeyPathCachedFile, &pcfconfig ) );
+
+    //  if caching is enabled for this file then open its backing store
+
+    if ( pcfconfig->FCachingEnabled() )
+    {
+        //  get the cache configuration for this file
+
+        pcfconfig->CachingFilePath( wszAbsPathCachingFile );
+        Call( m_pfident->ErrGetFileKeyPath( wszAbsPathCachingFile, wszKeyPathCachingFile ) );
+        Call( pbcconfig->ErrGetCacheConfiguration( wszKeyPathCachingFile, &pcconfig ) );
+
+        //  open the cache for this file
+
+        Call( m_pcrep->ErrOpen( m_pfsf, m_pfsconfig, &pcconfig, &pc ) );
+
+        //  if we didn't get a cache then we're done
+
+        if ( !pc )
+        {
+            Error( JET_errSuccess );
+        }
+
+        //  save the file's cache configuration and cache
+
+        SetCacheState( &pcfconfig, &pc, NULL );
+    }
+
+HandleError:
+    delete pc;
+    delete pcconfig;
+    delete pcfconfig;
+    delete pbcconfig;
+    return err;
+}
+
+template< class I >
+ERR TFileFilter<I>::ErrCacheOpenFailure(    _In_ const char* const                  szFunction,
+                                            _In_ const ERR                          errFromCall,
+                                            _In_ const ERR                          errToReturn )
+{
+    WCHAR           wszCachingFile[ IFileSystemAPI::cchPathMax ]    = { 0 };
+    WCHAR           wszFunction[ 256 ]                              = { 0 };
+    WCHAR           wszErrorFromCall[ 64 ]                          = { 0 };
+    WCHAR           wszErrorToReturn[ 64 ]                          = { 0 };
+    const WCHAR*    rgpwsz[]                                        = { wszCachingFile, wszFunction, wszErrorFromCall, wszErrorToReturn };
+
+    CallS( ErrPath( wszCachingFile ) );
+    OSStrCbFormatW( wszFunction, sizeof( wszFunction ), L"%hs", szFunction );
+    OSStrCbFormatW( wszErrorFromCall, sizeof( wszErrorFromCall ), L"%i (0x%08x)", errFromCall, errFromCall );
+    OSStrCbFormatW( wszErrorToReturn, sizeof( wszErrorToReturn ), L"%i (0x%08x)", errToReturn, errToReturn );
+
+    m_pfsconfig->EmitEvent( eventWarning,
+                            BLOCK_CACHE_CATEGORY,
+                            BLOCK_CACHE_CACHING_FILE_OPEN_FAILURE_ID,
+                            _countof( rgpwsz ),
+                            rgpwsz,
+                            JET_EventLoggingLevelMin );
+
+    OSTraceSuspendGC();
+    BlockCacheNotableEvent( wszCachingFile, 
+                            OSFormat(   "CacheOpenFailure:%hs:%i:%i",
+                                        szFunction, 
+                                        errFromCall,
+                                        errToReturn ) );
+    OSTraceResumeGC();
+
+    return errToReturn;
 }
 
 template< class I >
@@ -1776,16 +3620,47 @@ ERR TFileFilter<I>::ErrCacheRead(   _In_                    const TraceContext& 
                                     _In_opt_                const IFileAPI::PfnIOComplete   pfnIOComplete,
                                     _In_opt_                const DWORD_PTR                 keyIOComplete,
                                     _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
-                                    _In_opt_                const VOID *                    pioreq,
+                                    _Inout_                 const void** const              ppioreq,
                                     _Inout_                 CMeteredSection::Group* const   pgroup,
                                     _Inout_                 CSemaphore** const              ppsem )
 {
     ERR             err                     = JET_errSuccess;
+    OSFILEQOS       grbitQOSInput           = grbitQOS & qosIOInMask;
+    OSFILEQOS       grbitQOSOutput          = grbitQOS & ( qosIOInMask | qosBypassIOQuota );
+    const void*     pioreq                  = *ppioreq;
+    BOOL            fThrottleReleaser       = fFalse;
+    BOOL            fCombined               = fFalse;
     BOOL            fCleanUpStateSaved      = fFalse;
     BOOL            fRestoreCleanupState    = fFalse;
-    BOOL            fIOREQUsed              = fFalse;
     CIOComplete*    piocomplete             = NULL;
-    OSFILEQOS       grbitQOSActual          = grbitQOS;
+
+    *ppioreq = NULL;
+
+    //  check to see if this IO may proceed or if it is throttled
+
+    if ( !pioreq )
+    {
+        Call( ErrThrottleCheck( pfnIOComplete != NULL,
+                                fTrue, 
+                                COffsets( ibOffset, ibOffset + cbData - 1 ), 
+                                grbitQOS, 
+                                &fThrottleReleaser,
+                                &fCombined ) );
+
+        //  set the IO combined state for output
+
+        if ( fCombined )
+        {
+            grbitQOSOutput |= qosIOCompleteIoCombined;
+        }
+    }
+
+    //  strip any grbitQOS bits that can result in the rejection of the read request that we have handled.  if we
+    //  missed any then that will be caught by the below assert that we never see errDiskTilt
+    //
+    //  NOTE:  we allow qosIODispatchBackground because this indicates IO smoothing and won't result in rejection
+
+    grbitQOSInput &= ~qosIOOptimizeCombinable;
 
     //  determine the caching policy for this read
 
@@ -1800,6 +3675,15 @@ ERR TFileFilter<I>::ErrCacheRead(   _In_                    const TraceContext& 
         fCleanUpStateSaved = FOSSetCleanupState( fFalse );
         fRestoreCleanupState = fTrue;
 
+        //  release any reserved IOREQ because we will not be using it
+
+        if ( pioreq )
+        {
+            CReservedIOREQ* const preservedIOREQ = (CReservedIOREQ*)pioreq;
+            preservedIOREQ->Capture( &fThrottleReleaser, &grbitQOSOutput );
+            ReleaseUnusedIOREQ( &pioreq);
+        }
+
         //  try to service the read via the cache
 
         if ( pfnIOComplete || pfnIOHandoff )
@@ -1807,9 +3691,11 @@ ERR TFileFilter<I>::ErrCacheRead(   _In_                    const TraceContext& 
             Alloc( piocomplete = new CIOComplete(   fTrue,
                                                     this,
                                                     fFalse, 
+                                                    grbitQOSOutput,
                                                     pgroup, 
                                                     ppsem,
                                                     NULL, 
+                                                    &fThrottleReleaser,
                                                     ibOffset, 
                                                     cbData, 
                                                     pbData, 
@@ -1818,42 +3704,23 @@ ERR TFileFilter<I>::ErrCacheRead(   _In_                    const TraceContext& 
                                                     keyIOComplete ) );
         }
 
-        //  release any reserved IOREQ because we will not be using it
-
-        if ( pioreq )
-        {
-            fIOREQUsed = fTrue;
-            ReleaseUnusedIOREQ( (void*)pioreq );
-        }
-
-        //  AEG  handle the cases where a read request can be rejected which have not already been granted by the
-        //       reserved pioreq:  qosIOOptimizeCombinable
-        //       -  note that we must intercept ErrReserveIOREQ and handle it there as well!
-
-        //  strip any grbitQOS bits that can result in the rejection of the read request that we have handled.  if we
-        //  missed any then that will be caught by the below assert that we never see errDiskTilt
-        //
-        //  NOTE:  we allow qosIODispatchBackground because this indicates IO smoothing and won't result in rejection
-
-        grbitQOSActual &= ~qosIOOptimizeCombinable;
-
         //  ask the cache for this data
         //
         //  NOTE:  the handoff reference to the io completion context occurs in the Release call on exit
 
-        err = m_pc->ErrRead(    tc,
+        err =  m_pc->ErrRead(   tc,
                                 m_volumeid,
                                 m_fileid, 
                                 m_fileserial,
                                 ibOffset, 
                                 cbData, 
                                 pbData, 
-                                grbitQOSActual,
+                                grbitQOSInput,
                                 cp, 
                                 pfnIOComplete ? CIOComplete::Complete_ : NULL,
                                 DWORD_PTR( piocomplete ) );
 
-        //  reject on request due to grbitQOS should not happen in the cache.  that should be handled here
+        //  reject on request due to grbitQOS should not happen here
 
         Assert( err != errDiskTilt );
         Call( err );
@@ -1872,12 +3739,29 @@ ERR TFileFilter<I>::ErrCacheRead(   _In_                    const TraceContext& 
             m_pctm->Miss( filenumber, blocknumber, fTrue, fCacheIfPossible );
         }
 
-        fIOREQUsed = fTrue;
-        Call( ErrCacheMiss( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, pioreq, pgroup, ppsem ) );
+        err = ErrCacheMiss( tc,
+                            ibOffset, 
+                            cbData, 
+                            pbData,
+                            grbitQOS,
+                            grbitQOSInput, 
+                            grbitQOSOutput, 
+                            pfnIOComplete, 
+                            keyIOComplete, 
+                            pfnIOHandoff, 
+                            &pioreq, 
+                            pgroup, 
+                            ppsem, 
+                            &fThrottleReleaser );
+
+        //  reject on request due to grbitQOS should not happen here
+
+        Assert( err != errDiskTilt );
+        Call( err );
     }
 
 HandleError:
-    err = HandleReservedIOREQ(  tc, 
+    err = HandleReservedIOREQ(  tc,
                                 ibOffset, 
                                 cbData, 
                                 pbData,
@@ -1886,13 +3770,13 @@ HandleError:
                                 keyIOComplete, 
                                 pfnIOHandoff,
                                 pioreq,
-                                fIOREQUsed,
                                 err,
                                 piocomplete );
     if ( piocomplete )
     {
         piocomplete->Release( err, tc, grbitQOS );
     }
+    (void)FThrottleRelease( pfnIOComplete != NULL, fTrue, grbitQOS, &fThrottleReleaser );
     if ( fRestoreCleanupState )
     {
         FOSSetCleanupState( fCleanUpStateSaved );
@@ -1906,16 +3790,41 @@ ERR TFileFilter<I>::ErrCacheMiss(   _In_                    const TraceContext& 
                                     _In_                    const DWORD                     cbData,
                                     _Out_writes_( cbData )  BYTE* const                     pbData,
                                     _In_                    const OSFILEQOS                 grbitQOS,
+                                    _In_                    const OSFILEQOS                 grbitQOSInput,
+                                    _In_                    const OSFILEQOS                 grbitQOSOutput,
                                     _In_opt_                const IFileAPI::PfnIOComplete   pfnIOComplete,
                                     _In_opt_                const DWORD_PTR                 keyIOComplete,
                                     _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
-                                    _In_opt_                const VOID *                    pioreq,
+                                    _Inout_                 const void** const              ppioreq,
                                     _Inout_                 CMeteredSection::Group* const   pgroup,
-                                    _Inout_                 CSemaphore** const              ppsem )
+                                    _Inout_                 CSemaphore** const              ppsem,
+                                    _Inout_opt_             BOOL* const                     pfThrottleReleaser )
 {
-    ERR             err         = JET_errSuccess;
-    BOOL            fIOREQUsed  = fFalse;
-    CIOComplete*    piocomplete = NULL;
+    ERR             err                     = JET_errSuccess;
+    OSFILEQOS       grbitQOSOutputActual    = grbitQOSOutput;
+    const void*     pioreq                  = *ppioreq;
+    BOOL            fThrottleReleaser       = pfThrottleReleaser ? *pfThrottleReleaser : NULL;
+    CIOComplete*    piocomplete             = NULL;
+
+    *ppioreq = NULL;
+
+    if ( pfThrottleReleaser )
+    {
+        *pfThrottleReleaser = fFalse;
+    }
+
+    //  release any reserved IOREQ because we will not be using it
+
+    if ( pioreq )
+    {
+        Assert( !fThrottleReleaser );
+
+        CReservedIOREQ* const preservedIOREQ = (CReservedIOREQ*)pioreq;
+        preservedIOREQ->Capture( &fThrottleReleaser, &grbitQOSOutputActual );
+        ReleaseUnusedIOREQ( &pioreq);
+    }
+
+    //  try to service the read via the file system
 
     if ( pfnIOComplete || pfnIOHandoff )
     {
@@ -1924,9 +3833,11 @@ ERR TFileFilter<I>::ErrCacheMiss(   _In_                    const TraceContext& 
             CIOComplete(    fHeap,
                             this,
                             fFalse, 
+                            grbitQOSOutputActual,
                             pgroup, 
                             ppsem,
                             NULL, 
+                            &fThrottleReleaser,
                             ibOffset, 
                             cbData, 
                             pbData, 
@@ -1935,17 +3846,16 @@ ERR TFileFilter<I>::ErrCacheMiss(   _In_                    const TraceContext& 
                             keyIOComplete ) );
     }
 
-    fIOREQUsed = fTrue;
     Call( ErrRead(  tc,
                     ibOffset,
                     cbData,
                     pbData,
-                    grbitQOS, 
+                    grbitQOSInput, 
                     iomRaw,
                     pfnIOComplete ? CIOComplete::IOComplete_ : NULL,
                     DWORD_PTR( piocomplete ),
                     piocomplete ? CIOComplete::IOHandoff_ : NULL,
-                    pioreq ) );
+                    NULL ) );
 
     if ( piocomplete && piocomplete->FAccessingHeader() )
     {
@@ -1962,13 +3872,13 @@ HandleError:
                                 keyIOComplete, 
                                 pfnIOHandoff,
                                 pioreq,
-                                fIOREQUsed,
                                 err,
                                 piocomplete );
     if ( piocomplete )
     {
         piocomplete->Release( err, tc, grbitQOS );
     }
+    (void)FThrottleRelease( pfnIOComplete != NULL, fTrue, grbitQOS, &fThrottleReleaser );
     return err;
 }
 
@@ -1984,9 +3894,42 @@ ERR TFileFilter<I>::ErrCacheWrite(  _In_                    const TraceContext& 
                                     _Inout_                 CMeteredSection::Group* const   pgroup,
                                     _Inout_                 CSemaphore** const              ppsem )
 {
-    ERR             err             = JET_errSuccess;
-    CIOComplete*    piocomplete     = NULL;
-    OSFILEQOS       grbitQOSActual  = grbitQOS;
+    ERR             err                 = JET_errSuccess;
+    OSFILEQOS       grbitQOSInput       = grbitQOS & qosIOInMask;
+    OSFILEQOS       grbitQOSOutput      = grbitQOS & ( qosIOInMask | qosBypassIOQuota );
+    BOOL            fThrottleReleaser   = fFalse;
+    BOOL            fCombined           = fFalse;
+    CIOComplete*    piocomplete         = NULL;
+
+    //  check to see if this IO may proceed or if it is throttled
+
+    Call( ErrThrottleCheck( pfnIOComplete != NULL,
+                            fFalse,
+                            COffsets( ibOffset, ibOffset + cbData - 1 ),
+                            grbitQOS,
+                            &fThrottleReleaser,
+                            &fCombined ) );
+
+    //  set the IO combined state for output
+
+    if ( fCombined )
+    {
+        grbitQOSOutput |= qosIOCompleteIoCombined;
+    }
+
+    //  strip any grbitQOS bits that can result in the rejection of the write request that we have handled.  if we
+    //  missed any then that will be caught by the below assert that we never see errDiskTilt
+
+    grbitQOSInput &= ~qosIOOptimizeCombinable;
+    grbitQOSInput &= ~qosIODispatchBackground;
+    grbitQOSInput &= ~qosIODispatchUrgentBackgroundMask;
+
+    //  if we don't have a dispatch mode then specify dispatch immediate
+
+    if ( !( grbitQOSInput & qosIODispatchMask ) )
+    {
+        grbitQOSInput |= qosIODispatchImmediate;
+    }
 
     //  determine the caching policy for this write
 
@@ -2003,32 +3946,17 @@ ERR TFileFilter<I>::ErrCacheWrite(  _In_                    const TraceContext& 
             Alloc( piocomplete = new CIOComplete(   fTrue,
                                                     this, 
                                                     fTrue,
+                                                    grbitQOSOutput,
                                                     pgroup, 
                                                     ppsem, 
                                                     NULL, 
+                                                    &fThrottleReleaser,
                                                     ibOffset,
                                                     cbData, 
                                                     pbData,
                                                     pfnIOComplete,
                                                     pfnIOHandoff,
                                                     keyIOComplete ) );
-        }
-
-        //  AEG  handle the cases where a write request can be rejected:  qosIOOptimizeCombinable,
-        //       qosIODispatchBackground and qosIODispatchUrgentBackgroundMask
-
-        //  strip any grbitQOS bits that can result in the rejection of the write request that we have handled.  if we
-        //  missed any then that will be caught by the below assert that we never see errDiskTilt
-
-        grbitQOSActual &= ~qosIOOptimizeCombinable;
-        grbitQOSActual &= ~qosIODispatchBackground;
-        grbitQOSActual &= ~qosIODispatchUrgentBackgroundMask;
-
-        //  if we don't have a dispatch mode then specify dispatch immediate
-
-        if ( ( grbitQOSActual & qosIODispatchMask ) == 0 )
-        {
-            grbitQOSActual |= qosIODispatchImmediate;
         }
 
         //  send this data to the cache
@@ -2042,12 +3970,12 @@ ERR TFileFilter<I>::ErrCacheWrite(  _In_                    const TraceContext& 
                                 ibOffset, 
                                 cbData, 
                                 pbData, 
-                                grbitQOSActual,
+                                grbitQOSInput,
                                 cp,
                                 pfnIOComplete ? CIOComplete::Complete_ : NULL,
                                 DWORD_PTR( piocomplete ) );
 
-        //  reject on request due to grbitQOS should not happen in the cache.  that should be handled here
+        //  reject on request due to grbitQOS should not happen here
 
         Assert( err != errDiskTilt );
         Call( err );
@@ -2075,7 +4003,24 @@ ERR TFileFilter<I>::ErrCacheWrite(  _In_                    const TraceContext& 
             m_pctm->Write( filenumber, blocknumber, true );
         }
 
-        Call( ErrWriteThrough( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, pgroup, ppsem ) );
+        err = ErrWriteThrough(  tc,
+                                ibOffset,
+                                cbData,
+                                pbData,
+                                grbitQOS,
+                                grbitQOSInput,
+                                grbitQOSOutput,
+                                pfnIOComplete,
+                                keyIOComplete, 
+                                pfnIOHandoff, 
+                                pgroup, 
+                                ppsem, 
+                                &fThrottleReleaser );
+
+        //  reject on request due to grbitQOS should not happen here
+
+        Assert( err != errDiskTilt );
+        Call( err );
     }
 
 HandleError:
@@ -2083,6 +4028,7 @@ HandleError:
     {
         piocomplete->Release( err, tc, grbitQOS );
     }
+    (void)FThrottleRelease( pfnIOComplete != NULL, fFalse, grbitQOS, &fThrottleReleaser );
     return err;
 }
 
@@ -2092,13 +4038,16 @@ ERR TFileFilter<I>::ErrWriteThrough(    _In_                    const TraceConte
                                         _In_                    const DWORD                     cbData,
                                         _In_reads_( cbData )    const BYTE* const               pbData,
                                         _In_                    const OSFILEQOS                 grbitQOS,
+                                        _In_                    const OSFILEQOS                 grbitQOSInput,
+                                        _In_                    const OSFILEQOS                 grbitQOSOutput,
                                         _In_opt_                const IFileAPI::PfnIOComplete   pfnIOComplete,
                                         _In_opt_                const DWORD_PTR                 keyIOComplete,
                                         _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
                                         _Inout_                 CMeteredSection::Group* const   pgroup,
-                                        _Inout_                 CSemaphore** const              ppsem )
+                                        _Inout_                 CSemaphore** const              ppsem,
+                                        _Inout_opt_             BOOL* const                     pfThrottleReleaser )
 {
-    return ErrWriteCommon( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, pgroup, ppsem, NULL );
+    return ErrWriteCommon( tc, ibOffset, cbData, pbData, grbitQOS, grbitQOSInput, grbitQOSOutput, pfnIOComplete, keyIOComplete, pfnIOHandoff, pgroup, ppsem, NULL, pfThrottleReleaser );
 }
 
 template< class I >
@@ -2112,7 +4061,7 @@ ERR TFileFilter<I>::ErrWriteBack(   _In_                    const TraceContext& 
                                     _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
                                     _In_                    CWriteBack* const               pwriteback )
 {
-    return ErrWriteCommon( tc, ibOffset, cbData, pbData, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, NULL, NULL, pwriteback );
+    return ErrWriteCommon( tc, ibOffset, cbData, pbData, grbitQOS, grbitQOS, grbitQOS, pfnIOComplete, keyIOComplete, pfnIOHandoff, NULL, NULL, pwriteback, NULL );
 }
 
 template< class I >
@@ -2121,15 +4070,26 @@ ERR TFileFilter<I>::ErrWriteCommon( _In_                    const TraceContext& 
                                     _In_                    const DWORD                     cbData,
                                     _In_reads_( cbData )    const BYTE* const               pbData,
                                     _In_                    const OSFILEQOS                 grbitQOS,
+                                    _In_                    const OSFILEQOS                 grbitQOSInput,
+                                    _In_                    const OSFILEQOS                 grbitQOSOutput,
                                     _In_opt_                const IFileAPI::PfnIOComplete   pfnIOComplete,
                                     _In_opt_                const DWORD_PTR                 keyIOComplete,
                                     _In_opt_                const IFileAPI::PfnIOHandoff    pfnIOHandoff,
                                     _Inout_opt_             CMeteredSection::Group* const   pgroup,
                                     _Inout_opt_             CSemaphore** const              ppsem,
-                                    _In_opt_                CWriteBack* const               pwriteback )
+                                    _In_opt_                CWriteBack* const               pwriteback,
+                                    _Inout_opt_             BOOL* const                     pfThrottleReleaser )
 {
-    ERR             err         = JET_errSuccess;
-    CIOComplete*    piocomplete = NULL;
+    ERR             err                 = JET_errSuccess;
+    BOOL            fThrottleReleaser   = pfThrottleReleaser ? *pfThrottleReleaser : fFalse;
+    CIOComplete*    piocomplete         = NULL;
+
+    if ( pfThrottleReleaser )
+    {
+        *pfThrottleReleaser = fFalse;
+    }
+
+    //  try to service the write via the file system
 
     if ( pfnIOComplete || pfnIOHandoff )
     {
@@ -2138,9 +4098,11 @@ ERR TFileFilter<I>::ErrWriteCommon( _In_                    const TraceContext& 
             CIOComplete(    fHeap,
                             this, 
                             fTrue,
+                            grbitQOSOutput,
                             pgroup, 
                             ppsem, 
                             pwriteback, 
+                            &fThrottleReleaser,
                             ibOffset,
                             cbData, 
                             pbData,
@@ -2153,7 +4115,7 @@ ERR TFileFilter<I>::ErrWriteCommon( _In_                    const TraceContext& 
                     ibOffset,
                     cbData,
                     pbData,
-                    grbitQOS, 
+                    grbitQOSInput, 
                     iomRaw,
                     pfnIOComplete ? CIOComplete::IOComplete_ : NULL,
                     DWORD_PTR( piocomplete ),
@@ -2168,8 +4130,19 @@ HandleError:
         }
         piocomplete->Release( err, tc, grbitQOS );
     }
+    (void)FThrottleRelease( pfnIOComplete != NULL, fFalse, grbitQOS, &fThrottleReleaser );
     return err;
 }
+
+template< class I >
+typename TFileFilter<I>::CThreadLocalStorageRepository::CStaticThreadLocalStorage TFileFilter<I>::CThreadLocalStorageRepository::s_tls;
+
+template< class I >
+typename CReaderWriterLock TFileFilter<I>::CThrottleContextRepository::s_rwlThrottleContexts( CLockBasicInfo( CSyncBasicInfo( "TFileFilter<I>::CThrottleContextRepository::s_rwlThrottleContexts" ), rankThrottleContexts, 0 ) );
+
+template< class I >
+typename TFileFilter<I>::CThrottleContextRepository::CThrottleContextList TFileFilter<I>::CThrottleContextRepository::s_ilThrottleContexts;
+
 
 //  CFileFilter:  concrete TFileFilter<IFileFilter>
 
@@ -2180,17 +4153,22 @@ class CFileFilter : public TFileFilter<IFileFilter>
         CFileFilter(    _Inout_     IFileAPI** const                    ppfapi,
                         _In_        IFileSystemFilter* const            pfsf,
                         _In_        IFileSystemConfiguration* const     pfsconfig,
+                        _In_        IFileIdentification* const          pfident,
                         _In_        ICacheTelemetry* const              pctm,
+                        _In_        ICacheRepository* const             pcrep,
                         _In_        const VolumeId                      volumeid,
                         _In_        const FileId                        fileid,
                         _Inout_opt_ ICachedFileConfiguration** const    ppcfconfig,
                         _Inout_opt_ ICache** const                      ppc,
                         _Inout_opt_ CCachedFileHeader** const           ppcfh )
-            :   TFileFilter<IFileFilter>( ppfapi, pfsf, pfsconfig, pctm, volumeid, fileid, ppcfconfig, ppc, ppcfh )
+            :   TFileFilter<IFileFilter>( ppfapi, pfsf, pfsconfig, pfident, pctm, pcrep, volumeid, fileid, ppcfconfig, ppc, ppcfh )
         {
         }
 
         virtual ~CFileFilter() {}
 
-        static void Cleanup() { CIOComplete::Cleanup(); }
+        static void Cleanup()
+        {
+            TFileFilter<IFileFilter>::Cleanup();
+        }
 };

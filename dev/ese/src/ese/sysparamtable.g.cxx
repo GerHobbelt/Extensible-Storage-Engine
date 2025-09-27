@@ -87,7 +87,7 @@ JetParam g_rgparamRaw[] =
     NORMAL_PARAM(JET_paramZeroDatabaseDuringBackup, CJetParam::typeBoolean, 0,  0,  0, 1, 0, -1, 0),
     CUSTOM_PARAM(JET_paramUnicodeIndexDefault, CJetParam::typeUserDefined, 0,  0,  0, 1, GetUnicodeIndexDefault, SetUnicodeIndexDefault, CloneUnicodeIndexDefault),
     NORMAL_PARAM(JET_paramRuntimeCallback, CJetParam::typePointer, 0,  0,  0, 1, 0, -1, NULL),
-    NORMAL_PARAM(JET_paramFlight_DisableReplayPrereadForSsd, CJetParam::typeBoolean, 1,  0,  0, 0, 0, -1, 0),
+    ILLEGAL_PARAM(74),
     ILLEGAL_PARAM(75),
     IGNORED_PARAM(JET_paramEnableSortedRetrieveColumns, CJetParam::typeBoolean, 0,  0,  0, 1, 0, -1, 0),
     NORMAL_PARAM(JET_paramCleanupMismatchedLogFiles, CJetParam::typeBoolean, 0,  0,  0, 1, 0, -1, 0),
@@ -131,8 +131,8 @@ JetParam g_rgparamRaw[] =
     NORMAL_PARAM(JET_paramFlight_EnablePgnoFDPLastSetTime, CJetParam::typeBoolean, 1,  0,  0, 1, 0, -1, fTrue),
     NORMAL_PARAM(JET_paramFlight_EnableScanCheck2Flags, CJetParam::typeBoolean, 1,  0,  0, 1, 0, -1, fTrue),
     NORMAL_PARAM(JET_paramFlight_EnableExtentFreed2, CJetParam::typeBoolean, 1,  0,  0, 1, 0, -1, fTrue),
-    ILLEGAL_PARAM(118),
-    ILLEGAL_PARAM(119),
+    NORMAL_PARAM(JET_paramFlight_RBSLargeRevertableDeletePages, CJetParam::typeInteger, 1,  0,  0, 0, 0, 2147483647, 0),
+    NORMAL_PARAM(JET_paramFlight_RBSRevertableDeleteIfTooSoonTimeNull, CJetParam::typeBoolean, 1,  0,  0, 0, 0, -1, fFalse),
     IGNORED_PARAM(JET_paramDBAPageAvailMin, CJetParam::typeInteger, 1,  1,  0, 0, 0, -1, 1280),
     CUSTOM_PARAM(JET_paramDBAPageAvailThreshold, CJetParam::typeUserDefined, 0,  1,  0, 0, CJetParam::IgnoreGet, CJetParam::IgnoreSet, CJetParam::CloneDefault),
     CUSTOM_PARAM(JET_paramDBAK1, CJetParam::typeUserDefined, 0,  1,  0, 0, CJetParam::IgnoreGet, CJetParam::IgnoreSet, CJetParam::CloneDefault),
@@ -237,6 +237,7 @@ JetParam g_rgparamRaw[] =
     NORMAL_PARAM(JET_paramEnableRBS, CJetParam::typeBoolean, 1,  0,  0, 0, 0, 1, 0),
     NORMAL_PARAM(JET_paramRBSFilePath, CJetParam::typeFolder, 0,  0,  0, 1, 0, 246, L".\\"),
     NORMAL_PARAM(JET_paramPerfmonRefreshInterval, CJetParam::typeInteger, 0,  1,  1, 1, 0, 1 * 24 * 60 * 60 * 1000, 100),
+    NORMAL_PARAM(JET_paramEnableBlockCache, CJetParam::typeBoolean, 1,  1,  1, 0, 0, 1, 0),
     ILLEGAL_PARAM(JET_paramMaxValueInvalid),
 };
 
@@ -317,7 +318,7 @@ static_assert( JET_paramErrorToString == 70, "The order of defintion for JET_par
 static_assert( JET_paramZeroDatabaseDuringBackup == 71, "The order of defintion for JET_paramZeroDatabaseDuringBackup in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramUnicodeIndexDefault == 72, "The order of defintion for JET_paramUnicodeIndexDefault in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramRuntimeCallback == 73, "The order of defintion for JET_paramRuntimeCallback in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
-static_assert( JET_paramFlight_DisableReplayPrereadForSsd == 74, "The order of defintion for JET_paramFlight_DisableReplayPrereadForSsd in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
+static_assert( 74 == 74, "The order of defintion for 74 in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( 75 == 75, "The order of defintion for 75 in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramEnableSortedRetrieveColumns == 76, "The order of defintion for JET_paramEnableSortedRetrieveColumns in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramCleanupMismatchedLogFiles == 77, "The order of defintion for JET_paramCleanupMismatchedLogFiles in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
@@ -361,8 +362,8 @@ static_assert( JET_paramFlight_ExtentPageCountCacheVerifyOnly == 114, "The order
 static_assert( JET_paramFlight_EnablePgnoFDPLastSetTime == 115, "The order of defintion for JET_paramFlight_EnablePgnoFDPLastSetTime in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramFlight_EnableScanCheck2Flags == 116, "The order of defintion for JET_paramFlight_EnableScanCheck2Flags in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramFlight_EnableExtentFreed2 == 117, "The order of defintion for JET_paramFlight_EnableExtentFreed2 in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
-static_assert( 118 == 118, "The order of defintion for 118 in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
-static_assert( 119 == 119, "The order of defintion for 119 in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
+static_assert( JET_paramFlight_RBSLargeRevertableDeletePages == 118, "The order of defintion for JET_paramFlight_RBSLargeRevertableDeletePages in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
+static_assert( JET_paramFlight_RBSRevertableDeleteIfTooSoonTimeNull == 119, "The order of defintion for JET_paramFlight_RBSRevertableDeleteIfTooSoonTimeNull in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramDBAPageAvailMin == 120, "The order of defintion for JET_paramDBAPageAvailMin in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramDBAPageAvailThreshold == 121, "The order of defintion for JET_paramDBAPageAvailThreshold in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramDBAK1 == 122, "The order of defintion for JET_paramDBAK1 in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
@@ -461,4 +462,5 @@ static_assert( JET_paramUseFlushForWriteDurability == 214, "The order of definti
 static_assert( JET_paramEnableRBS == 215, "The order of defintion for JET_paramEnableRBS in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramRBSFilePath == 216, "The order of defintion for JET_paramRBSFilePath in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
 static_assert( JET_paramPerfmonRefreshInterval == 217, "The order of defintion for JET_paramPerfmonRefreshInterval in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
-static_assert( JET_paramMaxValueInvalid == 218, "The order of defintion for JET_paramMaxValueInvalid in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
+static_assert( JET_paramEnableBlockCache == 218, "The order of defintion for JET_paramEnableBlockCache in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );
+static_assert( JET_paramMaxValueInvalid == 219, "The order of defintion for JET_paramMaxValueInvalid in sysparam.xml must follow the numerical ordering of its value (as defined in jethdr.w)." );

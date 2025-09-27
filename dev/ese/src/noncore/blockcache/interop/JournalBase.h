@@ -14,7 +14,7 @@ namespace Internal
             namespace Interop
             {
                 template< class TM, class TN, class TW >
-                public ref class JournalBase : public Base<TM, TN, TW>, IJournal
+                public ref class JournalBase : Base<TM, TN, TW>, IJournal
                 {
                     public:
 
@@ -36,7 +36,7 @@ namespace Internal
                         virtual JournalPosition Repair( JournalPosition journalPositionInvalidate );
 
                         virtual JournalPosition AppendEntry(
-                            array<ArraySegment<byte>>^ payload,
+                            array<ArraySegment<BYTE>>^ payload,
                             [Out] JournalPosition% journalPositionEnd );
 
                         virtual void Flush();
@@ -126,7 +126,7 @@ namespace Internal
 
                 template<class TM, class TN, class TW>
                 inline JournalPosition JournalBase<TM, TN, TW>::AppendEntry( 
-                    array<ArraySegment<byte>>^ payload,
+                    array<ArraySegment<BYTE>>^ payload,
                     [Out] JournalPosition% journalPositionEnd )
                 {
                     ERR                 err     = JET_errSuccess;
@@ -156,7 +156,7 @@ namespace Internal
 
                         if ( cb )
                         {
-                            pin_ptr<byte> rgbIn = &payload[ ijb ].Array[ payload[ ijb ].Offset ];
+                            pin_ptr<BYTE> rgbIn = &payload[ ijb ].Array[ payload[ ijb ].Offset ];
                             UtilMemCpy( rgb, (BYTE*)rgbIn, cb );
                         }
                     }
