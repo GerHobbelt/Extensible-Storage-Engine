@@ -8484,6 +8484,7 @@ ERR ErrSPCaptureNonRevertableFDPRootPage( PIB *ppib, FCB* pfcbFDPToFree, const P
     Call( ErrRBSRDWLatchAndCapturePreImage(
         pfucb->ifmp,
         PgnoRoot( pfucb ),
+        dbtimeNil,
         fRBSDeletedTableRootPage,
         pfucb->ppib->BfpriPriority( pfucb->ifmp ),
         *tcScope ) );
@@ -8503,6 +8504,7 @@ ERR ErrSPCaptureNonRevertableFDPRootPage( PIB *ppib, FCB* pfcbFDPToFree, const P
             Call( ErrRBSRDWLatchAndCapturePreImage(
                 pfucb->ifmp,
                 pfcbT->PgnoFDP(),
+                dbtimeNil,
                 fRBSDeletedTableRootPage,
                 pfucb->ppib->BfpriPriority( pfucb->ifmp ),
                 *tcScope ) );
@@ -8520,6 +8522,7 @@ ERR ErrSPCaptureNonRevertableFDPRootPage( PIB *ppib, FCB* pfcbFDPToFree, const P
             Call( ErrRBSRDWLatchAndCapturePreImage(
                 pfucb->ifmp,
                 pgnoLVRoot,
+                dbtimeNil,
                 fRBSDeletedTableRootPage,
                 pfucb->ppib->BfpriPriority( pfucb->ifmp ),
                 *tcScope ) );
@@ -8663,7 +8666,7 @@ HandleError:
 //  SIDE EFFECTS
 //  COMMENTS
 //-
-ERR ErrSPCaptureSnapshot( FUCB* const pfucb, const PGNO pgnoFirst, const CPG cpgSize, const BOOL fMarkExtentEmptyFDPDeleted )
+ERR ErrSPCaptureSnapshot( FUCB* const pfucb, const PGNO pgnoFirst, CPG cpgSize, const BOOL fMarkExtentEmptyFDPDeleted )
 {
     ERR err = JET_errSuccess;
     BOOL fEfvEnabled = ( g_rgfmp[pfucb->ifmp].FLogOn() && PinstFromPfucb( pfucb )->m_plog->ErrLGFormatFeatureEnabled( JET_efvRevertSnapshot ) >= JET_errSuccess );
@@ -8672,6 +8675,24 @@ ERR ErrSPCaptureSnapshot( FUCB* const pfucb, const PGNO pgnoFirst, const CPG cpg
     tcScope->nParentObjectClass = TceFromFUCB( pfucb );
     tcScope->SetDwEngineObjid( ObjidFDP( pfucb ) );
     tcScope->iorReason.SetIort( iortFreeExtSnapshot );
+
+    Assert( !PinstFromPfucb( pfucb )->FRecovering() );
+
+    const PGNO pgnoLastFMP = g_rgfmp[ pfucb->ifmp ].PgnoLast();
+
+    // The pages we want to capture are beyond the last page owned by this database.
+    // This is possible if we have some shelved pages due to shrink and later the table being deleted.
+    // Table deletion would try to log ExtentFreed during delete for the shelved pages which might be beyond EOF.
+    // We should be able to safely ignore their pages as should have been captured when they were shelved.
+    if ( pgnoFirst > pgnoLastFMP )
+    {
+        return JET_errSuccess;
+    }
+    else if ( pgnoFirst + cpgSize - 1 > pgnoLastFMP )
+    {
+        AssertTrack( fFalse, "CaptureSnapshotCrossEof" );
+        cpgSize = pgnoLastFMP - pgnoFirst + 1;
+    }
 
     // We don't have to break it down as per preread chunk since we are not reading the preimages instead just marking it to be reverted to a new page state with some special flags.
     if ( fMarkExtentEmptyFDPDeleted )
@@ -11420,26 +11441,6 @@ HandleError:
 }
 
 
-LOCAL VOID SPReportMaxDbSizeExceeded( const IFMP ifmp, const CPG cpg )
-{
-    //  Log event to tell user that it reaches the database size limit.
-
-    WCHAR       wszCurrentSizeMb[16];
-    const WCHAR * rgcwszT[2]          = { g_rgfmp[ifmp].WszDatabaseName(), wszCurrentSizeMb };
-
-    OSStrCbFormatW( wszCurrentSizeMb, sizeof(wszCurrentSizeMb), L"%d", (ULONG)(( (QWORD)cpg * (QWORD)( g_cbPage >> 10 /* Kb */ ) ) >> 10 /* Mb */) );
-
-    UtilReportEvent(
-            eventWarning,
-            SPACE_MANAGER_CATEGORY,
-            SPACE_MAX_DB_SIZE_REACHED_ID,
-            2,
-            rgcwszT,
-            0,
-            NULL,
-            PinstFromIfmp( ifmp ) );
-}
-
 LOCAL ERR ErrSPINewSize(
     const TraceContext& tc,
     const IFMP  ifmp,
@@ -11634,6 +11635,107 @@ HandleError:
     return err;
 }
 
+LOCAL VOID SPILogEventOversizedDb(
+    const MessageId msgid,
+    FUCB* const     pfucbRoot,
+    const PGNO      pgnoLastInitial,
+    const PGNO      pgnoLastFinal,
+    const PGNO      pgnoMaxDbSize,
+    const CPG       cpgMinReq,
+    const CPG       cpgPrefReq,
+    const CPG       cpgMinReqAdj,
+    const CPG       cpgPrefReqAdj )
+{
+    ERR err = JET_errSuccess;
+    FUCB *pfucbAE = pfucbNil;
+    const FMP* const pfmp = &g_rgfmp[ pfucbRoot->ifmp ];
+    const ULONGLONG cbInitialSize = CbFileSizeOfPgnoLast( pgnoLastInitial );
+    const ULONGLONG cbSizeLimit = CbFileSizeOfPgnoLast( pgnoMaxDbSize );
+    const ULONGLONG cbFinalSize = CbFileSizeOfPgnoLast( pgnoLastFinal );
+    CSPExtentInfo speiAE;
+    CPG cpgExtSmallest = lMax;
+    CPG cpgExtLargest = 0;
+    ULONG cext = 0;
+    CPG cpgAvail = 0;
+
+    // Collect available space stats.
+    Assert( pfucbRoot->u.pfcb->PgnoFDP() == pgnoSystemRoot );
+    AssertSPIPfucbOnRoot( pfucbRoot );
+    Call( ErrSPIOpenAvailExt( pfucbRoot, &pfucbAE ) );
+    Call( ErrSPISeekRootAE( pfucbAE, 1, spp::AvailExtLegacyGeneralPool, &speiAE ) );
+    while ( speiAE.FIsSet() )
+    {
+        Assert( speiAE.SppPool() == spp::AvailExtLegacyGeneralPool );
+        Assert( speiAE.PgnoLast() <= pgnoLastInitial );
+
+        const CPG cpg = speiAE.CpgExtent();
+        Assert( cpg > 0 );
+
+        cpgExtSmallest = LFunctionalMin( cpgExtSmallest, cpg );
+        cpgExtLargest = LFunctionalMax( cpgExtLargest, cpg );
+        cext++;
+        cpgAvail += cpg;
+
+        speiAE.Unset();
+        err = ErrBTNext( pfucbAE, fDIRNull );
+        if ( err >= JET_errSuccess )
+        {
+            speiAE.Set( pfucbAE );
+            if ( speiAE.SppPool() != spp::AvailExtLegacyGeneralPool )
+            {
+                speiAE.Unset();
+            }
+        }
+        else if ( err == JET_errNoCurrentRecord )
+        {
+            err = JET_errSuccess;
+        }
+        Call( err );
+    }
+
+HandleError:
+    if ( pfucbAE != pfucbNil )
+    {
+        BTClose( pfucbAE );
+        pfucbAE = pfucbNil;
+    }
+
+    if ( ( err < JET_errSuccess ) || ( cext == 0 ) )
+    {
+        cpgExtSmallest = 0;
+        cpgExtLargest = 0;
+        cext = 0;
+        cpgAvail = 0;
+    }
+
+    OSTraceSuspendGC();
+    const WCHAR* rgwsz[] =
+    {
+        pfmp->WszDatabaseName(),
+        OSFormatW( L"%I64u", cbInitialSize ), OSFormatW( L"%d", pfmp->CpgOfCb( cbInitialSize ) ),
+        OSFormatW( L"%I64u", cbSizeLimit ), OSFormatW( L"%d", pfmp->CpgOfCb( cbSizeLimit ) ),
+        OSFormatW( L"%I64u", cbFinalSize ), OSFormatW( L"%d", pfmp->CpgOfCb( cbFinalSize ) ),
+        OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgMinReq ) ), OSFormatW( L"%d", cpgMinReq ),
+        OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgPrefReq ) ), OSFormatW( L"%d", cpgPrefReq ),
+        OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgMinReqAdj ) ), OSFormatW( L"%d", cpgMinReqAdj ),
+        OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgPrefReqAdj ) ), OSFormatW( L"%d", cpgPrefReqAdj ),
+        OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgExtSmallest ) ), OSFormatW( L"%d", cpgExtSmallest ),
+        OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgExtLargest ) ), OSFormatW( L"%d", cpgExtLargest ),
+        OSFormatW( L"%I32u", cext ),
+        OSFormatW( L"%I64u", pfmp->CbOfCpg( cpgAvail ) ), OSFormatW( L"%d", cpgAvail )
+    };
+    UtilReportEvent(
+        eventWarning,
+        SPACE_MANAGER_CATEGORY,
+        msgid,
+        _countof( rgwsz ),
+        rgwsz,
+        0,
+        NULL,
+        pfmp->Pinst() );
+    OSTraceResumeGC();
+}
+
 LOCAL ERR ErrSPIExtendDB(
     FUCB        *pfucbRoot,
     const CPG   cpgSEMin,
@@ -11724,7 +11826,7 @@ LOCAL ERR ErrSPIExtendDB(
         const CPG cpgAvail = (CPG)( speiAEShelved.PgnoFirst() - pgnoSELastAdj - 1 );
         if ( cpgAvail >= cpgSEMin )
         {
-            cpgSEMaxAdj = cpgAdj + cpgAvail;
+            cpgSEMaxAdj = min( cpgSEMaxAdj, cpgAdj + cpgAvail );
             break;
         }
 
@@ -11764,6 +11866,19 @@ LOCAL ERR ErrSPIExtendDB(
     BTClose( pfucbAE );
     pfucbAE = pfucbNil;
 
+    // We must not have left a potentially relevant shelved extent behind.
+    AssertTrack( !speiAEShelved.FIsSet() ||
+                 ( ( speiAEShelved.PgnoFirst() > pgnoSELastAdj ) &&
+                   ( (CPG)( speiAEShelved.PgnoFirst() - pgnoSELastAdj - 1 ) >= cpgSEMin ) ), "ExtendDbUnprocessedShelvedExt" );
+
+    Assert( cpgSEMaxAdj >= 0 );
+    Assert( cpgAdj >= 0 );
+
+    cpgSEMinAdj = cpgSEMin + cpgAdj;
+    cpgSEReqAdj = max( cpgSEMinAdj, min( cpgSEMinAdj + ( cpgSEReq - cpgSEMin ), cpgSEMaxAdj ) );
+    Assert( cpgSEMinAdj >= cpgSEMin );
+    Assert( cpgSEReqAdj >= cpgSEMinAdj );
+
     // Check for violation of max size.
     // Currently, there are two codepaths that can extend a database: split buffer refill and
     // extent allocation from space requests trickling up. The split buffer path must succeed,
@@ -11775,34 +11890,49 @@ LOCAL ERR ErrSPIExtendDB(
          ( !fMayViolateMaxSize || ( pgnoSEMaxAdj >= pgnoSysMax ) ) )
     {
         AssertTrack( !fMayViolateMaxSize, "ExtendDbMaxSizeBeyondPgnoSysMax" );
-        SPReportMaxDbSizeExceeded( pfucbRoot->ifmp, (CPG)pgnoSELastAdj );
+
+        SPILogEventOversizedDb(
+            SPACE_MAX_DB_SIZE_REACHED_ID,
+            pfucbRoot,
+            pgnoSELast,
+            pgnoSELast,
+            pgnoSEMaxAdj,
+            cpgSEMin,
+            cpgSEReq,
+            cpgSEMinAdj,
+            cpgSEReqAdj );
+
         Error( ErrERRCheck( JET_errOutOfDatabaseSpace ) );
     }
-
-    // We must not have left a potentially relevant shelved extent behind.
-    AssertTrack( !speiAEShelved.FIsSet() ||
-                 ( ( speiAEShelved.PgnoFirst() > pgnoSELastAdj ) &&
-                   ( (CPG)( speiAEShelved.PgnoFirst() - pgnoSELastAdj - 1 ) >= cpgSEMin ) ), "ExtendDbUnprocessedShelvedExt" );
-
-    Assert( cpgSEMaxAdj >= 0 );
-    Assert( cpgAdj >= 0 );
-
-    cpgSEMinAdj = cpgSEMin + cpgAdj;
-    cpgSEReqAdj = max( cpgSEMinAdj, min( cpgSEReq, cpgSEMaxAdj ) );
-    Assert( cpgSEMinAdj >= cpgSEMin );
-    Assert( cpgSEReqAdj >= cpgSEMinAdj );
 
     if ( fPermitAsyncExtension && ( ( pgnoSELast + cpgSEReqAdj + cpgSEReq ) <= pgnoSEMaxAdj ) )
     {
         cpgAsyncExtension = cpgSEReq;
     }
 
+    // Issue event if we violated the max DB size.
+    if ( ( pgnoSELast + cpgSEReqAdj ) > pgnoSEMaxAdj )
+    {
+        Assert( pgnoSEMaxAdj < pgnoSysMax );
+        SPILogEventOversizedDb(
+            DB_EXTENSION_OVERSIZED_DB_ID,
+            pfucbRoot,
+            pgnoSELast,
+            pgnoSELast + cpgSEReqAdj,
+            pgnoSEMaxAdj,
+            cpgSEMin,
+            cpgSEReq,
+            cpgSEMinAdj,
+            cpgSEReqAdj );
+    }
+
+    // Resize the database. Try smaller extensions if extending by the preferred size fails.
     err = ErrSPINewSize( TcCurr(), pfucbRoot->ifmp, pgnoSELast, cpgSEReqAdj, cpgAsyncExtension );
 
     if ( err < JET_errSuccess )
     {
         err = ErrSPINewSize( TcCurr(), pfucbRoot->ifmp, pgnoSELast, cpgSEMinAdj, 0 );
-        if( err < JET_errSuccess )
+        if ( err < JET_errSuccess )
         {
             //  we have failed to do a "big" allocation
             //  drop down to small allocations and see if we can succeed
@@ -13197,6 +13327,7 @@ LOCAL ERR ErrSPIReserveSPBufPages(
     const PGNO pgnoReplace )
 {
     ERR err = JET_errSuccess;
+    FMP* const pfmp = &g_rgfmp[ pfucb->ifmp ];
     FCB* const pfcb = pfucb->u.pfcb;
     FUCB* pfucbParentLocal = pfucbParent;
     FUCB* pfucbOE = pfucbNil;
@@ -13205,7 +13336,7 @@ LOCAL ERR ErrSPIReserveSPBufPages(
     CArray<EXTENTINFO> arreiReleased( 10 );
 
     const PGNO pgnoParentFDP = PsphSPIRootPage( pfucb )->PgnoParent();
-    const PGNO pgnoLastBefore = g_rgfmp[ pfucb->ifmp ].PgnoLast();
+    const PGNO pgnoLastBefore = pfmp->PgnoLast();
 
     AssertSPIPfucbOnRoot( pfucb );
     AssertSPIPfucbNullOrUnlatched( pfucbParent );
@@ -13271,18 +13402,42 @@ LOCAL ERR ErrSPIReserveSPBufPages(
         }
     }
 
-    const PGNO pgnoLastAfter = g_rgfmp[ pfucb->ifmp ].PgnoLast();
+    const PGNO pgnoLastAfter = pfmp->PgnoLast();
 
     // Unshelving normally happens as part of growing the database to add secondary extents
     // to it. However, refilling the DB root's split buffers may also grow the database while
     // not adding a secondary extent, so we need to unshelve any pages in that range here.
-    if ( !g_rgfmp[ pfucb->ifmp ].FIsTempDB() && ( pfcb->PgnoFDP() == pgnoSystemRoot ) && ( pgnoLastAfter > pgnoLastBefore ) )
+    if ( !pfmp->FIsTempDB() && ( pfcb->PgnoFDP() == pgnoSystemRoot ) && ( pgnoLastAfter > pgnoLastBefore ) )
     {
         Call( ErrSPIUnshelvePagesInRange( pfucb, pgnoLastBefore + 1, pgnoLastAfter ) );
         Call( ErrSPIReserveSPBufPages( pfucb, pfucbParentLocal, cpgAddlReserveOE, cpgAddlReserveAE, pgnoReplace ) );
     }
 
 HandleError:
+    Assert( ( err < JET_errSuccess ) || ( arreiReleased.Size() == 0 ) );
+    for ( size_t iext = 0; iext < arreiReleased.Size(); iext++ )
+    {
+        BOOL fExtentFreed = fFalse;
+        const EXTENTINFO& extinfo = arreiReleased[ iext ];
+
+        // If we're failing due to low space at lower offsets during Shrink, try to return
+        // the pending space anyways (best effort) to avoid leakage.
+        if ( err == errSPNoSpaceBelowShrinkTarget )
+        {
+            // De-activate Shrink before trying to free up extents to avoid leaks.
+            Assert( pfmp->FShrinkIsRunning() );
+            pfmp->ResetPgnoShrinkTarget();
+
+            Assert( extinfo.FValid() && ( extinfo.CpgExtent() > 0 ) );
+            fExtentFreed = ErrSPIAEFreeExt( pfucb, extinfo.PgnoFirst(), extinfo.CpgExtent(), pfucbParentLocal ) >= JET_errSuccess;
+        }
+
+        if ( !fExtentFreed )
+        {
+            SPIReportSpaceLeak( pfucb, err, extinfo.PgnoFirst(), (CPG)extinfo.CpgExtent(), "SpBuffer" );
+        }
+    }
+
     if ( pfucbNil != pfucbOE )
     {
         BTClose( pfucbOE );
@@ -13307,13 +13462,6 @@ HandleError:
         }
         BTClose( pfucbParentLocal );
         pfucbParentLocal = pfucbNil;
-    }
-
-    Assert( ( err < JET_errSuccess ) || ( arreiReleased.Size() == 0 ) );
-    for ( size_t iext = 0; iext < arreiReleased.Size(); iext++ )
-    {
-        const EXTENTINFO& extinfoLeaked = arreiReleased[ iext ];
-        SPIReportSpaceLeak( pfucb, err, extinfoLeaked.PgnoFirst(), (CPG)extinfoLeaked.CpgExtent(), "SpBuffer" );
     }
 
     return err;

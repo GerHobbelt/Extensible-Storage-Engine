@@ -593,7 +593,8 @@ VOID LGIReportBadRevertedPage( const INST* pinst, const IFMP ifmp, const PGNO pg
 //
 //  On success, the page is latched with latchRIW.
 //  On failure, the page is not latched.
-//  errSkipLogRedoOperation: the page is not latched, and the Pagetrim State is pagetrimTrimmed unless fSkipSetRedoMapDbtimeRevert is set and dbtime of page is dbtimeRevert.
+//  errSkipLogRedoOperation: the page is not latched, and the Pagetrim State is pagetrimTrimmed unless
+//                          fSkipRecoveryOnDbtimeRevert is set and dbtime of page is dbtimeRevert in which case we won't set it to pagetrimTrimmed.
 //
 INLINE ERR LOG::ErrLGIAccessPage(
     PIB             *ppib,
@@ -602,7 +603,7 @@ INLINE ERR LOG::ErrLGIAccessPage(
     const PGNO      pgno,
     const OBJID     objid,
     const BOOL      fUninitPageOk,
-    const BOOL      fSkipSetRedoMapDbtimeRevert )
+    const BOOL      fSkipRecoveryOnDbtimeRevert )
 {
     ERR err = JET_errSuccess, errPage = JET_errSuccess;
     DBTIME dbtime = 0;
@@ -616,7 +617,7 @@ INLINE ERR LOG::ErrLGIAccessPage(
     Assert( !pcsr->FLatched() );
 
     // Both fUninitPageOk and fSkipSetRedoMapDbtimeRevert shouldn't be true.
-    Assert( !( fUninitPageOk && fSkipSetRedoMapDbtimeRevert ) );
+    Assert( !( fUninitPageOk && fSkipRecoveryOnDbtimeRevert ) );
 
     //  right off the bat, if the pgno for this redo operation is already
     //  tracked by the log redo map, we should just skip it instead of
@@ -678,7 +679,7 @@ INLINE ERR LOG::ErrLGIAccessPage(
         // For that LR, we will skip redo operation if the dbtime of the page is set to dbtimeRevert.
         // We don't want to add it to redomap as nothing is going to remove it as it was freed earlier.
         //
-        if ( fRevertedNewPage && fSkipSetRedoMapDbtimeRevert )
+        if ( fRevertedNewPage && fSkipRecoveryOnDbtimeRevert )
         {
             Error( ErrERRCheck( errSkipLogRedoOperation ) );
         }
@@ -712,6 +713,15 @@ INLINE ERR LOG::ErrLGIAccessPage(
         if ( ( errPage >= JET_errSuccess ) && ( pcsr->Cpage().FShrunkPage() || fRevertedNewPage ) )
         {
             pcsr->ReleasePage();
+
+            // fSkipRecoveryOnDbtimeRevert is set to true only for ScrubLR right now.
+            // We don't want return recovery verify failure as the page is already in a new page state and we can simply skip scrubbing the page.
+            //
+            if ( fRevertedNewPage && fSkipRecoveryOnDbtimeRevert )
+            {
+                Error( ErrERRCheck( errSkipLogRedoOperation ) );
+            }
+
             Error( ErrERRCheck( JET_errRecoveryVerifyFailure ) );
         }
 
@@ -1094,7 +1104,7 @@ HandleError:
     {
         if ( pfucbNil != pfucb )
         {
-            if ( pfcb == pfucb->u.pfcb )
+            if ( pfcb == pfucb->u.pfcb && pfcb != pfcbNil )
             {
                 // We managed to link the FUCB to the FCB before we errored.
                 pfcb->Unlink( pfucb );
@@ -1582,6 +1592,7 @@ ERR LOG::ErrLGRIInitSession(
         // We will initialize the revert snapshot from Rstmap during LGRIInitSession.
         // Also, check if we need to roll the snapshot and roll it if required.
         Call( CRevertSnapshotForAttachedDbs::ErrRBSInitFromRstmap( m_pinst ) );
+        Call( ErrFaultInjection( 72130 ) );
 
         // If required range was a problem or if db's are not on the required efv m_prbs would be null in ErrRBSInitFromRstmap
         if ( m_pinst->m_prbs && m_pinst->m_prbs->FRollSnapshot() )
@@ -3805,11 +3816,40 @@ ERR LOG::ErrLGEvaluateDestructiveCorrectiveLogOptions(
     ERR errGenRequiredCheck = ErrLGCheckDBGensRequired( lgenBad - 1 );
     Assert( errGenRequiredCheck != JET_wrnCommittedLogFilesLost );
 
-    if ( errGenRequiredCheck != JET_errCommittedLogFilesMissing )
+    if ( errGenRequiredCheck == JET_errRequiredLogFilesMissing ||
+         // If log is outside both required and committed range and we do not allow cleanup, keep original error rather than
+         // converting to JET_errCommitLogFiles* error (to keep existing behavior)
+         ( errGenRequiredCheck == JET_errSuccess && ( !m_fIgnoreLostLogs || !BoolParam( m_pinst, JET_paramDeleteOutOfRangeLogs ) ) ) )
     {
         //  Nope, we are missing required files for consistency, bail ... we will 
         //  use the errCondition provided below as there is no way to correct for
         //  this error condition.
+        if ( !FErrIsLogCorruption( errCondition ) )
+        {
+            // Log corruption errors already have a better event and failure item, so do not raise this.
+            WCHAR szT1[16];
+            const WCHAR * rgszT[2];
+            rgszT[0] = m_pLogStream->LogName();
+            OSStrCbFormatW( szT1, sizeof( szT1 ), L"%d", errCondition );
+            rgszT[1] = szT1;
+            UtilReportEvent(    eventError,
+                                LOGGING_RECOVERY_CATEGORY,
+                                REDO_REQUIRED_LOG_CORRUPT,
+                                _countof( rgszT ),
+                                rgszT,
+                                0,
+                                NULL,
+                                m_pinst );
+
+            OSUHAPublishEvent(  HaDbFailureTagCorruption,
+                                m_pinst,
+                                HA_LOGGING_RECOVERY_CATEGORY,
+                                HaDbIoErrorNone, NULL, 0, 0,
+                                HA_REDO_REQUIRED_LOG_CORRUPT,
+                                _countof( rgszT ),
+                                rgszT );
+        }
+
         Call( errCondition );
     }
 
@@ -4335,9 +4375,9 @@ AbruptEnd:
                 Assert( m_fLostLogs );
                 // Note this is like m_fRedidAllLogs, but we didn't.
                 *pfNSNextStep = fNSGotoDone;
-                err = JET_errSuccess;
-                return err;
+                return JET_errSuccess;
             }
+            CallR( err );
         }
 
         errT = err;
@@ -9389,7 +9429,8 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
         const BOOL fRequiredRange = g_rgfmp[ifmp].FContainsDataFromFutureLogs();
         const BOOL fTrimmedDatabase = pfmp->Pdbfilehdr()->le_ulTrimCount > 0;
         const BOOL fInitDbtimePageInLogRec = plrscancheck->DbtimePage() != 0 && plrscancheck->DbtimePage() != dbtimeShrunk;
-        const BOOL fUninitPossible = fRequiredRange || !fInitDbtimePageInLogRec || fTrimmedDatabase;
+        const BOOL fRevertedDbtimePageInLogRec = CPAGE::FRevertedNewPage( plrscancheck->DbtimePage() );
+        const BOOL fUninitPossible = fRequiredRange || !fInitDbtimePageInLogRec || fTrimmedDatabase || fRevertedDbtimePageInLogRec;
 
         if ( fDbScan )
         {
@@ -9423,6 +9464,7 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
             Assert( cpage.CbPage() == UlParam( PinstFromIfmp( ifmp ), JET_paramDatabasePageSize ) );
             const DBTIME dbtimePage = cpage.Dbtime();
             const BOOL fInitDbtimePage = dbtimePage != 0 && dbtimePage != dbtimeShrunk;
+            const BOOL fPageFDPDelete = cpage.FPageFDPDelete();
             Expected( fInitDbtimePage || ( dbtimePage == dbtimeShrunk ) ); // dbtime 0 only usually comes from a completely uninit page (-1019).
 
             const DBTIME dbtimeCurrentInLogRec = plrscancheck->DbtimeCurrent();
@@ -9439,9 +9481,10 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
             const BOOL fDbtimeRevertedNewPage = 
                 ( ( CmpLgpos( g_rgfmp[ ifmp ].Pdbfilehdr()->le_lgposCommitBeforeRevert, m_lgposRedo ) > 0 ||
                     plrscancheck->DbtimePage() == 0 ||
-                    plrscancheck->DbtimePage() == dbtimeShrunk ) &&
+                    plrscancheck->DbtimePage() == dbtimeShrunk ||
+                    ( ( plrscancheck->FObjidInvalid() ||  plrscancheck->FEmptyPage() ) && fPageFDPDelete ) ) &&
                   CPAGE::FRevertedNewPage( dbtimePage ) ) || 
-                CPAGE::FRevertedNewPage( plrscancheck->DbtimePage() );
+                fRevertedDbtimePageInLogRec;
 
             // Matching uninitialized state is OK, proceed only if at least one of the dbtimes is initialized
             // If this was a page which was reverted to a new page by RBS, we should ignore dbscan checks till the max log at the time of revert is replayed.
@@ -9591,7 +9634,9 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
                     OSFormatW( L"0x%I64x", dbtimePageInLogRec ),
                     OSFormatW( L"0x%I64x", dbtimeCurrentInLogRec ),
                     OSFormatW( L"(%08X,%04X,%04X)", m_lgposRedo.lGeneration, m_lgposRedo.isec, m_lgposRedo.ib ),
-                    OSFormatW( L"%hhu", plrscancheck->BSource() )
+                    OSFormatW( L"%hhu", plrscancheck->BSource() ),
+                    OSFormatW( L"%d", (INT)plrscancheck->FObjidInvalid() ),
+                    OSFormatW( L"%d", (INT)plrscancheck->FEmptyPage() )
                 };
 
                 const WCHAR* rgwszDefault[] =
@@ -9604,7 +9649,9 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
                     OSFormatW( L"0x%I64x", dbtimeCurrentInLogRec ),
                     OSFormatW( L"(%08X,%04X,%04X)", m_lgposRedo.lGeneration, m_lgposRedo.isec, m_lgposRedo.ib ),
                     OSFormatW( L"%hhu", plrscancheck->BSource() ),
-                    OSFormatW( L"%u", objidPage )
+                    OSFormatW( L"%u", objidPage ),
+                    OSFormatW( L"%d", (INT)plrscancheck->FObjidInvalid() ),
+                    OSFormatW( L"%d", (INT)plrscancheck->FEmptyPage() ),
                 };
 
                 const WCHAR** const rgwsz = ( msgid == DB_DIVERGENCE_UNINIT_PAGE_PASSIVE_DB_ID ) ? rgwszUninitPagePassive : rgwszDefault;
@@ -9695,7 +9742,9 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
                         OSFormatW( L"0x%I64x", dbtimeSeed ),
                         OSFormatW( L"(%08X,%04X,%04X)", m_lgposRedo.lGeneration, m_lgposRedo.isec, m_lgposRedo.ib ),
                         OSFormatW( L"%hhu", plrscancheck->BSource() ),
-                        OSFormatW( L"%u", objidPage )
+                        OSFormatW( L"%u", objidPage ),
+                        OSFormatW( L"%d", (INT)plrscancheck->FObjidInvalid() ),
+                        OSFormatW( L"%d", (INT)plrscancheck->FEmptyPage() ),
                     };
 
                     UtilReportEvent(
@@ -9762,7 +9811,7 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
                 case JET_errFileIOBeyondEOF:
                     fPageBeyondEof = fTrue;
                 case JET_errPageNotInitialized:
-                    if ( fInitDbtimePageInLogRec && !fRequiredRange && ( !fTrimmedDatabase || fPageBeyondEof ) )
+                    if ( fInitDbtimePageInLogRec && !fRevertedDbtimePageInLogRec && !fRequiredRange && ( !fTrimmedDatabase || fPageBeyondEof ) )
                     {
                         *pfBadPage = fTrue;
 
@@ -9775,7 +9824,9 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
                             OSFormatW( L"0x%I64x", dbtimePageInLogRec ),
                             OSFormatW( L"0x%I64x", plrscancheck->DbtimeCurrent() ),
                             OSFormatW( L"(%08X,%04X,%04X)", m_lgposRedo.lGeneration, m_lgposRedo.isec, m_lgposRedo.ib ),
-                            OSFormatW( L"%hhu", plrscancheck->BSource() )
+                            OSFormatW( L"%hhu", plrscancheck->BSource() ),
+                            OSFormatW( L"%d", (INT)plrscancheck->FObjidInvalid() ),
+                            OSFormatW( L"%d", (INT)plrscancheck->FEmptyPage() ),
                         };
                         UtilReportEvent(
                             eventError,
@@ -11236,7 +11287,7 @@ ERR LOG::ErrLGRIRedoTrimDB(
 }
 
 //  ================================================================
-ERR LOG::ErrLGRIRedoExtentFreed( const LREXTENTFREED * const plrextentfreed )
+ERR LOG::ErrLGRIRedoExtentFreed( const LREXTENTFREED2 * const plrextentfreed )
 //  ================================================================
 {
     // This is not logged for all free extent operations, only for those related to deleting a whole space tree.
@@ -11260,40 +11311,46 @@ ERR LOG::ErrLGRIRedoExtentFreed( const LREXTENTFREED * const plrextentfreed )
         return JET_errSuccess;
     }
 
-    // If RBS isn't enabled return success.
-    if ( !( pfmp->FRBSOn() ) )
-    {
-        return JET_errSuccess;
-    }
-
     const PGNO pgnoFirst            = plrextentfreed->PgnoFirst();
     const CPG  cpgExtent            = plrextentfreed->CpgExtent();
     const BOOL fTableRootPage       = plrextentfreed->FTableRootPage();
     const BOOL fEmptyPageFDPDeleted = plrextentfreed->FEmptyPageFDPDeleted();
+    const DBTIME dbtimeLast         = plrextentfreed->Dbtime();
 
     Assert( !fTableRootPage || cpgExtent == 1 );
     Assert( !( fTableRootPage && fEmptyPageFDPDeleted ) );
 
-    LGAddFreePages( cpgExtent );
-
-    Assert( m_fRecoveringMode == fRecoveringRedo );
-
+    // If RBS isn't enabled, clear redo map and return success.
     if ( dbid == dbidTemp || !pfmp->FRBSOn() )
     {
         goto ClearLogRedoMapDbtimeRevert;
     }
+
+    LGAddFreePages( cpgExtent );
+
+    Assert( m_fRecoveringMode == fRecoveringRedo );
 
     if ( fTableRootPage )
     {
         // Capture the preimage of the table root and pass flag to indicate this is a delete table so that we special mark this table when reverted.
         // We should generally not be touching the table pages before table delete.
         // But in case we did due to some bug or some unexpected scenario, we will pass fRBSPreimageRevertAlways to make sure we always keep the table deleted.
-        CallR( ErrRBSRDWLatchAndCapturePreImage(
+        err = ErrRBSRDWLatchAndCapturePreImage(
                 ifmp,
                 pgnoFirst,
+                dbtimeLast,
                 fRBSDeletedTableRootPage,
                 BfpriBFMake( PctFMPCachePriority( ifmp ), (BFTEMPOSFILEQOS) qosIODispatchImmediate ),
-                TcCurr() ) );
+                TcCurr() );
+
+        if ( err == JET_errFileIOBeyondEOF && pfmp->FContainsDataFromFutureLogs() && CmpLgpos( pfmp->Pdbfilehdr()->le_lgposLastResize, m_lgposRedo ) > 0 )
+        {
+            // pre image for page beyond eof cannot be captured, we must have captured
+            // and written it out in the past before shrinking the file.
+            BFMarkAsSuperCold( ifmp, pgnoFirst );
+            err = JET_errSuccess;
+        }
+        CallR( err );
     }
     else if ( fEmptyPageFDPDeleted )
     {
@@ -11342,6 +11399,11 @@ ERR LOG::ErrLGRIRedoExtentFreed( const LREXTENTFREED * const plrextentfreed )
     if ( g_rgfmp[ ifmp ].PLogRedoMapDbtimeRevert() )
     {
         g_rgfmp[ ifmp ].PLogRedoMapDbtimeRevert()->ClearPgno( pgnoFirst, pgnoFirst + cpgExtent - 1 );
+    }
+
+    if ( g_rgfmp[ ifmp ].PLogRedoMapDbtimeRevertIgnore() )
+    {
+        g_rgfmp[ ifmp ].PLogRedoMapDbtimeRevertIgnore()->ClearPgno( pgnoFirst, pgnoFirst + cpgExtent - 1 );
     }
 
     return JET_errSuccess;
@@ -11621,7 +11683,7 @@ ERR LOG::ErrLGRIRedoOperations(
     secInCallbackBegin = m_pinst->m_isdlInit.GetCallbackTime( &cCallbacksBegin );
     secThrottledBegin = m_pinst->m_isdlInit.GetThrottleTime( &cThrottledBegin );
     isdlCurrLog.InitSingleStep( isdltypeLogFile, rgb, sizeof(rgb) );
-    ZeroMemory( cLRs, sizeof(cLRs) );
+    OSMemorySecureZero( cLRs, sizeof(cLRs) );
 
     *pfRcvCleanlyDetachedDbs = fTrue;
 
@@ -12013,7 +12075,7 @@ ERR LOG::ErrLGRIRedoOperations(
                     secInCallbackBegin = m_pinst->m_isdlInit.GetCallbackTime( &cCallbacksBegin );
                     secThrottledBegin = m_pinst->m_isdlInit.GetThrottleTime( &cThrottledBegin );
                     isdlCurrLog.InitSingleStep( isdltypeLogFile, rgb, sizeof(rgb) );
-                    ZeroMemory( cLRs, sizeof(cLRs) );
+                    OSMemorySecureZero( cLRs, sizeof(cLRs) );
 
                     if ( !plgstat )
                     {
@@ -12989,10 +13051,11 @@ ProcessNextRec:
             }
 
             case lrtypExtentFreed:
+            case lrtypExtentFreed2:
             {
                 // This is not logged for all free extent operations, only for those related to deleting a whole space tree.
-                const LREXTENTFREED * const plrextentfreed = (LREXTENTFREED *)plr;
-                CallR( ErrLGRIRedoExtentFreed( plrextentfreed ) );
+                const LREXTENTFREED2 lrextentfreed( (LREXTENTFREED *)plr );
+                Call( ErrLGRIRedoExtentFreed( &lrextentfreed ) );
         
                 break;
             }

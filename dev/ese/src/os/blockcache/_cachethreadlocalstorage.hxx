@@ -29,6 +29,12 @@ class TCacheThreadLocalStorage
             return ErrGetThreadLocalStorageInternal( ppctls );
         }
 
+        typedef BOOL (*PfnVisitTls)(    _In_ const CTLS* const  pctls,
+                                        _In_ const DWORD_PTR    keyVisitTls );
+
+        void VisitThreadLocalStorage(   _In_ const TCacheThreadLocalStorage::PfnVisitTls    pfnVisitTls,
+                                        _In_ const DWORD_PTR                                keyVisitTls );
+
     private:
 
         BOOL FThreadLocalStorageTableIsInit() const { return m_initOnceThreadLocalStorageTable.FIsInit(); }
@@ -39,9 +45,7 @@ class TCacheThreadLocalStorage
 
         ERR ErrGetThreadLocalStorageInternal( _Out_ CTLS** const ppctls );
         ERR ErrGetThreadLocalStorageSlowly( _Out_ CTLS** const ppctls );
-        void TryReleaseThreadLocalStorage( _In_ const DWORD dwTid );
-        DWORD DwGetCurrentThreadId();
-        BOOL IsThreadAlive( _In_ const DWORD dwTid );
+        void TryReleaseThreadLocalStorage( _In_ const CacheThreadId ctid );
 
     private:
 
@@ -54,6 +58,32 @@ class TCacheThreadLocalStorage
         CTLS*                                                                   m_pctlsCleanup;
 };
 
+template<class CTLS>
+void TCacheThreadLocalStorage<CTLS>::VisitThreadLocalStorage(   _In_ const TCacheThreadLocalStorage::PfnVisitTls    pfnVisitTls,
+                                                                _In_ const DWORD_PTR                                keyVisitTls )
+{
+    CTLS* pctls = NULL;
+
+    do
+    {
+        m_critThreadLocalStorage.Enter();
+
+        CTLS* const pctlsNext = pctls ? m_ilThreadLocalStorage.Next( pctls ) : m_ilThreadLocalStorage.PrevMost();
+
+        if ( pctlsNext )
+        {
+            pctlsNext->AddRef();
+        }
+
+        m_critThreadLocalStorage.Leave();
+
+        CTLS::Release( &pctls );
+        pctls = pctlsNext;
+    } while ( pctls && pfnVisitTls( pctls, keyVisitTls ) );
+
+    CTLS::Release( &pctls );
+}
+
 template< class CTLS >
 ERR TCacheThreadLocalStorage<CTLS>::ErrInitThreadLocalStorageTable()
 {
@@ -61,7 +91,7 @@ ERR TCacheThreadLocalStorage<CTLS>::ErrInitThreadLocalStorageTable()
 
     if ( m_cacheThreadLocalStorage.ErrInit( 5.0, 1.0 ) == CCacheThreadLocalStorageHash::ERR::errOutOfMemory )
     {
-        Call( ErrERRCheck( JET_errOutOfMemory ) );
+        Error( ErrERRCheck( JET_errOutOfMemory ) );
     }
 
 HandleError:
@@ -98,7 +128,7 @@ template< class CTLS >
 ERR TCacheThreadLocalStorage<CTLS>::ErrGetThreadLocalStorageInternal( _Out_ CTLS** const ppctls )
 {
     ERR                                 err                             = JET_errSuccess;
-    CCacheThreadLocalStorageKey         key( DwGetCurrentThreadId() );
+    CCacheThreadLocalStorageKey         key( CTLS::CtidCurrentThread() );
     CCacheThreadLocalStorageEntry       entry;
     CCacheThreadLocalStorageHash::CLock lock;
     CCacheThreadLocalStorageHash::ERR   errCacheThreadLocalStorageHash  = CCacheThreadLocalStorageHash::ERR::errSuccess;
@@ -153,16 +183,16 @@ template< class CTLS >
 ERR TCacheThreadLocalStorage<CTLS>::ErrGetThreadLocalStorageSlowly( _Out_ CTLS** const ppctls )
 {
     ERR                                 err                                 = JET_errSuccess;
-    CCacheThreadLocalStorageKey         key( DwGetCurrentThreadId() );
+    CCacheThreadLocalStorageKey         key( CTLS::CtidCurrentThread() );
     CCacheThreadLocalStorageEntry       entry;
     CCacheThreadLocalStorageHash::CLock lock;
     CCacheThreadLocalStorageHash::ERR   errCacheThreadLocalStorageHash      = CCacheThreadLocalStorageHash::ERR::errSuccess;
     CTLS*                               pctlsExisting                       = NULL;
     BOOL                                fWriteLocked                        = fFalse;
     CTLS*                               pctlsNew                            = NULL;
-    const int                           cdwTidCleanupMax                    = 2;
-    DWORD                               rgdwTidCleanup[ cdwTidCleanupMax ]  = { };
-    int                                 cdwTidCleanup                       = 0;
+    const int                           cctidCleanupMax                     = 2;
+    CacheThreadId                       rgctidCleanup[ cctidCleanupMax ]    = { };
+    int                                 cctidCleanup                        = 0;
 
     *ppctls = NULL;
 
@@ -178,14 +208,14 @@ ERR TCacheThreadLocalStorage<CTLS>::ErrGetThreadLocalStorageSlowly( _Out_ CTLS**
     {
         Assert( errCacheThreadLocalStorageHash == CCacheThreadLocalStorageHash::ERR::errEntryNotFound );
 
-        Alloc( pctlsNew = new CTLS( key.DwTid() ) );
+        Alloc( pctlsNew = new CTLS( key.Ctid() ) );
         pctlsExisting = pctlsNew;
 
         entry = CCacheThreadLocalStorageEntry( pctlsNew );
         errCacheThreadLocalStorageHash = m_cacheThreadLocalStorage.ErrInsertEntry( &lock, entry );
         if ( errCacheThreadLocalStorageHash == CCacheThreadLocalStorageHash::ERR::errOutOfMemory )
         {
-            Call( ErrERRCheck( JET_errOutOfMemory ) );
+            Error( ErrERRCheck( JET_errOutOfMemory ) );
         }
         Assert( errCacheThreadLocalStorageHash == CCacheThreadLocalStorageHash::ERR::errSuccess );
     }
@@ -204,11 +234,11 @@ ERR TCacheThreadLocalStorage<CTLS>::ErrGetThreadLocalStorageSlowly( _Out_ CTLS**
         m_critThreadLocalStorage.Enter();
 
         for (   CTLS* pctlsCleanup = m_pctlsCleanup ? m_pctlsCleanup : m_ilThreadLocalStorage.PrevMost();
-                pctlsCleanup && cdwTidCleanup < cdwTidCleanupMax;
+                pctlsCleanup && cctidCleanup < cctidCleanupMax;
                 pctlsCleanup = m_pctlsCleanup )
         {
             m_pctlsCleanup = m_ilThreadLocalStorage.Next( pctlsCleanup );
-            rgdwTidCleanup[cdwTidCleanup++] = pctlsCleanup->DwTid();
+            rgctidCleanup[cctidCleanup++] = pctlsCleanup->Ctid();
         }
 
         m_ilThreadLocalStorage.InsertAsNextMost( pctlsExisting );
@@ -216,9 +246,9 @@ ERR TCacheThreadLocalStorage<CTLS>::ErrGetThreadLocalStorageSlowly( _Out_ CTLS**
         m_critThreadLocalStorage.Leave();
     }
 
-    for ( int idwTidCleanup = 0; idwTidCleanup < cdwTidCleanup; idwTidCleanup++ )
+    for ( int ictidCleanup = 0; ictidCleanup < cctidCleanup; ictidCleanup++ )
     {
-        TryReleaseThreadLocalStorage( rgdwTidCleanup[ idwTidCleanup ] );
+        TryReleaseThreadLocalStorage( rgctidCleanup[ ictidCleanup ] );
     }
 
     *ppctls = pctlsExisting;
@@ -237,16 +267,16 @@ HandleError:
 }
 
 template< class CTLS >
-void TCacheThreadLocalStorage<CTLS>::TryReleaseThreadLocalStorage( _In_ const DWORD dwTid )
+void TCacheThreadLocalStorage<CTLS>::TryReleaseThreadLocalStorage( _In_ const CacheThreadId ctid )
 {
-    CCacheThreadLocalStorageKey         key( dwTid );
+    CCacheThreadLocalStorageKey         key( ctid );
     CCacheThreadLocalStorageEntry       entry;
     CCacheThreadLocalStorageHash::CLock lock;
     CCacheThreadLocalStorageHash::ERR   errCacheThreadLocalStorageHash = CCacheThreadLocalStorageHash::ERR::errSuccess;
     CTLS*                               pctlsExisting                   = NULL;
     BOOL                                fRelease                        = fFalse;
 
-    if ( IsThreadAlive( key.DwTid() ) )
+    if ( CTLS::IsThreadAlive( key.Ctid() ) )
     {
         return;
     }
@@ -258,7 +288,7 @@ void TCacheThreadLocalStorage<CTLS>::TryReleaseThreadLocalStorage( _In_ const DW
     {
         pctlsExisting = static_cast<CTLS*>( entry.Pctls() );
 
-        fRelease = !IsThreadAlive( pctlsExisting->DwTid() );
+        fRelease = !CTLS::IsThreadAlive( pctlsExisting->Ctid() );
 
         if ( fRelease )
         {
@@ -282,27 +312,4 @@ void TCacheThreadLocalStorage<CTLS>::TryReleaseThreadLocalStorage( _In_ const DW
 
         CTLS::Release( &pctlsExisting );
     }
-}
-
-template< class CTLS >
-DWORD TCacheThreadLocalStorage<CTLS>::DwGetCurrentThreadId()
-{
-    return GetCurrentThreadId();
-}
-
-template< class CTLS >
-BOOL TCacheThreadLocalStorage<CTLS>::IsThreadAlive( _In_ const DWORD dwTid )
-{
-    HANDLE  hThread = INVALID_HANDLE_VALUE;
-    BOOL    fAlive  = fFalse;
-
-    hThread = OpenThread( SYNCHRONIZE, FALSE, dwTid );
-    fAlive = hThread != INVALID_HANDLE_VALUE && WaitForSingleObject( hThread, 0 ) == WAIT_TIMEOUT;
-
-    if ( hThread != INVALID_HANDLE_VALUE )
-    {
-        CloseHandle( hThread );
-    }
-
-    return fAlive;
 }

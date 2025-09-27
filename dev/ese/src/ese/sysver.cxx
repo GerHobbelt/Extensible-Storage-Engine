@@ -11,6 +11,13 @@
 //      - UpdateMajors should jump by 10 each time, to leave room for SP/QFE updates.
 //      - Major version can jump by 1 or any value you want.
 //
+//  Increment UpdateMinor when a change is forward and backward compatible.
+//  Increment UpdateMajor when a change is only backward compatible.
+//  Increment MajorVersion when a change is not compatible at all.
+//
+//  These values never decremented.  As an example, version 1568.160.340 could be followed by
+//  1568.160.360 or 1568.180.360, but never by 1568.180.0.
+
 //  Marked PERSISTED because while the whole table is not persisted, individual rows can be 
 //  used to the values in the various ESE file headers.  Entries once added to the table should 
 //  not have their values changed.  You should append to the table newer / larger versions.
@@ -82,6 +89,10 @@ const FormatVersions g_rgfmtversEngine[] = {
     // Skipped below efv due to regression and reverted bad build.
     // { JET_efvRBSNonRevertableTableDeletes, /* 9440 */   { 1568,210,480 }, { 8,100,220 }, { 3,0,0 } }, // [2021/07/29]
     { JET_efvRBSNonRevertableTableDeletes, /* 9460 */   { 1568,230,500 }, { 8,100,220 }, { 3,0,0 } }, // [2021/09/08]
+
+    { JET_efvScanCheck2Flags, /* 9480 */                { 1568,230,500 }, { 8,110,240 }, { 3,0,0 } }, // [2021/10/22]
+    { JET_efvExtentFreed2, /* 9500 */                   { 1568,230,500 }, { 8,120,260 }, { 3,0,0 } }, // [2021/12/21]
+    { JET_efvKVPStoreV2, /* 9520 */                     { 1568,250,520 }, { 8,120,260 }, { 3,0,0 } }, // [2022/02/17]
 };
 
 const INT g_cfmtversEngine = _countof( g_rgfmtversEngine );

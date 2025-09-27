@@ -4681,6 +4681,11 @@ ERR ErrBFFlush( IFMP ifmp, const OBJID objidFDP, const PGNO pgnoFirst, const PGN
             AssertTrack( !pbf->fAvailable && !pbf->fQuiesced, "EvictedBufferInOB0" );
             AssertTrack( pbf->icbBuffer != icbPage0, "FullyDehydratedBufferInOB0" );
 
+            if ( err < JET_errSuccess || pbf->bfdf == bfdfClean )
+            {
+                continue;
+            }
+
             //  if we're only flushing pages from a specific btree of this IFMP
             //  or from a specific range, skip any that don't match
             //
@@ -4694,7 +4699,7 @@ ERR ErrBFFlush( IFMP ifmp, const OBJID objidFDP, const PGNO pgnoFirst, const PGN
                 continue;
             }
 
-            Enforce( err < JET_errSuccess || pbf->bfdf == bfdfClean );
+            EnforceSz( fFalse, "BFFlushDirtyBufferInOB0" );
         }
         pbffmp->bfob0.UnlockKeyPtr( &lockOB0 );
 
@@ -4704,6 +4709,11 @@ ERR ErrBFFlush( IFMP ifmp, const OBJID objidFDP, const PGNO pgnoFirst, const PGN
         {
             pbfNext = pbffmp->bfob0ol.Next( pbf );
 
+            if ( err < JET_errSuccess || pbf->bfdf == bfdfClean )
+            {
+                continue;
+            }
+
             //  if we're only flushing pages from a specific btree of this IFMP
             //  or from a specific range, skip any that don't match
             //
@@ -4717,7 +4727,7 @@ ERR ErrBFFlush( IFMP ifmp, const OBJID objidFDP, const PGNO pgnoFirst, const PGN
                 continue;
             }
 
-            Enforce( err < JET_errSuccess || pbf->bfdf == bfdfClean );
+            EnforceSz( fFalse, "BFFlushDirtyBufferInOB0OL" );
         }
         pbffmp->critbfob0ol.Leave();
 
@@ -10803,6 +10813,7 @@ ERR ErrBFIMaintScavengeIScavengePages( const char* const szContextTraceOnly, con
     statsCurrRun.iRun = g_rgScavengeLastRuns[g_iScavengeLastRun].iRun + 1;
     statsCurrRun.fSync = fSync;
     statsCurrRun.tickStart = TickOSTimeCurrent();
+    const DWORD cbfNewlyEvictedUsedStart = g_cbfNewlyEvictedUsed;
 
     //  Shrink from the avail pool first.
     //
@@ -11209,6 +11220,8 @@ ERR ErrBFIMaintScavengeIScavengePages( const char* const szContextTraceOnly, con
 
     }// end while ( fTrue ) - for each target resource loop.
 
+    const DWORD cbfNewlyEvictedUsedEnd = g_cbfNewlyEvictedUsed;
+
 #ifdef DEBUG
     Assert( statsCurrRun.eStopReason != eScavengeInvalid );
     Assert( ( errLRUK == BFLRUK::ERR::errNoCurrentResource ) || ( statsCurrRun.eStopReason != eScavengeVisitedAllLrukEntries ) );
@@ -11219,6 +11232,8 @@ ERR ErrBFIMaintScavengeIScavengePages( const char* const szContextTraceOnly, con
     cbfCacheUsedMax = UlpFunctionalMax( cbfCacheUsedMax, cbfCacheUsed );
 
     const LONG cbfSuperColdedFinal = g_bflruk.CSuperColdSuccesses();
+
+    const DWORD cbfNewlyEvictedUsed = cbfNewlyEvictedUsedEnd - cbfNewlyEvictedUsedStart;
 
     // The purpose of this code is to catch bugs where we scan too  too many resources (i.e., return
     // the same resources multiple times). It is only an Expected() because I can't prove that it is
@@ -11239,7 +11254,7 @@ ERR ErrBFIMaintScavengeIScavengePages( const char* const szContextTraceOnly, con
             Expected( ( statsCurrRun.cbfVisited + cbfSuperColded ) >= ( cbfCacheUsedMin - cbfCacheUsedMin / 4 ) );
         }
 
-        Expected( statsCurrRun.cbfVisited <= ( cbfCacheUsedMax + cbfCacheUsedMax / 4 ) );
+        Expected( statsCurrRun.cbfVisited <= cbfCacheUsedMax + max( cbfCacheUsedMax / 4, cbfNewlyEvictedUsed ) );
     }
 #endif // DEBUG
 

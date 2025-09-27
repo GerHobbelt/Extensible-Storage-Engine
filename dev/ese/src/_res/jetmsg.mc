@@ -870,7 +870,18 @@ Language=English
 MessageId=445
 SymbolicName=SPACE_MAX_DB_SIZE_REACHED_ID
 Language=English
-%1 (%2) %3The database %4 has reached its maximum size of %5 MB. If the database cannot be restarted, an offline defragmentation may be performed to reduce its size.
+%1 (%2) %3Database '%4' has reached its maximum size. If the database cannot be restarted, an offline defragmentation may be performed to reduce its size.%n
+Initial database size: %5 bytes (%6 page(s)).%n
+Maximum size limit: %7 bytes (%8 page(s)).%n
+Final database size: %9 bytes (%10 page(s)).%n
+Minimum requested size: %11 bytes (%12 page(s)).%n
+Preferred requested size: %13 bytes (%14 page(s)).%n
+Adjusted minimum requested size: %15 bytes (%16 page(s)).%n
+Adjusted preferred requested size: %17 bytes (%18 page(s)).%n
+Smallest available extent size: %19 bytes (%20 page(s)).%n
+Largest available extent size: %21 bytes (%22 page(s)).%n
+Number of available extents: %23.%n
+Total available space: %24 bytes (%25 page(s)).%n
 .
 
 MessageId=446
@@ -1441,6 +1452,8 @@ Language=English
 %1 (%2) %3Database %4: Page %5 in a B-Tree (ObjectId: %12) failed verification due to a timestamp mismatch at log position %10.  The remote ("before") timestamp persisted to the log record was %6 but the actual timestamp on the page was %7 (note: DbtimeCurrent = %9). This indicates the active node lost a flush (error %8). This problem is likely due to faulty hardware "losing" one or more flushes on this page sometime in the past on the active node. Please contact your hardware vendor for further assistance diagnosing the problem.%n
 Additional information:%n
 %tSource: %11%n
+%tSourceObjidInvalid: %13%n
+%tSourcePageEmpty: %14%n
 .
 
 MessageId=539
@@ -1449,6 +1462,8 @@ Language=English
 %1 (%2) %3Database %4: Page %5 in a B-Tree (ObjectId: %12) failed verification due to a timestamp mismatch at log position %10.  The remote ("before") timestamp persisted to the log record was %6 but the actual timestamp on the page was %7 (note: DbtimeCurrent = %9). This indicates the passive node lost a flush (error %8). This problem is likely due to faulty hardware "losing" one or more flushes on this page sometime in the past on the passive node. Please contact your hardware vendor for further assistance diagnosing the problem.%n
 Additional information:%n
 %tSource: %11%n
+%tSourceObjidInvalid: %13%n
+%tSourcePageEmpty: %14%n
 .
 
 MessageId=540
@@ -1457,6 +1472,8 @@ Language=English
 %1 (%2) %3Database %4: Page %5 in a B-Tree (ObjectId: %11) logical data checksum %6 failed to match logged scan check %7 checksum (seed %8) at log position %9.%n
 Additional information:%n
 %tSource: %10%n
+%tSourceObjidInvalid: %12%n
+%tSourcePageEmpty: %13%n
 .
 
 MessageId=541
@@ -1465,6 +1482,8 @@ Language=English
 %1 (%2) %3Database %4: Page %5 appears to be uninitialized at log position %8 on the current node.  The remote ("before") timestamp persisted to the log record was %6 (note: DbtimeCurrent = %7). This indicates the passive node lost a flush. This problem is likely due to faulty hardware "losing" one or more flushes on this page sometime in the past on the passive node. Please contact your hardware vendor for further assistance diagnosing the problem.%n
 Additional information:%n
 %tSource: %9%n
+%tSourceObjidInvalid: %10%n
+%tSourcePageEmpty: %11%n
 .
 
 MessageId=542
@@ -1495,6 +1514,8 @@ Language=English
 %1 (%2) %3Database %4: Page %5 in a B-Tree (ObjectId: %12) appears to be uninitialized at log position %10 on the remote node.  The remote ("before") timestamp persisted to the log record was %6 but the actual timestamp on the page was %7 (note: DbtimeCurrent = %9). This indicates the active node lost a flush (error %8). This problem is likely due to faulty hardware "losing" one or more flushes on this page sometime in the past on the active node. Please contact your hardware vendor for further assistance diagnosing the problem.%n
 Additional information:%n
 %tSource: %11%n
+%tSourceObjidInvalid: %13%n
+%tSourcePageEmpty: %14%n
 .
 
 MessageId=546
@@ -1573,6 +1594,8 @@ Language=English
 %1 (%2) %3Database %4: Page %5 was shown to be beyond the end of file at log position %8, while the remote ("before") timestamp persisted to the log record was %6 (note: DbtimeCurrent = %7).%n
 Additional information:%n
 %tSource: %9%n
+%tSourceObjidInvalid: %10%n
+%tSourcePageEmpty: %11%n
 .
 
 MessageId=558
@@ -1589,6 +1612,8 @@ Additional information:%n
 %tTimestamp persisted to the page: %7%n
 %tGlobal timestamp of the database: %8%n
 %tSource: %9%n
+%tSourceObjidInvalid: %11%n
+%tSourcePageEmpty: %12%n
 .
 
 MessageId=560
@@ -1601,6 +1626,8 @@ Additional information:%n
 %tTimestamp persisted to the log record: %6%n
 %tError code: %8%n
 %tSource: %11%n
+%tSourceObjidInvalid: %13%n
+%tSourcePageEmpty: %14%n
 .
 
 MessageId=561
@@ -1642,6 +1669,18 @@ MessageId=566
 SymbolicName=DECRYPTION_FAILED_ID
 Language=English
 %1 (%2) %3Database %4: Data in line %5 on pgno %6 in a B-Tree (ObjectId: %7, PgnoRoot: %8) failed to decrypt.
+.
+
+MessageId=567
+SymbolicName=REDO_REQUIRED_LOG_CORRUPT
+Language=English
+%1 (%2) %3The log file %4 in required range is damaged, invalid, or inaccessible (error %5) and cannot be used.
+.
+
+MessageId=568
+SymbolicName=ACTIVE_BAD_OPERATION_REVERTED_FDP_TO_DELETE_ID
+Language=English
+%1 (%2) %3An illegal operation is being performed on root page %4 of table (%5) with objid %6 on database %7 which was reverted by RBS. Only delete operation should be performed on such a table.
 .
 
 
@@ -2520,6 +2559,23 @@ Language=English
 %1 (%2) %3Db scan failed to delete table at root page %4 with objid %5 which was marked for delete by revert operation with error %6.
 .
 
+MessageId=755
+SymbolicName=DB_EXTENSION_OVERSIZED_DB_ID
+Language=English
+%1 (%2) %3Database '%4' will be extended beyond its configured maximum size limit to prevent space leakage.%n
+Initial database size: %5 bytes (%6 page(s)).%n
+Maximum size limit: %7 bytes (%8 page(s)).%n
+Final database size: %9 bytes (%10 page(s)).%n
+Minimum requested size: %11 bytes (%12 page(s)).%n
+Preferred requested size: %13 bytes (%14 page(s)).%n
+Adjusted minimum requested size: %15 bytes (%16 page(s)).%n
+Adjusted preferred requested size: %17 bytes (%18 page(s)).%n
+Smallest available extent size: %19 bytes (%20 page(s)).%n
+Largest available extent size: %21 bytes (%22 page(s)).%n
+Number of available extents: %23.%n
+Total available space: %24 bytes (%25 page(s)).%n
+.
+
 ;// !!! ARE YOU SURE you're adding this in the right place !!! ???
 
 
@@ -3057,6 +3113,12 @@ MessageId=5007
 SymbolicName=RBS_INVALIDATED_ID
 Language=English
 %1 (%2) %3The revert snapshot file at "%4" was invalidated due to "%5".
+.
+
+MessageId=5008
+SymbolicName=RBS_LAG_AVAILABILITY_ID
+Language=English
+%1 (%2) %3The min RBS gen for given instance is %4 and max RBS gen is %5 and the oldest time we could revert to is %6. Total RBS disk space consumed is %7 and the free disk space is %8.
 .
 
 ;////////////////////////////////////////////////////////////////////////

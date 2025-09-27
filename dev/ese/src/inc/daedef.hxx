@@ -330,6 +330,46 @@ public:
         return m_fidVal;
     }
 
+    // It would be good to check that the math here results in valid FIDs, although I suspect
+    // there is code that loops until it gets to an invalid FID via ++.  Those places should
+    // be changed to use a FID_ITERATOR.
+
+    // Prefix increment
+    inline FID& operator++()
+    {
+        m_fidVal = m_fidVal + 1;
+        return *this;
+    }
+
+    // Postfix increment
+    inline FID operator++( const INT not_used )
+    {
+        FID fidOld = *this;
+        m_fidVal = m_fidVal + 1;
+        return fidOld;
+    }
+
+    // Prefix decrement
+    inline FID& operator--( )
+    {
+        m_fidVal = m_fidVal - 1;
+        return *this;
+    }
+
+    // Postfix decrement
+    inline FID operator--( const INT not_used )
+    {
+        FID fidOld = *this;
+        m_fidVal = m_fidVal - 1;
+        return fidOld;
+    }
+
+    INLINE FID operator+=( const WORD& addend )
+    {
+        m_fidVal = m_fidVal + addend;
+        return *this;
+    }
+
     INLINE FIDTYP Fidtyp() const
     {
         if ( FFixed() )
@@ -3119,7 +3159,7 @@ INLINE VOID DBFILEHDR::SetDbstate( const ULONG dbstate, const LONG lGenMin, cons
         case JET_dbstateCleanShutdown:
             AssertRTL( 0 == lGenMin );
             AssertRTL( 0 == lGenMax );
-            AssertRTL( NULL == plogtimeCurrent );
+            AssertRTL( NULL == plogtimeCurrent || !plogtimeCurrent->FIsSet() );
             break;
         case JET_dbstateBeingConverted:
             AssertRTL( 0 == lGenMin );
@@ -4706,6 +4746,7 @@ public:
         HRT             hrtRecoveryForwardLogs;
         LGPOS           lgposRecoveryForwardLogs;
         INT             cReInits;                           //  Tells us how many times we see an init LR.
+        BOOL            fRBSOn;                             //  Tells us whether RBS was on during init.
 
         // Other things I can imagine being interesting:
         //  cdbAttachedMax - as in actually concurrently attached, 1 for most clients, 2 for Ex + MCDB for instance.
@@ -5263,6 +5304,7 @@ public:
 
     BOOL FRecovering() const;
     BOOL FComputeLogDisabled();
+    BOOL FComputeRBSOn() const;
 
     FCB **PpfcbAvailMRU()                       { return &m_pfcbAvailMRU; }
     FCB **PpfcbAvailLRU()                       { return &m_pfcbAvailLRU; }

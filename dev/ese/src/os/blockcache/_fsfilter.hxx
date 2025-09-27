@@ -647,7 +647,7 @@ ERR TFileSystemFilter<I>::ErrFileOpenById(  _In_    const VolumeId              
 
         if ( ++cAttempt >= cAttemptMax )
         {
-            Call( ErrERRCheck( JET_errInternalError ) );
+            BlockCacheInternalError( "FileOpenByIdRetryLimit" );
         }
 
         //  if we have a file open from a previous attempt then close it
@@ -656,14 +656,25 @@ ERR TFileSystemFilter<I>::ErrFileOpenById(  _In_    const VolumeId              
         *ppfapi = NULL;
 
         //  translate the file id to a file path and the unambiguous file key path
+        //
+        //  NOTE:  if we cannot compute this path then the file is truly gone
 
         Call( m_pfident->ErrGetFilePathById( volumeid, fileid, wszAnyAbsPath, wszKeyPath ) );
 
         //  open the file
+        // 
+        //  NOTE:  if we cannot find the file then it's name must have changed.  we will retry in that case
         //
-        //  NOTE:  we presume any file opened by file id is for cache write back
+        //  NOTE:  we presume any file opened by file id is opened by the cache
 
-        Call( ErrFileOpenInternal( wszAnyAbsPath, wszKeyPath, fmf, fTrue, &pffr ) );
+        err = ErrFileOpenInternal( wszAnyAbsPath, wszKeyPath, fmf, fTrue, &pffr );
+
+        if ( err == JET_errFileNotFound || err == JET_errInvalidPath )
+        {
+            continue;
+        }
+
+        Call( err );
 
         //  get the actual physical id for the file we opened
 
@@ -674,7 +685,7 @@ ERR TFileSystemFilter<I>::ErrFileOpenById(  _In_    const VolumeId              
 
     if ( fileserialActual != fileserial )
     {
-        Call( ErrERRCheck( JET_errFileNotFound ) );
+        Error( ErrERRCheck( JET_errFileNotFound ) );
     }
 
     //  return the opened file
@@ -684,16 +695,15 @@ ERR TFileSystemFilter<I>::ErrFileOpenById(  _In_    const VolumeId              
 
 HandleError:
     delete pffr;
+    if ( err == JET_errFileNotFound || err == JET_errInvalidPath )
+    {
+        ReportCachedFileNotFoundById( volumeid, fileid, fileserial );
+        err = ErrERRCheck( JET_errFileNotFound );
+    }
     if ( err < JET_errSuccess )
     {
         delete *ppfapi;
         *ppfapi = NULL;
-
-        if ( err == JET_errFileNotFound || err == JET_errInvalidPath )
-        {
-            ReportCachedFileNotFoundById( volumeid, fileid, fileserial );
-            err = ErrERRCheck( JET_errFileNotFound );
-        }
     }
     return err;
 }
@@ -718,7 +728,7 @@ ERR TFileSystemFilter<I>::ErrFileRename(    _In_    IFileAPI* const    pfapi,
 
     if ( TFileSystemWrapper<I>::FPathIsRelative( wszPathDest ) )
     {
-        Call( ErrERRCheck( JET_errInvalidParameter ) );
+        Error( ErrERRCheck( JET_errInvalidParameter ) );
     }
 
     //  wait to lock the entry for the source and destination files
@@ -882,7 +892,7 @@ ERR TFileSystemFilter<I>::ErrFileCreate(    _In_z_ const WCHAR* const           
     {
         //  open the already open file
         //
-        //  NOTE:  we presume any file opened by path is not for cache write back
+        //  NOTE:  we presume any file opened by path is not opened by the cache
 
         Call( ErrFileOpenCacheHit( fmf, fTrue, fFalse, pfpte->Pof(), &pffr ) );
 
@@ -931,7 +941,7 @@ ERR TFileSystemFilter<I>::ErrFileOpen(  _In_z_ const WCHAR* const               
 
     //  open the file
     //
-    //  NOTE:  we presume any file opened by path is not for cache write back
+    //  NOTE:  we presume any file opened by path is not opened by the cache
 
     Call( ErrFileOpenInternal( wszAbsPath, wszKeyPath, fmf, fFalse, &pffr ) );
 
@@ -992,6 +1002,8 @@ void TFileSystemFilter<I>::ReleaseFile( _In_opt_    CFilePathTableEntry* const  
 {
     BOOL    fDeleteFilePathTableEntry   = fFalse;
     BOOL    fDeleteOpenFile             = fFalse;
+
+    Assert( !pof && !pffr || pof && pffr );
 
     if ( !pfpte )
     {
@@ -1140,7 +1152,7 @@ ERR TFileSystemFilter<I>::ErrLockFile(  _In_z_  const WCHAR* const          wszK
         errFilePathHash = m_filePathHash.ErrInsertEntry( &lock, entry );
         if ( errFilePathHash == CFilePathHash::ERR::errOutOfMemory )
         {
-            Call( ErrERRCheck( JET_errOutOfMemory ) );
+            Error( ErrERRCheck( JET_errOutOfMemory ) );
         }
         Assert( errFilePathHash == CFilePathHash::ERR::errSuccess );
         fRemove = fTrue;
@@ -1682,7 +1694,7 @@ ERR TFileSystemFilter<I>::ErrInitFilePathTable()
 
     if ( m_filePathHash.ErrInit( 5.0, 1.0 ) == CFilePathHash::ERR::errOutOfMemory )
     {
-        Call( ErrERRCheck( JET_errOutOfMemory ) );
+        Error( ErrERRCheck( JET_errOutOfMemory ) );
     }
 
 HandleError:

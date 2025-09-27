@@ -620,6 +620,7 @@ public:
 
     ERR ErrStartCleaner( );
     VOID SetFirstValidGen( long lrbsgen );
+    VOID SetFileTimeCreateCurrentRBS( __int64 ftCreate );
     BOOL FIsCleanerRunning( ) const { return ( NULL != m_threadRBSCleaner ); }
 
 private:
@@ -628,6 +629,8 @@ private:
 
     volatile LONG                       m_lFirstValidRBSGen;
     volatile BOOL                       m_fValidRBSGenSet;
+
+    __int64                             m_ftCreateCurrentRBS;
 
     unique_ptr<IRBSCleanerIOOperator>   m_prbscleaneriooperator;
     unique_ptr<IRBSCleanerState>        m_prbscleanerstate;
@@ -661,6 +664,13 @@ INLINE VOID RBSCleaner::SetFirstValidGen( long lrbsgen )
         m_lFirstValidRBSGen = lrbsgen;
         m_fValidRBSGenSet = fTrue;
     }
+}
+
+// Set by main RBS thread when we create/roll/invalidate a snapshot
+//
+INLINE VOID RBSCleaner::SetFileTimeCreateCurrentRBS( __int64 ftCreate )
+{
+    m_ftCreateCurrentRBS = ftCreate;
 }
 
 INLINE BOOL RBSCleaner::FGenValid( long lrbsgen )
@@ -1006,6 +1016,9 @@ private:
                                                                     // Note: Each RBS might have multiple database header records. We capture the first one. So basically going backwards this is the last database header captured.
                                                                     //       Currently it utilizes the fact that RBS gen is applied in the reverse order and if we fail while applying the RBS gen, we start applying that RBS gen all over.
                                                                     //       Store it in checkpoint if we are changing the apply logic.
+
+    ULONG                       m_currentDbHeaderState;             // Current db header state before revert started. This will only be used if we don't get a valid db header from snapshot.
+
     IFileAPI*                   m_pfapiDb;
     CArray< CPagePointer >*     m_rgRBSDbPage;        
     IBitmapAPI*                 m_psbmDbPages;                      // Sparse bit map indicating whether a given page has been captured.
@@ -1045,8 +1058,8 @@ private:
 public:
     CRBSDatabaseRevertContext( INST* pinst );
     ~CRBSDatabaseRevertContext();
-    ERR ErrRBSDBRCInit( RBSATTACHINFO* prbsattachinfo, SIGNATURE* psignRBSHdrFlush, CPG cacheSize );
-    ERR ErrSetDbstateForRevert( ULONG rbsrchkstate, LOGTIME logtimeRevertTo );
+    ERR ErrRBSDBRCInit( RBSATTACHINFO* prbsattachinfo, SIGNATURE* psignRBSHdrFlush, CPG cacheSize, BOOL fSkipHdrFlushCheck );
+    ERR ErrSetDbstateForRevert( ULONG rbsrchkstate, LOGTIME logtimeRevertTo, SIGNATURE* psignRBSHdrFlushMaxGen );
     ERR ErrSetDbstateAfterRevert( SIGNATURE* psignRbsHdrFlush );
     ERR ErrRBSCaptureDbHdrFromRBS( RBSDbHdrRecord* prbsdbhdrrec, BOOL* pfGivenDbfilehdrCaptured );
     ERR ErrAddPage( void* pvPage, PGNO pgno, BOOL fReplaceCached, BOOL fCheckPageFDPRootDelete, BOOL fSetExistingPageFDPRootDelete, USHORT cbDbPageSize, BOOL* pfPageAddedToCache );
@@ -1099,6 +1112,7 @@ private:
     CPRINTF *               m_pcprintfRevertTrace; 
 
     LONG                    m_lRBSMinGenToApply;                // Min RBS generation we are going to process and apply to the databases
+    LONG                    m_lRBSCurrentGenToApply;            // Current RBS generation we are going to process and apply to the databases
     LONG                    m_lRBSMaxGenToApply;                // Min RBS generation we are going to process and apply to the databases
 
     _int64                  m_ftRevertLastUpdate;               // Last update time used to compute time we spend in revert.
@@ -1107,10 +1121,15 @@ private:
     BOOL                    m_fRevertCancelled;                 // Whether the ongoing revert has been cancelled.
     BOOL                    m_fExecuteRevertStarted;            // Whether execution of the revert has begun.
 
-    LOGTIME                 m_ltRevertTo;                         // The time we are reverting the database files to.
-    QWORD                   m_cPagesRevertedCurRBSGen;             // Number of pages reverted as part of current RBS gen.
+    LOGTIME                 m_ltRevertTo;                       // The time we are reverting the database files to.
+    QWORD                   m_cPagesRevertedCurRBSGen;          // Number of pages reverted as part of current RBS gen.
+
+    SIGNATURE               m_signRBSHdrFlushMaxGen;            // RBS header flush of the max gen being applied. We will use this to set it on db header if db header has it not already set.
+                                                                // Usually db header should have it set unless we crashed before the first flush to db header after the snapshot was created.
+                                                                // When we start the revert (setting dbhdr state), dbhdr flush will mismatch. So we need to make sure RBSHdr flush signature still matches.
 
     BOOL FRBSDBRC( PCWSTR wszDatabaseName, IRBSDBRC* pirbsdbrc );
+    BOOL FAllDbHeaderCaptured();
 
     ERR ErrRBSDBRCInitFromAttachInfo( const BYTE* pbRBSAttachInfo, SIGNATURE* psignRBSHdrFlush );
     ERR ErrComputeRBSRangeToApply( PCWSTR wszRBSAbsRootDirPath, LOGTIME ltRevertExpected, LOGTIME* pltRevertActual );
@@ -1166,4 +1185,4 @@ public:
 
 VOID UtilLoadRBSinfomiscFromRBSfilehdr( JET_RBSINFOMISC* prbsinfomisc, const ULONG cbrbsinfomisc, const RBSFILEHDR* prbsfilehdr );
 VOID RBSResourcesCleanUpFromInst( _In_ INST * const pinst );
-ERR ErrRBSRDWLatchAndCapturePreImage( _In_ const IFMP ifmp, _In_ const PGNO pgno, ULONG fPreImageFlags, _In_ const BFPriority bfpri, _In_ const TraceContext& tc );
+ERR ErrRBSRDWLatchAndCapturePreImage( _In_ const IFMP ifmp, _In_ const PGNO pgno, _In_ const DBTIME dbtimeLast, ULONG fPreImageFlags, _In_ const BFPriority bfpri, _In_ const TraceContext& tc );

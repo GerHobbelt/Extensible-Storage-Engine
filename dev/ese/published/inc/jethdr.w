@@ -652,7 +652,7 @@ typedef void (JET_API *JET_SPCATCALLBACK)( _In_ const unsigned long pgno, _In_ c
 #define JET_efvShrinkEof                                    9100    //  Added lrtypShrinkDB2, which changes the the meaning of cpgShrunk in the existing lrtypShrinkDB and how it is replayed.
 #define JET_efvLogNewPage                                   9120    //  Added lrtypNewPage, which logs new page operations to better handle rolling page incomplete operations that require new pages.
 #define JET_efvRootPageMove                                 9140    //  Added support for moving tree roots and their respective space tree roots (including new lrtypRootPageMove and lrtypSignalAttachDb).
-#define JET_efvScanCheck2                                   9160    //  Added new log record lrtypScanCheck2 to allow for for reporting of the initiator of the ScanCheck log record.
+#define JET_efvScanCheck2                                   9160    //  Added new log record lrtypScanCheck2 to allow for reporting of the initiator of the ScanCheck log record.
 #define JET_efvLgposLastResize                              9180    //  Stamps the log position of the last database resize operation to the database header.
 #define JET_efvShelvedPages                                 9200    //  Added the concept of shelved pages (available or leaked pages beyond EOF).
 #define JET_efvShelvedPagesRevert                           9220    //  Reverts JET_efvShelvedPages, with additional code to make it a safe revert.
@@ -668,6 +668,11 @@ typedef void (JET_API *JET_SPCATCALLBACK)( _In_ const unsigned long pgno, _In_ c
 #define JET_efvLz4Compression                               9420    //  Adds support for compressing/decompressing data using Lz4.
 // 9440 being skipped due to revert of a bad deployed build
 #define JET_efvRBSNonRevertableTableDeletes                 9460    //  Adds support for non-revertable table deletes. The active will stop logging extent freed LR for all freed extent but if available lag doesn't support it yet, shouldn't be allowed.
+#define JET_efvScanCheck2Flags                              9480    //  The byte le_bSource in ScanCheck2 LR is split into 3 components and changed to le_bFlagsAndScs.
+                                                                    //      The highest bit is used for objidInvalid flag and the bit next to highest is used for emptypage
+                                                                    //      flag. The next 4 bits are left unused (for now) and the lower 2 bits are used for ScanCheckSource.
+#define JET_efvExtentFreed2                                 9500    //  Adds support for ExtentFreed2 LR which adds dbtime of the database to the existing ExtentFreed LR.
+#define JET_efvKVPStoreV2                                   9520    //  Allows upgrade of KVP stores to version 1.0.2
 
 // Special format specifiers here
 #define JET_efvUseEngineDefault             (0x40000001)    //  Instructs the engine to use the maximal default supported Engine Format Version. (default)
@@ -872,6 +877,7 @@ typedef enum
     JET_tracetagBlockCache,
     JET_tracetagRBS,
     JET_tracetagRBSCleaner,
+    JET_tracetagBlockCacheOperations,
 
     //  Add all new tracetags here, must be in order ...
 #endif // JET_VERSION >= 0x0A01
@@ -3979,6 +3985,7 @@ typedef enum
 #if ( JET_VERSION >= 0x0501 )
 #define JET_paramRuntimeCallback                73  //  pointer to runtime-only callback function
 // end_PubEsent
+#define JET_paramFlight_DisableReplayPrereadForSsd 74 // Disable replay preread for database on SSD
 // #define JET_paramSLVDefragFreeThreshold      74  //  chunks whose free % is > this will be allocated from
 // #define JET_paramSLVDefragMoveThreshold      75  //  chunks whose free % is > this will be relocated
 #define JET_paramEnableSortedRetrieveColumns    76  //  internally sort (in a dynamically allocated parallel array) JET_RETRIEVECOLUMN structures passed to JetRetrieveColumns()
@@ -4055,8 +4062,10 @@ typedef enum
 
 // end_PubEsent
 
-#define JET_paramFlight_ExtentPageCountCacheVerifyOnly  114  //  Verify values read from the Extent Page Count Cache rather than just returning them.
+#define JET_paramFlight_ExtentPageCountCacheVerifyOnly  114 //  Verify values read from the Extent Page Count Cache rather than just returning them.
 #define JET_paramFlight_EnablePgnoFDPLastSetTime        115 //  whether we want to enable setting PgnoPFDSetTime in the system table for a table entry.
+#define JET_paramFlight_EnableScanCheck2Flags           116 //  whether we want to enable logging flags in ScanCheck2 log record.
+#define JET_paramFlight_EnableExtentFreed2              117 //  whether we want to enable logging ExtentFreed2 LR after the efv upgrade.
 
 //                                              120 //  JET_paramDBAPageAvailMin
 //                                              121 //  JET_paramDBAPageAvailThreshold
@@ -4197,13 +4206,15 @@ typedef enum
 #if ( JET_VERSION >= 0x0A01 )
 #define JET_paramUseFlushForWriteDurability     214 //  This controls whether ESE uses Flush or FUA to make sure a write to disk is durable.
 
-#define JET_paramEnableRBS                      215 // Turns on revert snapshot. Not an ESE flight as we will let the variant be controlled outside ESE (like HA can enable this when lag is disabled)
-#define JET_paramRBSFilePath                    216 // path to the revert snapshot directory
+#define JET_paramEnableRBS                      215 //  Turns on revert snapshot. Not an ESE flight as we will let the variant be controlled outside ESE (like HA can enable this when lag is disabled)
+#define JET_paramRBSFilePath                    216 //  path to the revert snapshot directory
+
+#define JET_paramPerfmonRefreshInterval         217 //  Interval, in units of msec, used by the Permormance Monitor to refresh values for collection.
 
 #endif // JET_VERSION >= 0x0A01
 
 
-#define JET_paramMaxValueInvalid                217 //  This is not a valid parameter. It can change from release to release!
+#define JET_paramMaxValueInvalid                218 //  This is not a valid parameter. It can change from release to release!
 
 // end_PubEsent
 #if ( JET_VERSION >= 0x0A01 )
@@ -4772,10 +4783,11 @@ typedef struct
 #define bitPrereadSkip              0x00000040  /*  Internal: Just figure out the pages which needs to be preread but skip the actual preread */
 #define bitIncludeNonLeafRead       0x00000080  /*  Internal: Include the non-leaf nodes in the list of pgnos read as well */
 #endif // JET_VERSION >= 0x0A01
+
+// begin_PubEsent
 #endif // JET_VERSION >= 0x0602
 #endif // JET_VERSION >= 0x0601
 
-// begin_PubEsent
     /* Flags for JetOpenTempTable */
 
 #define JET_bitTTIndexed            0x00000001  /* Allow seek */
@@ -6635,6 +6647,12 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define JET_wrnPreviousLogFileIncomplete    2602 /* The log data provided jumped to the next log suddenly, we have deleted the incomplete log file as a precautionary measure */
 // begin_PubEsent
 
+/** KVP ERRORS
+ **/
+// end_PubEsent
+#define wrnKVPEntryAlreadyNotPresent        2626 /* Attempted to delete a non-existant key */
+// begin_PubEsent
+
 #define JET_errLSCallbackNotSpecified       -3000 /* Attempted to use Local Storage without a callback function being specified */
 #define JET_errLSAlreadySet                 -3001 /* Attempted to set Local Storage for an object which already had it set */
 #define JET_errLSNotSet                     -3002 /* Attempted to retrieve Local Storage from an object which didn't have it set */
@@ -6657,6 +6675,14 @@ typedef JET_ERR (JET_API * JET_PFNEMITLOGDATA)(
 #define wrnIOPending                        4009 /* IO is pending in the OS */
 #define wrnIOSlow                       4010 /* IO completed but took abnormally long to return from the OS */
 // begin_PubEsent
+
+/** CLIENT RESERVED ERROR SPACE.
+    An unused errors/warnings section.  JET will never generate values in this space.  Clients may use this space
+        without conflicting with ESE.  Note that the warnings are reserved as well as the errors.  That is, the
+        range from -10,000 to -11,999 is reserved as well as the range from 10,000 to 11,999.
+ **/
+#define JET_errClientSpaceBegin             -10000 /* Begin of the error space reserved for JET client use */
+#define JET_errClientSpaceEnd               -11999 /* End of the error space reserved for JET client use */
 
 /**********************************************************************/
 /***********************     PROTOTYPES      **************************/

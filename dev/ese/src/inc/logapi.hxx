@@ -267,8 +267,9 @@ const LRTYP lrtypSignalAttachDb                 = 97;
 const LRTYP lrtypScanCheck2                     = 98;
 const LRTYP lrtypShrinkDB3                      = 99;
 const LRTYP lrtypExtentFreed                    = 100;
+const LRTYP lrtypExtentFreed2                   = 101;
 
-const LRTYP lrtypMax                            = 101;
+const LRTYP lrtypMax                            = 102;
 
 const LRTYP lrtypMaxMax                         = 128;
 C_ASSERT( lrtypMax < lrtypMaxMax ); // You are using the high bit of LRTYPE!!! Time to expand to 2 bytes?!?!?!
@@ -516,6 +517,18 @@ class LRSCANCHECK final  // Prevent this class from being inherited. Please use 
         USHORT UsChecksum() const       { return le_uschksum; }
 };
 
+
+PERSISTED const BYTE fLRScanObjidInvalid = 0x80;
+PERSISTED const BYTE fLRScanEmptyPage = 0x40;
+const BYTE maskLRScanFlags = 0xC0;
+const BYTE maskLRScanUnused = 0x3C;
+const BYTE maskLRScanSources = 0x03;
+
+static_assert( !( fLRScanObjidInvalid & ~maskLRScanFlags ), "Bit represented by fLRScanObjidInvalid should be on in maskLRScanFlags." );
+static_assert( !( fLRScanEmptyPage & ~maskLRScanFlags ), "Bit represented by fLRScanEmptyPage should be on in maskLRScanFlags." );
+static_assert( !( maskLRScanFlags & maskLRScanUnused & maskLRScanSources ), "maskLRScanFlags, maskLRScanUnused and maskLRScanSources should be mutually exclusive." );
+static_assert( ( scsMax - 1 ) <= maskLRScanSources, "The highest value of ScanCheckSource should not be greater than maskLRScanSources" );
+
 PERSISTED
 class LRSCANCHECK2
     : public LR
@@ -527,21 +540,24 @@ class LRSCANCHECK2
             lrtyp = lrtypScanCheck2;
         }
 
-    private:
-        UnalignedLittleEndian< DBID >       le_dbid;            // dbid.
-        UnalignedLittleEndian< PGNO >       le_pgno;            // Pgno.
-        UnalignedLittleEndian< BYTE >       le_bSource;         // Source of the ScanCheck2 log record.
-        UnalignedLittleEndian< DBTIME >     le_dbtimePage;      // Current dbtime of page scanned.
-        UnalignedLittleEndian< DBTIME >     le_dbtimeCurrent;   // Current global dbtime of the database.
-        UnalignedLittleEndian< ULONG >      le_ulChksum;        // A compressed version of the LoggedDataChecksum() from the page.
+        LRSCANCHECK2( const size_t cb ) : LR( cb ) {}
 
     protected:
+        UnalignedLittleEndian< DBID >       le_dbid;                // dbid.
+        UnalignedLittleEndian< PGNO >       le_pgno;                // Pgno.
+        UnalignedLittleEndian< BYTE >       le_bFlagsAndScs;        // Highest bit represents flag for ObjidInvalid, bit next to highest is used for Emptypage, next 4 bits are unused, last 2 bits represent ScanCheckSource
+        UnalignedLittleEndian< DBTIME >     le_dbtimePage;          // Current dbtime of page scanned.
+        UnalignedLittleEndian< DBTIME >     le_dbtimeCurrent;       // Current global dbtime of the database.
+        UnalignedLittleEndian< ULONG >      le_ulChksum;            // A compressed version of the LoggedDataChecksum() from the page.
+
         VOID InitScanCheckFromLegacyScanCheck( const LRSCANCHECK* const plrscancheck )
         {
             InitScanCheck(
                 plrscancheck->Dbid(),
                 plrscancheck->Pgno(),
                 scsDbScan,
+                fFalse,
+                fFalse,
                 plrscancheck->DbtimeBefore(),
                 plrscancheck->DbtimeAfter(),
                 plrscancheck->UsChecksum() );
@@ -553,14 +569,31 @@ class LRSCANCHECK2
                 const DBID dbid,
                 const PGNO pgno,
                 const BYTE bSource,
+                const BOOL fObjidInvalid,
+                const BOOL fEmptyPage,
                 const DBTIME dbtimePage,
                 const DBTIME dbtimeCurrent,
                 const ULONG ulCompLogicalPageChecksum )
         {
-            static_assert( sizeof( ScanCheckSource ) == sizeof( le_bSource ), "ScanCheckSource's size must match le_bSource's." );
+            Assert( bSource < scsMax );
+            Assert( !( bSource & ~maskLRScanSources ) );
+
             le_dbid          = dbid;
             le_pgno          = pgno;
-            le_bSource       = bSource;
+            le_bFlagsAndScs  = bSource & maskLRScanSources;
+
+            if ( fObjidInvalid )
+            {
+                le_bFlagsAndScs |= fLRScanObjidInvalid;
+            }
+
+            if ( fEmptyPage )
+            {
+                le_bFlagsAndScs |= fLRScanEmptyPage;
+            }
+
+            Assert( !( le_bFlagsAndScs & maskLRScanUnused ) );
+
             le_dbtimePage    = dbtimePage;
             le_dbtimeCurrent = dbtimeCurrent;
             le_ulChksum      = ulCompLogicalPageChecksum;
@@ -581,11 +614,14 @@ class LRSCANCHECK2
 
         DBID Dbid() const                   { return le_dbid; }
         PGNO Pgno() const                   { return le_pgno; }
-        BYTE BSource() const                { return le_bSource; }
+        BYTE BSource() const                { return le_bFlagsAndScs & maskLRScanSources; }
         DBTIME DbtimePage() const           { return le_dbtimePage; }
         DBTIME DbtimeCurrent() const        { return le_dbtimeCurrent; }
         ULONG UlChecksum() const            { return le_ulChksum; }
+        BOOL FObjidInvalid( void ) const    { return !!( le_bFlagsAndScs & fLRScanObjidInvalid ); }
+        BOOL FEmptyPage( void ) const       { return !!( le_bFlagsAndScs & fLRScanEmptyPage ); }
 };
+
 
 PERSISTED
 class LRINSERT
@@ -2458,37 +2494,29 @@ class LREXTENTFREED
             m_fFlags = 0;
         }
 
+    protected:
+        LREXTENTFREED( const LRTYP lrtypEF, const size_t cblrExtentFreed )
+            : LR( cblrExtentFreed )
+        {
+            lrtyp = lrtypEF;
+            Assert( cblrExtentFreed >= CbLGSizeOfRec( this ) );
+            Assert( cblrExtentFreed >= sizeof( LREXTENTFREED ) );
+            Assert( ( lrtypEF == lrtypExtentFreed ) || ( lrtypEF == lrtypExtentFreed2 ) );
+        }
+
+    private:
         enum Flags
         {
             fTableRootPage = 0x1,
             fEmptyPageFDPDeleted = 0x2,
         };
 
-    private:
         UnalignedLittleEndian< DBID >       le_dbid;            // dbid.
         UnalignedLittleEndian< PGNO >       le_pgnoFirst;       // First Pgno of the extent.
         UnalignedLittleEndian< CPG >        le_cpgExtent;       // Count of pages in the freed extent.
         BYTE                                m_fFlags;           // Flags
 
     public:
-        VOID InitExtentFreed(
-                const DBID  dbid,
-                const PGNO  pgno,
-                const CPG   cpgExtent,
-                const BYTE  fFlags )
-        {
-            le_dbid         = dbid;
-            le_pgnoFirst    = pgno;
-            le_cpgExtent    = cpgExtent;
-            m_fFlags        = fFlags;
-        }
-
-        VOID InitExtentFreed( const LR* const plr )
-        {
-            Assert( ( plr->lrtyp == lrtypExtentFreed ) );
-            UtilMemCpy( this, plr, sizeof( *this ) );
-        }
-
         DBID Dbid( ) const                          { return le_dbid; }
         void SetDbid(const DBID dbid)               { le_dbid = dbid; }
 
@@ -2498,12 +2526,49 @@ class LREXTENTFREED
         CPG  CpgExtent( ) const                     { return le_cpgExtent; }
         void SetCpgExtent( const CPG cpgExtent)     { le_cpgExtent = cpgExtent; }
 
-        BOOL FTableRootPage( void ) const           { return m_fFlags & Flags::fTableRootPage; }
+        BOOL FTableRootPage( void ) const           { return !!(m_fFlags & Flags::fTableRootPage); }
         void SetTableRootPage( void )               { m_fFlags |= ( BYTE ) Flags::fTableRootPage; }
 
-        BOOL FEmptyPageFDPDeleted( void ) const     { return m_fFlags & Flags::fEmptyPageFDPDeleted; }
+        BOOL FEmptyPageFDPDeleted( void ) const     { return !!(m_fFlags & Flags::fEmptyPageFDPDeleted); }
         void SetEmptyPageFDPDeleted( void )         { m_fFlags |= ( BYTE ) Flags::fEmptyPageFDPDeleted; }
 };
+
+class LREXTENTFREED2 :
+    public LREXTENTFREED
+{
+public:
+    LREXTENTFREED2() :
+        LREXTENTFREED( lrtypExtentFreed2, sizeof( *this ) )
+    {
+        le_dbtime = dbtimeNil;
+    }
+
+    LREXTENTFREED2( const LREXTENTFREED* const plrextentfreed ) :
+        LREXTENTFREED( plrextentfreed->lrtyp, sizeof( *this ) )
+    {
+        le_dbtime = dbtimeNil;
+
+        // CbLGSizeOfRec will return the size of LREXTENTFREED or LREXTENTFREED2 based on the lrtyp.
+        // So if lrtyp is LREXTENTFREED we will just copy fields of LREXTENTFREED and dbtime will be dbtimeNil.
+        UtilMemCpy( this, plrextentfreed, CbLGSizeOfRec( plrextentfreed ) );
+    }
+
+public:
+    void SetDbtime( const DBTIME dbtime )
+    {
+        Assert( dbtime > 0 );
+        le_dbtime = dbtime;
+    }
+    DBTIME Dbtime() const
+    {
+        Assert( ( le_dbtime > 0 ) || ( le_dbtime == dbtimeNil ) );
+        return le_dbtime;
+    }
+
+private:
+    UnalignedLittleEndian< DBTIME > le_dbtime;
+};
+
 
 #include <poppack.h>
 
@@ -2684,7 +2749,8 @@ ERR ErrLGScanCheck(
     _In_    const DBTIME    dbtimePage,
     _In_    const DBTIME    dbtimeCurrent,
     _In_    const ULONG     ulChecksum,
-    _In_    const BOOL      fScanCheck2Supported,
+    _In_    const BOOL      fObjidInvalid,
+    _In_    const BOOL      fEmptyPage,
     _In_    LGPOS* const    plgposLogRec = NULL );
 
 ERR ErrLGPageMove(

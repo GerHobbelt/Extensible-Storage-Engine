@@ -1864,7 +1864,14 @@ void CIsamSequenceDiagLog::SprintFixedData( _Out_writes_bytes_(cbFixedData) WCHA
             if ( FixedData().sInitData.cReInits )
             {
                 OSStrCbFormatW( pwszCurr, cbCurrLeft, L"cReInits = %d\n", FixedData().sInitData.cReInits );
+
+                cchUsed = LOSStrLengthW( pwszCurr );
+                pwszCurr += cchUsed;
+                cbCurrLeft -= ( cchUsed * 2 );
             }
+
+            OSStrCbFormatW( pwszCurr, cbCurrLeft, L"RBSOn = %d\n", (int) FixedData().sInitData.fRBSOn );
+
             cchUsed = LOSStrLengthW( pwszCurr );
             pwszCurr += cchUsed;
             cbCurrLeft -= ( cchUsed * 2 );
@@ -3257,6 +3264,36 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
                     }
 
                     m_fCachingEnabled = m_wszAbsPathCachingFile[ 0 ] != 0;
+
+                    if (    UtilCmpFileName(    rgwszExt,
+                                                ( UlParam( pinst, JET_paramLegacyFileNames ) & JET_bitESE98FileNames ) ?
+                                                    wszOldLogExt : 
+                                                    wszNewLogExt ) == 0 ||
+                            UtilCmpFileName( rgwszExt, wszResLogExt ) == 0 ||
+                            UtilCmpFileName( rgwszExt, wszSecLogExt ) == 0 ||
+                            UtilCmpFileName( rgwszExt, wszRBSExt ) == 0 )
+                    {
+                        m_cbBlockSize = cbLogFileHeader;
+                        m_ulPinnedHeaderSizeInBytes = 1 * m_cbBlockSize;
+                    }
+                    else if ( UtilCmpFileName(  rgwszExt,
+                                                ( UlParam( pinst, JET_paramLegacyFileNames ) & JET_bitESE98FileNames ) ?
+                                                    wszOldChkExt : 
+                                                    wszNewChkExt ) == 0 )
+                    {
+                        m_cbBlockSize = cbCheckpoint;
+                        m_ulPinnedHeaderSizeInBytes = 2 * m_cbBlockSize;
+                    }
+                    else if ( UtilCmpFileName( rgwszExt, L".jfm" ) == 0 )  //  CFlushMap::s_wszFmFileExtension
+                    {
+                        m_cbBlockSize = 8192;  //  CFlushMap::s_cbFlushMapPageOnDisk
+                        m_ulPinnedHeaderSizeInBytes = 1 * m_cbBlockSize;
+                    }
+                    else
+                    {
+                        m_cbBlockSize = (ULONG)UlParam( JET_paramDatabasePageSize );
+                        m_ulPinnedHeaderSizeInBytes = 2 * m_cbBlockSize;
+                    }
                 }
         };
 
@@ -3269,6 +3306,8 @@ class CInstanceFileSystemConfiguration : public CDefaultFileSystemConfiguration
                     GetCachingFileFromInst( pinst, m_wszAbsPathCachingFile );
 
                     m_fCacheEnabled = m_wszAbsPathCachingFile[ 0 ] != 0;
+
+                    m_cbCachedFilePerSlab = (ULONG)UlParam( JET_paramDatabasePageSize );
                 }
         };
 
@@ -4634,6 +4673,26 @@ VOID INST::INSTSystemTerm()
 #endif
 }
 
+INLINE BOOL INST::FComputeRBSOn() const
+{
+    if ( !BoolParam( this, JET_paramEnableRBS ) )
+    {
+        return fFalse;
+    }
+
+    for ( DBID dbid = dbidUserLeast; dbid < dbidMax; dbid++ )
+    {
+        if ( m_mpdbidifmp[ dbid ] >= g_ifmpMax )
+            continue;
+
+        if ( g_rgfmp[ m_mpdbidifmp[ dbid ] ].FRBSOn() )
+        {
+            return fTrue;
+        }
+    }
+
+    return fFalse;
+}
 
 //  ICF for our JET instance names
 
@@ -7608,7 +7667,7 @@ inline ERR ErrSetSystemParameter(
 
     Call( pjetparam->Set( pinst, ppib, ulParam, wszParam ) );
 
-    if ( fLoadedOverride )
+    if ( fLoadedOverride && !pjetparam->m_fRegOverride )
     {
         pjetparam->m_fRegOverride = fLoadedOverride;
 
@@ -21285,6 +21344,8 @@ LOCAL JET_ERR JetInitEx(
     CallJ( ErrInitComplete( JET_INSTANCE( pinst ),
                             prstInfo,
                             grbit ), TermAlloc );
+
+    pinst->m_isdlInit.FixedData().sInitData.fRBSOn = pinst->FComputeRBSOn();
 
     Assert( err >= 0 );
 

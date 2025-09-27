@@ -1284,7 +1284,11 @@ ERR ErrERRCheck_( const ERR err, const CHAR* szFile, const LONG lLine )
     //  before another system call clobbers it.
     DWORD dwSavedGLE = GetLastError();
 
-    AssertRTL( err > -65536 && err < 65536 );
+    // 64K is arbitrary.  The Client space carve out is an API contract.
+    AssertSz( ( ( err > -65536 && err < JET_errClientSpaceEnd ) ||
+                ( err > JET_errClientSpaceBegin && err < (- JET_errClientSpaceBegin ) ) ||
+                ( err > (- JET_errClientSpaceEnd ) && err < 65536 ) ),
+              "Error value out of bounds." );
 
     if ( FOSRefTraceErrors() )
     {
@@ -2272,3 +2276,21 @@ const CHAR * SzSourceFileName( const CHAR * szFilePath )
     return strrchr( szFilePath, chPathDelimiter ) + sizeof( CHAR );
 }
 
+VOID OSErrorPrintLastError( const WCHAR * const szMessage )
+{
+    DWORD dwGLE = GetLastError();
+    PVOID lpMsgBuf = NULL;
+    if( FormatMessage(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+            NULL,
+            dwGLE,
+            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+            (LPTSTR) &lpMsgBuf,
+            0,
+            NULL ) )
+    {
+        (void)fwprintf( stderr, L"%ls (%d), %ls", szMessage, dwGLE, (wchar_t *)lpMsgBuf );
+    }
+
+    LocalFree( lpMsgBuf );
+}
