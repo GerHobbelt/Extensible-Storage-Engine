@@ -767,7 +767,7 @@ class CDynamicHashTable
                 return ERR::errInvalidParameter;
             }
 
-            //  setup the main paramters
+            //  setup the main parameters
 
             m_cLoadFactor   = cLoadFactor;
 

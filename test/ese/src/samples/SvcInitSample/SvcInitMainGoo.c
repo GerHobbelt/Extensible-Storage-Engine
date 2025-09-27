@@ -82,7 +82,7 @@
 //          upon set of global parameters (Method A below), or indirecting to a common 
 //          location in the registry (Method B below).
 //
-//      3.  Further, even Global Dynamic paramters are a bit of a issue, because there is not
+//      3.  Further, even Global Dynamic parameters are a bit of a issue, because there is not
 //          a way to say "increase" the global cache size.  It is recommended that two
 //          instances in a single svchost agree on a good median values for there usage.
 //

@@ -6019,7 +6019,7 @@ ERR ErrSPIAEGetExtentAndPage(
     Assert( !Pcsr( pfucbAE )->FLatched() );
     BTUp( pfucbAE );    // protect ourselves just in case
 
-    //  Get a secondary extent according to the paramters.
+    //  Get a secondary extent according to the parameters.
 
     Assert( !FSPIParentIsFs( pfucb ) );
     if ( !FSPIParentIsFs( pfucb ) )

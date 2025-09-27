@@ -162,7 +162,7 @@
 #pragma warning(disable:4127)   /* conditional expression is constant */
 #pragma warning(disable:4711)   /* function XXX selected for automatic inline expansion */
 #pragma warning(disable:4710)   /* function XXX not expanded */
-#pragma warning(disable:4100)   /* unreferenced formal paramter */
+#pragma warning(disable:4100)   /* unreferenced formal parameter */
 #pragma warning(disable:4068)   /* bogus "unknown pragma" */
 #endif
 
