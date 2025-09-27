@@ -305,7 +305,7 @@ typedef CLRUKResourceUtilityManager<2,DWORD,0,DWORD>    CLRUKResourceUtilityMana
 
 HRESULT
 DPrintf(
-    __in PCSTR szFormat,
+    _In_ PCSTR szFormat,
     ...
 )
 ;
@@ -1074,7 +1074,7 @@ LOCAL BOOL FFetchVariable( T* const rgtDebuggee, T** const prgt, SIZE_T ct = 1 )
 
 //  ================================================================
 template< class T >
-LOCAL BOOL FFetchAlignedVariable( __in T* const rgtDebuggee, __deref_out_ecount( ct ) T** const prgt, SIZE_T ct = 1 )
+LOCAL BOOL FFetchAlignedVariable( _In_ T* const rgtDebuggee, __deref_out_ecount( ct ) T** const prgt, SIZE_T ct = 1 )
 //  ================================================================
 {
     AssertEDBGDebugger();
@@ -1177,7 +1177,7 @@ LOCAL BOOL FFetchGlobal( const CHAR * const szGlobal, T** const prgt, SIZE_T ct 
 
 //  ================================================================
 template< class T >
-LOCAL BOOL FFetchSz( __in T* const szDebuggee, __deref_out_z T** const psz )
+LOCAL BOOL FFetchSz( _In_ T* const szDebuggee, __deref_out_z T** const psz )
 //  ================================================================
 {
     //  scan for the null terminator in the debuggee starting at the given
@@ -2118,7 +2118,7 @@ public:
     //
     enum DLSCachePage { ePageHdrOnly = 1 /* rest NYI */ };
 
-    BOOL FLatchPageImage( DLSCachePage ePageStateReq, void * pvPageDebuggee, __out CPAGE::PGHDR ** pppghdr )
+    BOOL FLatchPageImage( DLSCachePage ePageStateReq, void * pvPageDebuggee, _Out_ CPAGE::PGHDR ** pppghdr )
     {
         AssertEDBG( !m_fLocalProcess );
         AssertEDBG( ePageStateReq == ePageHdrOnly );
@@ -2262,7 +2262,7 @@ public:
         return JET_errSuccess;
     }
 
-    bool FIsTempDB( __in const IFMP ifmp )
+    bool FIsTempDB( _In_ const IFMP ifmp )
     {
         AssertEDBG( !m_fLocalProcess );
         if ( ifmp == 0x7fffffff || ifmp == 0xffffffff )
@@ -2279,7 +2279,7 @@ public:
         return m_rgfIsTempDB[ifmp];
     }
 
-    const FMP * PfmpCache( __in const IFMP ifmp )
+    const FMP * PfmpCache( _In_ const IFMP ifmp )
     {
         AssertEDBG( !m_fLocalProcess );
         AssertEDBG( ifmp >= cfmpReserved );
@@ -2314,7 +2314,7 @@ public:
         return m_fPii;
     }
 
-    void SetImplicitIfmp( __in const IFMP ifmp )
+    void SetImplicitIfmp( _In_ const IFMP ifmp )
     {
         m_ifmpCurrentImplicit = ifmp;
     }
@@ -2330,7 +2330,7 @@ public:
         return 0x7ffffff1;  //  large, but not -1, or lMax.
     }
 
-    void SetImplicitIpinst( __in const ULONG ipinst )
+    void SetImplicitIpinst( _In_ const ULONG ipinst )
     {
         m_ipinstCurrentImplicit = ipinst;
     }
@@ -3176,7 +3176,7 @@ HandleError:
 //  ================================================================
 HRESULT
 EDBGPrintfDml(
-    __in PCSTR szFormat,
+    _In_ PCSTR szFormat,
     ...
 //  ================================================================
 )
@@ -3218,7 +3218,7 @@ EDBGPrintfDml(
 //  ================================================================
 HRESULT
 EDBGPrintfDmlW(
-    __in PCWSTR wszFormat,
+    _In_ PCWSTR wszFormat,
     ...
 //  ================================================================
 )
@@ -3260,7 +3260,7 @@ EDBGPrintfDmlW(
 //  ================================================================
 HRESULT
 EDBGPrintf(
-    __in PCSTR szFormat,
+    _In_ PCSTR szFormat,
     ...
 )
 //  ================================================================
@@ -3285,7 +3285,7 @@ EDBGPrintf(
 //  ================================================================
 HRESULT
 EDBGPrintfW(
-    __in PCWSTR wszFormat,
+    _In_ PCWSTR wszFormat,
     ...
 )
 //  ================================================================
@@ -3327,7 +3327,7 @@ FEDBGCheckForCtrlC()
 //  ================================================================
 ULONG64
 GetExpression(
-    __in PCSTR  szExpression
+    _In_ PCSTR  szExpression
 )
 //  ================================================================
 {
@@ -3348,8 +3348,8 @@ BOOL
 FEDBGMemoryRead(
     ULONG64                         ulAddressInDebuggee,
     __out_bcount(cbBuffer) PVOID    pbBuffer,
-    __in ULONG                      cbBuffer,
-    __out PULONG                    pcbRead
+    _In_ ULONG                      cbBuffer,
+    _Out_ PULONG                    pcbRead
 )
 //  ================================================================
 {
@@ -3565,8 +3565,8 @@ BOOL FReadAsIndexArg( _In_z_ const CHAR * const szArg, _Out_ ULONG * pul )
 
 LOCAL BOOL FEqualIW( const WCHAR * const wszArg1, const WCHAR * const wszArg2 )
 {
-    const BOOL fMatch = ( ( wcslen( wszArg1 ) == wcslen( wszArg2 ) )
-            && !( _wcsnicmp( wszArg1, wszArg2, wcslen( wszArg2 ) ) ) );
+    const BOOL fMatch = ( ( LOSStrLengthW( wszArg1 ) == LOSStrLengthW( wszArg2 ) )
+            && !( _wcsnicmp( wszArg1, wszArg2, LOSStrLengthW( wszArg2 ) ) ) );
     return fMatch;
 }
 
@@ -3590,8 +3590,8 @@ LOCAL BOOL FMatchISuffixA( const CHAR * const szSuffix, const CHAR * const szStr
 
 LOCAL BOOL FMatchISuffixW( const WCHAR * const wszSuffix, const WCHAR * const wszString )
 {
-    const size_t cchString = wcslen( wszString );
-    const size_t cchSuffix = wcslen( wszSuffix );
+    const size_t cchString = LOSStrLengthW( wszString );
+    const size_t cchSuffix = LOSStrLengthW( wszSuffix );
     if ( cchSuffix > cchString )
     {
         return fFalse;
@@ -7683,10 +7683,10 @@ const CHAR * SzSpace( const ULONG cch )
 }
 
 void EDBGPrintScavengeSequenceFriendly(
-    __in const BOOL fFullHeader,
-    __in const BFScavengeStats * const rgScavenge,
-    __in const size_t cScavenge,
-    __in const ULONG iScavengeCurrentRun )
+    _In_ const BOOL fFullHeader,
+    _In_ const BFScavengeStats * const rgScavenge,
+    _In_ const size_t cScavenge,
+    _In_ const ULONG iScavengeCurrentRun )
 {
     if ( fFullHeader )
     {
@@ -9825,7 +9825,7 @@ LOCAL VOID EDBGDumpColumnMetaData(
         szType,
         ( FRECTextColumn( pfield->coltyp ) && usUniCodePage == pfield->cp ? " (Unicode)" : "" ) );
 
-    if ( FFixedFid( FidOfColumnid( columnid ) ) )
+    if ( FidOfColumnid( columnid ).FFixed() )
     {
         dprintf( "offset=0x%04x, ", pfield->ibRecordOffset );
     }
@@ -10285,8 +10285,8 @@ LOCAL VOID DumpFCB(
 
 //  ================================================================
 LOCAL VOID CollectFCBInfo(
-    __in const FCB * const      pfcb,
-    __in ULONG * const          pcFCBs,
+    _In_ const FCB * const      pfcb,
+    _In_ ULONG * const          pcFCBs,
     __inout BOOL * const        pfUnpurgeableFCB,
     __inout BOOL * const        pfAvailableFCB,
     __inout_ecount(tceMax) ULONG * const        rgcFCBsByTCE
@@ -10347,8 +10347,8 @@ LOCAL VOID CollectFCBInfo(
 
 //  ================================================================
 LOCAL VOID CollectFCBTreeInfo(
-    __in const INST * const     pinst,
-    __in const FCB * const      pfcb,
+    _In_ const INST * const     pinst,
+    _In_ const FCB * const      pfcb,
     __inout ULONG * const       pcFCBs,
     __inout BOOL * const        pfUnpurgeableFCB,
     __inout BOOL * const        pfAvailableFCB,
@@ -10433,7 +10433,7 @@ LOCAL VOID CollectFCBTreeInfo(
 
 //  ================================================================
 LOCAL VOID DumpFCBList(
-    __in INST * const   pinstDebuggee,
+    _In_ INST * const   pinstDebuggee,
     DumpFCBFilter       edumpFCBFilter
     )
 //  ================================================================
@@ -10700,7 +10700,7 @@ HandleError:
 
 //  ================================================================
 LOCAL VOID DumpInstFCBs(
-    __in INST * const pinstDebuggee
+    _In_ INST * const pinstDebuggee
     )
 //  ================================================================
 {
@@ -10806,14 +10806,14 @@ LOCAL VOID DumpInstFCBs(
         WCHAR wszDefaultTableClassName[cwchDefaultTableClassName];
         swprintf_s( wszDefaultTableClassName, cwchDefaultTableClassName, L"%d", iTce );
 
-        const SIZE_T cwchTableClassName = wcslen( wszTableClassName );
+        const SIZE_T cwchTableClassName = LOSStrLengthW( wszTableClassName );
         if ( !FIsSpace( (TCE)iTce ) && ( cwchTableClassName || rgcFCBsByTCE[iTce] ) )
         {
             EDBGPrintfDmlW( L"              TCE %32.32s:%10ld\n",
                             cwchTableClassName ? wszTableClassName : wszDefaultTableClassName,
                             rgcFCBsByTCE[iTce] );
         }
-        wszTableClassName = wszTableClassName + ( cwchTableClassName ? wcslen( wszTableClassName ) + 1 : 0 );
+        wszTableClassName = wszTableClassName + ( cwchTableClassName ? LOSStrLengthW( wszTableClassName ) + 1 : 0 );
     }
     EDBGPrintfDmlW( L"\n\n");
     EDBGPrintfDmlW( L"      (*estimation only, may differ from actual runtime)\n\n" );
@@ -10977,8 +10977,8 @@ HandleError:
 
 //  ================================================================
 LOCAL VOID DumpFUCB(
-    __in const FUCB * const         pfucbDebuggee,
-    __in const FUCB * const         pfucb
+    _In_ const FUCB * const         pfucbDebuggee,
+    _In_ const FUCB * const         pfucb
     )
 //  ================================================================
 {
@@ -10997,8 +10997,8 @@ LOCAL VOID DumpFUCB(
 
 //  ================================================================
 LOCAL VOID DumpPIB(
-    __in const PIB * const      ppibDebuggee,
-    __in const PIB * const      ppib
+    _In_ const PIB * const      ppibDebuggee,
+    _In_ const PIB * const      ppib
     )
 //  ================================================================
 {
@@ -11021,7 +11021,7 @@ LOCAL VOID DumpPIB(
 
 //  ================================================================
 LOCAL VOID DumpPIBList(
-    __in INST * const   pinstDebuggee
+    _In_ INST * const   pinstDebuggee
     )
 //  ================================================================
 {
@@ -11230,8 +11230,8 @@ _TLS * P_tlsFetchHead( __out_opt _TLS ** pp_tlsDebuggeeHead )
 //  when done. Optionally gives back the debuggee address of the first _TLS structure
 //  if desired.
 
-_TLS * P_tlsFetch( __in const ULONG ulTid, __out_opt _TLS ** pp_tlsDebuggee = NULL );
-_TLS * P_tlsFetch( __in const ULONG ulTid, __out_opt _TLS ** pp_tlsDebuggee )
+_TLS * P_tlsFetch( _In_ const ULONG ulTid, __out_opt _TLS ** pp_tlsDebuggee = NULL );
+_TLS * P_tlsFetch( _In_ const ULONG ulTid, __out_opt _TLS ** pp_tlsDebuggee )
 {
     _TLS * p_tlsDebuggee = NULL;
     _TLS * p_tls = NULL;
@@ -15730,7 +15730,7 @@ DEBUG_EXT( EDBGParam )
             case JetParam::typeBlockSize:
             case JetParam::typeInteger:
 
-#ifdef _X86_
+#ifndef _WIN64
                 dprintf( "=%20d  (%d,%d,%d)\n", rgparam[iParam].m_valueCurrent,
 #else
                 dprintf( "=%20I64d  (%d,%d,%d)\n", rgparam[iParam].m_valueCurrent,
@@ -15750,7 +15750,7 @@ DEBUG_EXT( EDBGParam )
                 }
                 else if ( FFetchSz( (WCHAR*)rgparam[iParam].m_valueCurrent, &wszStrParam ) )
                 {
-                    dprintf( "=  0x%N =%d:\"%mu\"  ", rgparam[iParam].m_valueCurrent, wcslen(wszStrParam), rgparam[iParam].m_valueCurrent );
+                    dprintf( "=  0x%N =%d:\"%mu\"  ", rgparam[iParam].m_valueCurrent, LOSStrLengthW(wszStrParam), rgparam[iParam].m_valueCurrent );
                     Unfetch( wszStrParam );
                     dprintf( "(def=\"%mu\")\n", rgparam[iParam].m_valueDefault[configLegacy] );
                 }
@@ -20486,8 +20486,8 @@ VOID DumpOneIOREQ(
     dprintf( "}\n" );
 
     dprintf( FORMAT_( IOREQ, pioreq, m_tc.etc.iorReason, dwOffset ) );
-    dprintf( "0x%0X = { iorp = %hs(%d), iors = %d, iort = %d, ioru = %d (JetOp), iorf = 0x%x }\n",
-                ( pioreq->m_tc.etc.iorReason.DwIor() ),
+    dprintf( "0x%0I64X = { iorp = %hs(%d), iors = %d, iort = %d, ioru = %d (JetOp), iorf = 0x%x }\n",
+                ( pioreq->m_tc.etc.iorReason.QwIor() ),
                 SzIOIorp( pioreq->m_tc.etc.iorReason.Iorp() ), pioreq->m_tc.etc.iorReason.Iorp(),
                 pioreq->m_tc.etc.iorReason.Iors(),
                 pioreq->m_tc.etc.iorReason.Iort(),
@@ -21064,7 +21064,7 @@ VOID EDBGTermLocal()
 }
 
 ERR ErrEDBGCacheQueryLocal(
-        __in const INT argc,
+        _In_ const INT argc,
         __in_ecount(argc) const CHAR * const argv[],
         __inout void * pvResult )
 {
@@ -21119,8 +21119,8 @@ extern "C" {
 
 //  ================================================================
 HRESULT CALLBACK ese(
-    __in PDEBUG_CLIENT  pdebugClient,
-    __in PCSTR  lpArgumentString
+    _In_ PDEBUG_CLIENT  pdebugClient,
+    _In_ PCSTR  lpArgumentString
     )
 //  ================================================================
 {
@@ -21248,8 +21248,8 @@ HRESULT CALLBACK ese(
 
 
 HRESULT CALLBACK
-DebugExtensionInitialize(__out PULONG Version,
-             __out PULONG Flags)
+DebugExtensionInitialize(_Out_ PULONG Version,
+             _Out_ PULONG Flags)
 {
 #ifdef ESENT
     //  these constants come from ntverp.h
@@ -21275,8 +21275,8 @@ DebugExtensionUninitialize(void)
 
 void CALLBACK
 DebugExtensionNotify(
-    __in ULONG /*Notify*/,
-    __in ULONG64 /*Argument*/
+    _In_ ULONG /*Notify*/,
+    _In_ ULONG64 /*Argument*/
 )
 {
     // Notify can be one of 

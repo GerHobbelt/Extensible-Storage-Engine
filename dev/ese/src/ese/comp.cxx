@@ -217,28 +217,52 @@ INLINE ERR ErrCMPOpenDB(
     IFileSystemAPI  *pfsapiDest,
     const WCHAR     *wszDatabaseDest )
 {
-    ERR         err;
-    JET_GRBIT   grbitCreateForDefrag    = JET_bitDbRecoveryOff|JET_bitDbVersioningOff;
-
+    ERR            err;
+    BOOL           fDBOpen = fFalse;
+    ULONG          ulParamVal = 1;
+    JET_SETDBPARAM setdbparam = { JET_dbparamMaintainExtentPageCountCache, &ulParamVal, sizeof(ulParamVal) };
+    JET_SETDBPARAM *psetdbparam = NULL;
+    ULONG          csetdbparam = 0;
+    JET_GRBIT      grbitCreateForDefrag    = JET_bitDbRecoveryOff|JET_bitDbVersioningOff;
     //  open the source DB Exclusive and ReadOnly
     //  UNDONE: JET_bitDbReadOnly currently unsupported
     //  by OpenDatabase (must be specified with AttachDb)
-    CallR( ErrDBOpenDatabase(
+    Call( ErrDBOpenDatabase(
                 pcompactinfo->ppib,
                 wszDatabaseSrc,
                 &pcompactinfo->ifmpSrc,
                 JET_bitDbExclusive|JET_bitDbReadOnly ) );
+    fDBOpen = fTrue;
 
     if ( g_rgfmp[pcompactinfo->ifmpSrc].FShadowingOff() )
     {
         grbitCreateForDefrag |= JET_bitDbShadowingOff;
     }
 
+    // Look up the ExtentPageCountCache table.  If it exists in the original DB, we need to create
+    // it in the new DB.
+    err = ErrCATSeekTable( pcompactinfo->ppib, pcompactinfo->ifmpSrc, szMSExtentPageCountCache, NULL, NULL );
+    switch ( err )
+    {
+        case JET_errSuccess:
+            csetdbparam = 1;
+            psetdbparam = &setdbparam;
+            break;
+
+        case JET_errObjectNotFound:
+            break;
+
+        default:
+            AssertSz( fFalse, "Unexpected case in switch.");
+            Call( err );
+            break;
+    }
+
     //  Create and then open the destination database.
     //  CONSIDER: Should the destination database be deleted
     //  if it already exists?
     Assert( NULL != pfsapiDest );
-    err = ErrDBCreateDatabase(
+    Call( ErrDBCreateDatabase(
                 pcompactinfo->ppib,
                 pfsapiDest,
                 wszDatabaseDest,
@@ -247,12 +271,13 @@ INLINE ERR ErrCMPOpenDB(
                 CpgDBDatabaseMinMin(),  //  using min-min minimizes DB size, and provides good testing.
                 fFalse, // fSparseEnabledFile
                 NULL,
-                NULL,
-                0,
-                grbitCreateForDefrag );
+                psetdbparam,
+                csetdbparam,
+                grbitCreateForDefrag ) );
+    Assert( JET_errSuccess == err );     // No warnings.
 
-    Assert( err <= 0 );     // No warnings.
-    if ( err < 0 )
+HandleError:
+    if ( ( err < JET_errSuccess ) && fDBOpen )
     {
         (VOID)ErrDBCloseDatabase(
                         pcompactinfo->ppib,
@@ -272,7 +297,7 @@ LOCAL VOID CMPCopyOneIndex(
     size_t                  cbIdxCreateKeys,
     JET_TUPLELIMITS         *ptuplelimits,
     JET_CONDITIONALCOLUMN_A *pconditionalcolumn,
-    __out JET_SPACEHINTS *  pjsph )
+    _Out_ JET_SPACEHINTS *  pjsph )
 {
     TDB                     *ptdb = pfcbSrc->Ptdb();
     IDB                     *pidb = pfcbIndex->Pidb();
@@ -920,8 +945,8 @@ LOCAL ERR ErrCMPCreateTableColumnIndex(
     // tagged columnid map.
     if ( cTagged > 0 )
     {
-        Assert( FTaggedFid( fidTaggedHighest ) );
-        cbAllocate = sizeof(JET_COLUMNID) * ( fidTaggedHighest + 1 - fidTaggedLeast );
+        Assert( fidTaggedHighest.FTagged() );
+        cbAllocate = sizeof(JET_COLUMNID) * ( fidTaggedHighest.CountOf( fidtypTagged ) );
         Alloc( mpcolumnidcolumnidTagged = static_cast<JET_COLUMNID *>( PvOSMemoryHeapAlloc( cbAllocate ) ) );
         memset( (BYTE *)mpcolumnidcolumnidTagged, 0, cbAllocate );
     }
@@ -953,8 +978,8 @@ LOCAL ERR ErrCMPCreateTableColumnIndex(
             Assert( FCOLUMNIDTagged( pcolcreateCurr->columnid ) );
             Assert( FidOfColumnid( *pcolumnidSrc ) <= fidTaggedHighest );
             Assert( mpcolumnidcolumnidTagged != NULL );
-            Assert( mpcolumnidcolumnidTagged[FidOfColumnid( *pcolumnidSrc ) - fidTaggedLeast] == 0 );
-            mpcolumnidcolumnidTagged[FidOfColumnid( *pcolumnidSrc ) - fidTaggedLeast] = pcolcreateCurr->columnid;
+            Assert( mpcolumnidcolumnidTagged[ FidOfColumnid( *pcolumnidSrc ).IndexOf( fidtypTagged ) ] == 0 );
+            mpcolumnidcolumnidTagged[ FidOfColumnid( *pcolumnidSrc ).IndexOf( fidtypTagged ) ] = pcolcreateCurr->columnid;
         }
         else
         {
@@ -1231,9 +1256,9 @@ LOCAL ERR ErrCMPCopyTable(
 
             const TDB   * const ptdbT = pfucbDest->u.pfcb->Ptdb();
             Assert( ptdbNil != ptdbT );
-            const INT   cColumns = ( ptdbT->FidFixedLast() + 1 - fidFixedLeast )
-                                    + ( ptdbT->FidVarLast() + 1 - fidVarLeast )
-                                    + ( ptdbT->FidTaggedLast() + 1 - fidTaggedLeast );
+            const INT   cColumns = ( ptdbT->FidFixedLast().CountOf( fidtypFixed ) )
+                + ( ptdbT->FidVarLast().CountOf( fidtypVar ) )
+                + ( ptdbT->FidTaggedLast().CountOf( fidtypTagged ) );
 
             if ( cColumns > INT( pstatus->cTableFixedVarColumns + pstatus->cTableTaggedColumns ) )
             {
@@ -1440,7 +1465,7 @@ LOCAL ERR ErrCMPCopySelectedTables(
         BOOL        fProceedWithCopy    = fTrue;
         ULONG       ulFlags;
 
-        Assert( FFixedFid( fidMSO_Flags ) );
+        Assert( fidMSO_Flags.FFixed() );
         Call( ErrRECIRetrieveFixedColumn(
                         pfcbNil,
                         pfucbCatalog->u.pfcb->Ptdb(),
@@ -1474,7 +1499,7 @@ LOCAL ERR ErrCMPCopySelectedTables(
 
 #ifdef DEBUG
             //  verify this is a column
-            Assert( FFixedFid( fidMSO_Type ) );
+            Assert( fidMSO_Type.FFixed() );
             Call( ErrRECIRetrieveFixedColumn(
                         pfcbNil,
                         pfucbCatalog->u.pfcb->Ptdb(),
@@ -1486,7 +1511,7 @@ LOCAL ERR ErrCMPCopySelectedTables(
             Assert( sysobjTable == *( (UnalignedLittleEndian< SYSOBJ > *)dataField.Pv() ) );
 #endif
 
-            Assert( FVarFid( fidMSO_Name ) );
+            Assert( fidMSO_Name.FVar() );
             Call( ErrRECIRetrieveVarColumn(
                             pfcbNil,
                             pfucbCatalog->u.pfcb->Ptdb(),
@@ -1516,6 +1541,7 @@ LOCAL ERR ErrCMPCopySelectedTables(
                 && !FOLDSystemTable( szTableName )
                 && !FSCANSystemTable( szTableName )
                 && !FCATObjidsTable( szTableName )
+                && !FCATExtentPageCountCacheTable( szTableName )
                 && !FCATLocalesTable( szTableName ) // rebuilt by catalog updates
                 && !MSysDBM::FIsSystemTable( szTableName ) )
             {

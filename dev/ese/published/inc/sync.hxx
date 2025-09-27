@@ -320,6 +320,10 @@ extern BOOL g_fSyncProcessAbort;
 //  Atomic Memory Manipulations
 
 //  returns fTrue if the given data is properly aligned for atomic modification
+inline const BOOL IsAtomicallyModifiable( LONGLONG* pllTarget )
+{
+    return ULONG_PTR( pllTarget ) % sizeof( LONGLONG ) == 0;
+}
 
 inline const BOOL IsAtomicallyModifiable( LONG* plTarget )
 {
@@ -609,6 +613,62 @@ inline ULONG AtomicExchangeReset( ULONG* const pulTarget, const ULONG ulMask )
     }
 
     return (ULONG)lOld;
+}
+
+//  atomically set the bits from the mask in the target, returning the original.  the
+//  target must be aligned to an eight byte boundary
+
+inline LONGLONG AtomicExchangeSet( LONGLONG* const pllTarget, const LONGLONG llMask )
+{
+    OSSYNCAssert( IsAtomicallyModifiable( pllTarget ) );
+
+    LONGLONG llOld;
+    OSSYNC_FOREVER
+    {
+        llOld                   = AtomicRead( pllTarget );
+        const LONGLONG llWanted = ( llOld | llMask );
+        const LONGLONG llFinal  = AtomicCompareExchange( pllTarget, llOld, llWanted );
+
+        if( llFinal == llOld )
+        {
+            break;
+        }
+    }
+
+    return llOld;
+}
+
+//  atomically resets the bits from the mask in the target, returning the original.  the
+//  target must be aligned to an eight byte boundary
+
+inline LONGLONG AtomicExchangeReset( LONGLONG* const pllTarget, const LONGLONG llMask )
+{
+    OSSYNCAssert( IsAtomicallyModifiable( pllTarget ) );
+
+    LONGLONG llOld;
+    OSSYNC_FOREVER
+    {
+        llOld                   = AtomicRead( pllTarget );
+        const LONGLONG llWanted = ( llOld & ~llMask );
+        const LONGLONG llFinal  = AtomicCompareExchange( pllTarget, llOld, llWanted );
+
+        if( llFinal == llOld )
+        {
+            break;
+        }
+    }
+
+    return llOld;
+}
+
+inline ULONGLONG AtomicExchangeSet( ULONGLONG* const pullTarget, const ULONGLONG ullMask )
+{
+    return (ULONGLONG) AtomicExchangeSet( ( LONGLONG * )pullTarget, ( LONGLONG )ullMask );
+}
+
+inline ULONGLONG AtomicExchangeReset( ULONGLONG* const pullTarget, const ULONGLONG ullMask )
+{
+    return (ULONGLONG) AtomicExchangeReset( ( LONGLONG * )pullTarget, ( LONGLONG )ullMask );
 }
 
 //  atomically compares the target against the specified value and replaces
@@ -3350,9 +3410,9 @@ class CLockDeadlockDetectionInfo
         const BOOL FNotWaiter( const DWORD group = -1 );
 
         static void OSSYNCAPI GetApiEntryState(
-            __out DWORD *pcDisableDeadlockDetection,
-            __out DWORD *pcDisableOwnershipTracking,
-            __out DWORD *pcLocks );
+            _Out_ DWORD *pcDisableDeadlockDetection,
+            _Out_ DWORD *pcDisableOwnershipTracking,
+            _Out_ DWORD *pcLocks );
         static void OSSYNCAPI AssertCleanApiExit(
             DWORD cDisableDeadlockDetection,
             DWORD cDisableOwnershipTracking,
@@ -3376,9 +3436,9 @@ class CLockDeadlockDetectionInfo
 
         const VOID AssertCanBeWaiter() {}
         static void OSSYNCAPI GetApiEntryState(
-            __out DWORD *pcDisableDeadlockDetection,
-            __out DWORD *pcDisableOwnershipTracking,
-            __out DWORD *pcLocks ) {}
+            _Out_ DWORD *pcDisableDeadlockDetection,
+            _Out_ DWORD *pcDisableOwnershipTracking,
+            _Out_ DWORD *pcLocks ) {}
         static void OSSYNCAPI AssertCleanApiExit(
             DWORD cDisableDeadlockDetection,
             DWORD cDisableOwnershipTracking,
@@ -3669,9 +3729,9 @@ inline void OSSYNCAPI CLockDeadlockDetectionInfo::EnableLockCheckOnApiExit()
 #ifdef SYNC_DEADLOCK_DETECTION
 
 inline void OSSYNCAPI CLockDeadlockDetectionInfo::GetApiEntryState(
-    __out DWORD *pcDisableDeadlockDetection,
-    __out DWORD *pcDisableOwnershipTracking,
-    __out DWORD *pcLocks )
+    _Out_ DWORD *pcDisableDeadlockDetection,
+    _Out_ DWORD *pcDisableOwnershipTracking,
+    _Out_ DWORD *pcLocks )
 {
     CLS* const pcls     = Pcls();
     *pcDisableDeadlockDetection = pcls->cDisableDeadlockDetection;
@@ -7554,7 +7614,7 @@ class CSXWLatch
 
         void Dump( const CDumpContext& dc ) const;
 
-        void AssertValid( __in const iGroup iGroupOwnsOrWaits = iNoGroup );
+        void AssertValid( _In_ const iGroup iGroupOwnsOrWaits = iNoGroup );
 
     private:
 
@@ -7572,7 +7632,7 @@ class CSXWLatch
 //  checks certain immutable properties of the latch.  the group argument indicates
 //  that at the call site we either own or are at least waiting.
 
-inline void CSXWLatch::AssertValid( __in const iGroup iGroupOwnsOrWaits )
+inline void CSXWLatch::AssertValid( _In_ const iGroup iGroupOwnsOrWaits )
 {
     OSSYNCEnforce( ( State().m_cw & 0x00007fff ) != 0x00007fff ); // likely underflow of s-latch, someone released a latch they didn't have?
     OSSYNCEnforce( ( State().m_cw & 0xffff0000 ) != 0xffff0000 ); // likely underflow of x|w-latch, someone released a latch they didn't have?

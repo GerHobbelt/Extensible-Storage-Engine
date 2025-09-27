@@ -458,17 +458,17 @@ ERR ErrRECIValidateOneMoveFilter(
         //
         fUseDMLLatch = fFalse;
     }
-    else if ( FFixedFid( fid ) )
+    else if ( fid.FFixed() )
     {
         fUseDMLLatch = ( fid > ptdb->FidFixedLastInitial() );
     }
-    else if ( FVarFid( fid ) )
+    else if ( fid.FVar() )
     {
         fUseDMLLatch = ( fid > ptdb->FidVarLastInitial() );
     }
     else
     {
-        Assert( FTaggedFid( fid ) );
+        Assert( fid.FTagged() );
         fUseDMLLatch = ( fid > ptdb->FidTaggedLastInitial() );
     }
 
@@ -1195,7 +1195,7 @@ ERR VTAPI ErrIsamSeek( JET_SESID sesid, JET_VTID vtid, JET_GRBIT grbit )
     CallR( ErrPIBCheck( ppib ) );
     CheckTable( ppib, pfucbTable );
     CheckSecondary( pfucbTable );
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucbTable );
 
     if( 0 == ( grbit & bitSeekAll ) )
     {
@@ -1890,7 +1890,7 @@ AdjustPositionAfterFoundLess:
         }
 
         KSReset( pfucbSeek );
-        AssertDIRNoLatch( ppib );
+        AssertDIRMaybeNoLatch( ppib, pfucbTable );
         return err;
     }
 
@@ -1926,7 +1926,7 @@ Release:
             err ) );
 
     KSReset( pfucbSeek );
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucbTable );
     return err;
 
 HandleError:
@@ -2970,14 +2970,14 @@ ERR ErrIsamIPrereadIndexRanges(
     const JET_SESID                                 sesid,
     const JET_VTID                                  vtid,
     __in_ecount(cIndexRanges) const JET_INDEX_RANGE * const rgIndexRanges,
-    __in const ULONG                        cIndexRanges,
-    __out_opt ULONG * const                 pcRangesPreread,
+    _In_ const ULONG                                cIndexRanges,
+    __out_opt ULONG * const                         pcRangesPreread,
     __in_ecount(ccolumnidPreread) const JET_COLUMNID * const rgcolumnidPreread,
     const ULONG                                     ccolumnidPreread,
-    __in const ULONG                        cPageCacheMin,
-    __in const ULONG                        cPageCacheMax,
+    _In_ const ULONG                                cPageCacheMin,
+    _In_ const ULONG                                cPageCacheMax,
     const JET_GRBIT                                 grbit,
-    __out_opt ULONG * const                 pcPageCacheActual )
+    __out_opt ULONG * const                         pcPageCacheActual )
 //  =================================================================
 {
     ERR     err = JET_errSuccess;
@@ -3084,8 +3084,8 @@ ERR VTAPI ErrIsamPrereadIndexRanges(
     const JET_SESID                                             sesid,
     const JET_VTID                                              vtid,
     __in_ecount(cIndexRanges) const JET_INDEX_RANGE * const     rgIndexRanges,
-    __in const ULONG                                    cIndexRanges,
-    __out_opt ULONG * const                             pcRangesPreread,
+    _In_ const ULONG                                            cIndexRanges,
+    __out_opt ULONG * const                                     pcRangesPreread,
     __in_ecount(ccolumnidPreread) const JET_COLUMNID * const    rgcolumnidPreread,
     const ULONG                                                 ccolumnidPreread,
     const JET_GRBIT                                             grbit )
@@ -3718,7 +3718,7 @@ ERR VTAPI ErrIsamSetIndexRange( JET_SESID sesid, JET_VTID vtid, JET_GRBIT grbit 
 
     /*  ppib is not used in this function
     /**/
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucbTable );
 
     /*  if instant duration index range, then reset index range.
     /**/
@@ -3813,7 +3813,7 @@ ERR VTAPI ErrIsamSetIndexRange( JET_SESID sesid, JET_VTID vtid, JET_GRBIT grbit 
     }
 
 HandleError:
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucbTable );
     return err;
 }
 

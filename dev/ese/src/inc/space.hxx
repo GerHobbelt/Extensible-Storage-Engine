@@ -172,7 +172,9 @@ ERR ErrSPCreate(
     const CPG   cpgOwned,
     const ULONG fSPFlags,
     const ULONG fPageFlags,
-    OBJID       *pobjidFDP );
+    OBJID       *pobjidFDP,
+    CPG         *pcpgOEFDP,
+    CPG         *pcpgAEFDP );
 
 ERR ErrSPBurstSpaceTrees( FUCB *pfucb );
 
@@ -188,14 +190,21 @@ ERR ErrSPGetExt(
 
 ERR ErrSPGetPage(
     __inout FUCB *          pfucb,
-    __in    const PGNO      pgnoLast,
-    __in    const ULONG     fSPAllocFlags,
-    __out   PGNO *          ppgnoAlloc
+    _In_    const PGNO      pgnoLast,
+    _In_    const ULONG     fSPAllocFlags,
+    _Out_   PGNO *          ppgnoAlloc
     );
 
-ERR ErrSPCaptureSnapshot( FUCB* const pfucb, const PGNO pgnoFirst, const CPG cpgSize );
+ERR ErrSPCaptureSnapshot(
+    FUCB* const pfucb,
+    const PGNO pgnoFirst,
+    const CPG cpgSize );
 
-ERR ErrSPFreeExt( FUCB* const pfucb, const PGNO pgnoFirst, const CPG cpgSize, const CHAR* const szTag );
+ERR ErrSPFreeExt(
+    FUCB* const pfucb,
+    const PGNO pgnoFirst,
+    const CPG cpgSize,
+    const CHAR* const szTag );
 
 ERR ErrSPTryCoalesceAndFreeAvailExt( FUCB* const pfucb, const PGNO pgnoInExtent, BOOL* const pfCoalesced );
 
@@ -211,23 +220,22 @@ ERR ErrSPFreeFDP(
     const PGNO  pgnoFDPParent,
     const BOOL  fPreservePrimaryExtent = fFalse );
 
-ERR ErrSPGetDatabaseInfo(
-    PIB         *ppib,
-    const IFMP  ifmp,
-    __out_bcount(cbMax) BYTE        *pbResult,
-    const ULONG cbMax,
-    const ULONG fSPExtents,
-    bool fUseCachedResult = 0,
-    CPRINTF * const pcprintf = NULL );
+typedef enum class GET_CACHED_INFO {
+    Allow,
+    Require,
+    Forbid
+} gci;
 
 ERR ErrSPGetInfo(
-            PIB         *ppib,
-            const IFMP  ifmp,
-            FUCB        *pfucb,
-            __out_bcount(cbMax) BYTE        *pbResult,
-            const ULONG cbMax,
-            const ULONG fSPExtents,
-            CPRINTF * const pcprintf = NULL );
+    PIB                       *ppib,
+    const IFMP                ifmp,
+    FUCB                      *pfucb,
+    __out_bcount(cbMax) BYTE  *pbResult,
+    const ULONG               cbMax,
+    const ULONG               fSPExtents,
+    const GET_CACHED_INFO     gciType,
+    CPRINTF * const           pcprintf = NULL );
+
 ERR ErrSPGetExtentInfo(
     _Inout_ PIB *       ppib,
     _In_ const IFMP     ifmp,
@@ -364,8 +372,8 @@ ERR ErrSPDummyUpdate( FUCB * pfucb );
 
 // used by cat to verify JetSpaceHints.
 CPG CpgSPIGetNextAlloc(
-    __in const FCB_SPACE_HINTS * const  pfcbsh,
-    __in const CPG                      cpgPrevious
+    _In_ const FCB_SPACE_HINTS * const  pfcbsh,
+    _In_ const CPG                      cpgPrevious
     );
 
 ERR ErrSPExtendDB(
@@ -376,10 +384,10 @@ ERR ErrSPExtendDB(
     const BOOL  fPermitAsyncExtension );
 
 ERR ErrSPREPAIRValidateSpaceNode(
-    __in const  KEYDATAFLAGS * pkdf,
-    __out       PGNO *          ppgnoLast,
-    __out       CPG *           pcpgExtent,
-    __out       PCWSTR *        pwszPoolName );
+    _In_ const  KEYDATAFLAGS * pkdf,
+    _Out_       PGNO *          ppgnoLast,
+    _Out_       CPG *           pcpgExtent,
+    _Out_       PCWSTR *        pwszPoolName );
 
 ERR ErrSPTrimDBTaskInit( const IFMP ifmp );
 VOID SPTrimDBTaskStop( INST * pinst, const WCHAR * wszDatabaseFullName = NULL );
@@ -440,3 +448,9 @@ const CPG   cpgTableMin             = cpgSingleExtentMin * 2;
 //  largest extent of growth ESE will allow.
 const ULONG cbSecondaryExtentMost = ( 100 * 1024 * 1024 );  // 100 MB ... we could go up to 1 GB.
 
+// space Manager global variables
+
+extern BOOL g_fSPExtentPageCountCacheTrackOnCreate; // Controls whether or not to add a value to ExtentPageCountCache on every space tree creation.
+#ifdef DEBUG
+extern BOOL g_fSPExtentPageCountCacheValidation;    // Controls whether or not we do validation of ExtentPageCountCache values.
+#endif

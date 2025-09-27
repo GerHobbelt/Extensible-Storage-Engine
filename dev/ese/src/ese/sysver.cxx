@@ -76,6 +76,7 @@ const FormatVersions g_rgfmtversEngine[] = {
     { JET_efvXpress10Compression, /* 9340 */            { 1568,170,380 }, { 8,80,180 }, { 3,0,0 } }, // [2020/05/05]
     { JET_efvRevertSnapshot, /* 9360 */                 { 1568,180,400 }, { 8,90,200 }, { 3,0,0 } }, // [2020/09/23]
     { JET_efvApplyRevertSnapshot, /* 9380 */            { 1568,190,420 }, { 8,90,200 }, { 3,0,0 } }, // [2020/12/01]
+    { JET_efvExtentPageCountCache, /* 9400 */           { 1568,200,440 }, { 8,90,200 }, { 3,0,0 } }, // [2021/01/15]
 };
 
 const INT g_cfmtversEngine = _countof( g_rgfmtversEngine );
@@ -233,7 +234,7 @@ void __cdecl OSStrCbAppendFormatW ( __inout_bcount(cbBuffer) PWSTR wszBuffer, si
 {
     va_list alist;
     va_start( alist, cwszFormat );
-    const size_t cbUsed = wcslen( wszBuffer ) * sizeof(WCHAR);
+    const size_t cbUsed = LOSStrLengthW( wszBuffer ) * sizeof(WCHAR);
     Assert( cbUsed < cbBuffer );    // did someone pass in an unit buffer?
     Assert( ( cbUsed % sizeof(WCHAR) ) == 0 );
     HRESULT hr = StringCbVPrintfW( wszBuffer + ( cbUsed / sizeof(WCHAR) ), cbBuffer - cbUsed, cwszFormat, alist );
@@ -319,23 +320,23 @@ JETUNITTEST( SysVerEngineFormatVersion, EngineFormatVersionFormatting )
 {
     WCHAR wszTestBuffer[cchFormatEfvSetting];
 
-    CHECK( 0 == wcscmp( L"0x0 ()", WszFormatEfvSetting( 0, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x0 ()", WszFormatEfvSetting( 0, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
 
-    CHECK( 0 == wcscmp( L"0x22D8 (8920)", WszFormatEfvSetting( 8920, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
-    CHECK( 0 == wcscmp( L"0x22D8 (8920)", WszFormatEfvSetting( JET_efvExchange2016Cu1Rtm, wszTestBuffer, sizeof(wszTestBuffer) ) ) );   // shouldn't matter if we use constant name.
-    CHECK( 0 == wcscmp( L"0x410022D8 (8920 | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( 8920 | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
-    CHECK( 0 == wcscmp( L"0x40000001 (JET_efvUseEngineDefault)", WszFormatEfvSetting( JET_efvUseEngineDefault, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
-    CHECK( 0 == wcscmp( L"0x40000002 (JET_efvUsePersistedFormat)", WszFormatEfvSetting( JET_efvUsePersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x22D8 (8920)", WszFormatEfvSetting( 8920, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x22D8 (8920)", WszFormatEfvSetting( JET_efvExchange2016Cu1Rtm, wszTestBuffer, sizeof(wszTestBuffer) ) ) );   // shouldn't matter if we use constant name.
+    CHECK( 0 == LOSStrCompareW( L"0x410022D8 (8920 | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( 8920 | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x40000001 (JET_efvUseEngineDefault)", WszFormatEfvSetting( JET_efvUseEngineDefault, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x40000002 (JET_efvUsePersistedFormat)", WszFormatEfvSetting( JET_efvUsePersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
 
     //      All the remaining cases are actually invalid param values, but I would want it to ensure it prints all the data out in case it getsinto production.
-    CHECK( 0 == wcscmp( L"0x41000001 (JET_efvUseEngineDefault | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( JET_efvUseEngineDefault | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
-    CHECK( 0 == wcscmp( L"0x41000002 (JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
-    CHECK( 0 == wcscmp( L"0x40000003 (JET_efvUseEngineDefault | JET_efvUsePersistedFormat)", WszFormatEfvSetting( JET_efvUseEngineDefault | JET_efvUsePersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
-    CHECK( 0 == wcscmp( L"0x41000003 (JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( JET_efvUsePersistedFormat | JET_efvUseEngineDefault | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
-    CHECK( 0 == wcscmp( L"0x41000103 (256 | JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( 0x100 | JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x41000001 (JET_efvUseEngineDefault | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( JET_efvUseEngineDefault | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x41000002 (JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x40000003 (JET_efvUseEngineDefault | JET_efvUsePersistedFormat)", WszFormatEfvSetting( JET_efvUseEngineDefault | JET_efvUsePersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x41000003 (JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( JET_efvUsePersistedFormat | JET_efvUseEngineDefault | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x41000103 (256 | JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( 0x100 | JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
 
     //      Worst case all flags plus largest EFV value function will accept.
-    CHECK( 0 == wcscmp( L"0x417F0103 (8323328 | JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( 0x7F0100 | JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
+    CHECK( 0 == LOSStrCompareW( L"0x417F0103 (8323328 | JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat)", WszFormatEfvSetting( 0x7F0100 | JET_efvUseEngineDefault | JET_efvUsePersistedFormat | JET_efvAllowHigherPersistedFormat, wszTestBuffer, sizeof(wszTestBuffer) ) ) );
 }
 
 #endif // ENABLE_JET_UNIT_TEST

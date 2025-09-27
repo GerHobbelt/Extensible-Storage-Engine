@@ -208,22 +208,22 @@ ERR TestSimpleWszPathFileNameParseFunctionSuite::ErrTest()
 
     OSTestCheckErr( ErrOSFSCreate( NULL, &pfsapi ) );
 
-    OSTestCheck( 0 == wcscmp( L"FooBar.edb", pfsapi->WszPathFileName( L"C:\\\\users\\TheHistorian\\FooBar.edb" ) ) );
-    OSTestCheck( 0 == wcscmp( L"FuBar.edb", pfsapi->WszPathFileName( L"FuBar.edb" ) ) );
+    OSTestCheck( 0 == LOSStrCompareW( L"FooBar.edb", pfsapi->WszPathFileName( L"C:\\\\users\\TheHistorian\\FooBar.edb" ) ) );
+    OSTestCheck( 0 == LOSStrCompareW( L"FuBar.edb", pfsapi->WszPathFileName( L"FuBar.edb" ) ) );
 
-    OSTestCheck( 0 == wcscmp( L"FeeBar.edb", pfsapi->WszPathFileName( L"\\\\tsclient\\c\\users\\TheHistorian\\FeeBar.edb" ) ) );
-    OSTestCheck( 0 == wcscmp( L"FiBar", pfsapi->WszPathFileName( L"\\\\tsclient\\c\\users\\TheHistorian\\FiBar" ) ) );
+    OSTestCheck( 0 == LOSStrCompareW( L"FeeBar.edb", pfsapi->WszPathFileName( L"\\\\tsclient\\c\\users\\TheHistorian\\FeeBar.edb" ) ) );
+    OSTestCheck( 0 == LOSStrCompareW( L"FiBar", pfsapi->WszPathFileName( L"\\\\tsclient\\c\\users\\TheHistorian\\FiBar" ) ) );
 
     OnDebug( FNegTestSet( fInvalidUsage ) );
-    OSTestCheck( 0 == wcscmp( L"UNKNOWN.PTH", pfsapi->WszPathFileName( L"C:\\users\\TheHistorian\\FohBar.edb\\" ) ) );
+    OSTestCheck( 0 == LOSStrCompareW( L"UNKNOWN.PTH", pfsapi->WszPathFileName( L"C:\\users\\TheHistorian\\FohBar.edb\\" ) ) );
     OnDebug( FNegTestUnset( fInvalidUsage ) );
 
     //  Filename should be pulled from the other string and not allocated or some other temporary data.
     WCHAR * wszFumBar = L"C:\\users\\TheHistorian\\FumBar.edb";
     const WCHAR * wszFumBarFn = pfsapi->WszPathFileName( wszFumBar );
     OSTestCheck( ( (QWORD)wszFumBarFn > (QWORD)wszFumBar ) &&
-                    ( (QWORD)wszFumBarFn < ( ((QWORD)wszFumBarFn) + ( wcslen(wszFumBar) * sizeof(WCHAR) ) ) ) );
-    OSTestCheck( 0 == wcscmp( L"FumBar.edb", wszFumBarFn ) ); // oh and should've worked!
+                    ( (QWORD)wszFumBarFn < ( ((QWORD)wszFumBarFn) + ( LOSStrLengthW(wszFumBar) * sizeof(WCHAR) ) ) ) );
+    OSTestCheck( 0 == LOSStrCompareW( L"FumBar.edb", wszFumBarFn ) ); // oh and should've worked!
 
 HandleError:
 

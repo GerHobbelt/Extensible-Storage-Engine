@@ -163,7 +163,7 @@ Errors/Warnings:
 ERR ErrSTATSRetrieveTableStats(
     PIB         * ppib,
     const IFMP  ifmp,
-    __in PCSTR   szTable,
+    _In_ PCSTR   szTable,
     LONG        * pcRecord,
     LONG        * pcKey,
     LONG        * pcPage )
@@ -172,7 +172,7 @@ ERR ErrSTATSRetrieveTableStats(
     FUCB        * pfucb;
     SR          sr;
 
-    CallR( ErrFILEOpenTable( ppib, ifmp, &pfucb, szTable ) );
+    CallR( ErrFILEOpenTable( ppib, ifmp, &pfucb, szTable, JET_bitTableReadOnly ) );
 
     Call( ErrCATStats(
                 pfucb->ppib,
@@ -201,7 +201,7 @@ HandleError:
 
 ERR ErrSTATSRetrieveIndexStats(
     FUCB    *pfucbTable,
-    __in PCSTR szIndex,
+    _In_ PCSTR szIndex,
     BOOL    fPrimary,
     LONG    *pcItem,
     LONG    *pcKey,

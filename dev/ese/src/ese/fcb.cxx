@@ -503,12 +503,12 @@ INLINE BOOL FCB::FCBCheckAvailList_( const BOOL fShouldBeInList, const BOOL fPur
 }
 #endif  //  DEBUG
 
-VOID FCB::RefreshPreferredPerfCounter( __in INST * const pinst )
+VOID FCB::RefreshPreferredPerfCounter( _In_ INST * const pinst )
 {
     PERFOpt( cFCBCachePreferred.Set( pinst, (LONG)UlParam( pinst, JET_paramCachedClosedTables ) ) );
 }
 
-VOID FCB::ResetPerfCounters( __in INST * const pinst, BOOL fTerminating )
+VOID FCB::ResetPerfCounters( _In_ INST * const pinst, BOOL fTerminating )
 {
     PERFOpt( cFCBSyncPurge.Clear( pinst ) );
     PERFOpt( cFCBSyncPurgeStalls.Clear( pinst ) );
@@ -1134,8 +1134,8 @@ VOID FCB::CreateComplete_( ERR err, PCSTR szFile, const LONG lLine )
 //  Scans and purges the LRU available list for FCBs.
 
 BOOL FCB::FScanAndPurge_(
-    __in INST * pinst,
-    __in PIB * ppib,
+    _In_ INST * pinst,
+    _In_ PIB * ppib,
     const BOOL fThreshold )
 {
     ULONG   cFCBInspected                   = 0;
@@ -1404,8 +1404,8 @@ enum FCBPurgeFailReason : BYTE // fcbpfr
 //          etc... (everything that makes it free), we can purge the FCB
 
 BOOL FCB::FCheckFreeAndPurge_(
-    __in PIB *ppib,
-    __in const BOOL fThreshold )
+    _In_ PIB *ppib,
+    _In_ const BOOL fThreshold )
 {
     INST            *pinst = PinstFromPpib( ppib );
 
@@ -3221,10 +3221,7 @@ VOID FCB::DecrementRefCountAndUnlink_( FUCB *pfucb, const BOOL fLockList, const 
     //  Decrement the refcount in a threadsafe way as there is only a shared lock held at this point.
 
     LONG lResultRefCount = AtomicDecrement( &m_wRefCount );
-    if ( lResultRefCount < 0 )
-    {
-        Enforce( fFalse );
-    }
+    Enforce( lResultRefCount >= 0 );
 
     if ( pinst->m_pFCBRefTrace != NULL )
     {
@@ -3256,7 +3253,8 @@ VOID FCB::DecrementRefCountAndUnlink_( FUCB *pfucb, const BOOL fLockList, const 
     // drop the lock, but we'll increment the refcount to make sure the FCB isn't
     // purged out from under us.
 
-    AtomicIncrement( &m_wRefCount );
+    lResultRefCount = AtomicIncrement( &m_wRefCount );
+    AssertTrack( lResultRefCount > 0, "RefCountTooLowAfterInc" );
     Unlock_( LOCK_TYPE::ltShared );
     if ( fLockList )
     {
@@ -3270,8 +3268,8 @@ VOID FCB::DecrementRefCountAndUnlink_( FUCB *pfucb, const BOOL fLockList, const 
     }
     Lock();
     // Take off the refcount we just put on to keep this from being purged.
-    AtomicDecrement( &m_wRefCount );
-
+    lResultRefCount = AtomicDecrement( &m_wRefCount );
+    AssertTrack( lResultRefCount >= 0, "RefCountTooLowAfterDec" );
     Assert( pinst->m_critFCBList.FOwner() );
 
     if ( FTypeTable() && ( 0 == WRefCount() ) && !FInLRU() )
@@ -3379,11 +3377,7 @@ INLINE ERR FCB::ErrIncrementRefCountAndLink_( FUCB *pfucb, const BOOL fOwnWriteL
 
     // Increment the refcount in a threadsafe way.
     LONG lResultRefCount = AtomicIncrement( &m_wRefCount );
-
-    if ( lResultRefCount <= 0 )
-    {
-        Enforce( fFalse );
-    }
+    EnforceSz( lResultRefCount > 0, OSFormat( "InvalidRefCount:%d", lResultRefCount ) );
 
     if ( pinst->m_pFCBRefTrace != NULL )
     {
@@ -3639,15 +3633,31 @@ VOID FCB::RemoveList_()
             pinst->m_pfcbList->PfcbPrevList() == pfcbNil );
 }
 
-//  returns true if OLD2 should be run against this btree
+//  returns true if OLD2 may be run against this btree
 
 BOOL FCB::FUseOLD2()
 {
-    if( FTypeTable()
-        && ( FRetrieveHintTableScanForward() || FRetrieveHintTableScanBackward() ) )
+    //  we currently only allow defrag of the clustered index
+
+    if ( !FTypeTable() )
     {
-        return fTrue;
+        return fFalse;
     }
-    return fFalse;
+
+    //  efficient sequential scan must be configured
+
+    if ( !FRetrieveHintTableScanForward() && !FRetrieveHintTableScanBackward() )
+    {
+        return fFalse;
+    }
+
+    //  contiguous append must be configured
+
+    if ( !FContiguousAppend() && !FContiguousHotpoint() )
+    {
+        return fFalse;
+    }
+
+    return fTrue;
 }
 

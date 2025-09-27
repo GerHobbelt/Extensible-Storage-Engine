@@ -1222,9 +1222,7 @@ LOG_WRITE_BUFFER::ErrLGLogRec(
             //  precision for the BFOB0 approximate index
             //
             if ( lgenOutstanding > ( lgenTooDeepLimit - lgenCheckpointTooDeepMin / 2 ) ||
-                 // We do not know how to rollback split macros completely at do-time, so do not apply tigher limit
-                 // to macros. Space operations will still prevent split only operations from going unfettered.
-                 ( lgenTrxOutstanding > lgenTooDeepLimit / 2 && !( fLGFlags & fLGMacroGoing ) ) )
+                 lgenTrxOutstanding > lgenTooDeepLimit / 2 )
             {
                 switch ( lrtyp )
                 {
@@ -2752,8 +2750,17 @@ ERR LOG_WRITE_BUFFER::ErrLGIWriteFullSectors(
     {
         (VOID) m_pLog->ErrLGUpdateCheckpointFile( fFalse );
 
-        Call( m_pLogStream->ErrLGNewLogFile( m_pLogStream->GetCurrentFileGen(), fLGOldLogExists ) );
-
+        err = m_pLogStream->ErrLGNewLogFile( m_pLogStream->GetCurrentFileGen(), fLGOldLogExists );
+        // We do not allow log roll after end-of-log-stream has been emitted, do not treat that as a failure here
+        if ( err == JET_errLogWriteFail )
+        {
+            ERR errT;
+            if ( m_pLog->FNoMoreLogWrite( &errT ) && errT == errLogServiceStopped && m_pLogStream->FLogEndEmitted() )
+            {
+                err = JET_errSuccess;
+            }
+        }
+        Call( err );
     }
 
 HandleError:
@@ -3095,6 +3102,16 @@ Repeat:
         (VOID)FWakeWaitingQueue( &lgposToWriteT );
 
         Call( ErrERRCheck( JET_errLogWriteFail ) );
+    }
+
+    if ( m_pLogStream->FLogEndEmitted() )
+    {
+        Assert( m_pLog->FNoMoreLogWrite( &err ) && err == errLogServiceStopped );
+        AssertTrack( m_pbWrite == m_pbEntry, "LogBufferNonEmptyAfterLogEndEmitted" );
+        Assert( m_pbLGFileEnd == NULL || m_pbLGFileEnd == m_pbWrite );
+        m_critLGBuf.Leave();
+        err = JET_errSuccess;
+        goto HandleError;
     }
 
     if ( !m_pLogStream->FLGFileOpened() )

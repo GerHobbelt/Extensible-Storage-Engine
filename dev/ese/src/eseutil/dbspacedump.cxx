@@ -47,8 +47,8 @@ static WCHAR g_rgCommas []  = L",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
 
 INLINE const WCHAR * WszFillBuffer_(
     __in_ecount_z( cchPatternBuffer ) const WCHAR * wszPatternBuffer,
-    __in SIZE_T         cchPatternBuffer,
-    __in SIZE_T         cchDesiredLength
+    _In_ SIZE_T         cchPatternBuffer,
+    _In_ SIZE_T         cchDesiredLength
     )
 {
     assert( cchPatternBuffer >= 1 );
@@ -63,8 +63,8 @@ INLINE const WCHAR * WszFillBuffer_(
 }
 
 INLINE const WCHAR * WszFillBuffer(
-    __in const WCHAR    wchPattern,
-    __in SIZE_T         cchDesiredLength
+    _In_ const WCHAR    wchPattern,
+    _In_ SIZE_T         cchDesiredLength
     )
 {
     switch ( wchPattern )
@@ -93,7 +93,7 @@ INLINE const WCHAR * WszFillBuffer(
 
 INLINE ULONG CchCountOfChar(
     __in_z const WCHAR * const  wszString,
-    __in const WCHAR        wchChar
+    _In_ const WCHAR        wchChar
     )
 {
     ULONG   cchChar = 0;
@@ -586,7 +586,7 @@ VOID PrintCA(
 
 VOID PrintA(
     _In_ const ULONG        eField,
-    __in const JET_HISTO *  phisto
+    _In_ const JET_HISTO *  phisto
     )
 {
     CStats * pStats = CStatsFromPv( phisto );
@@ -603,8 +603,8 @@ VOID PrintA(
 VOID PrintHisto(
     _In_ const ULONG            eField,
     _In_reads_(cDivisions) const STAT::SAMPLE * rgDivisions,
-    __in const size_t           cDivisions,
-    __in const JET_HISTO *      phisto
+    _In_ const size_t           cDivisions,
+    _In_ const JET_HISTO *      phisto
     )
 {
     CStats * pStats = CStatsFromPv( phisto );
@@ -636,8 +636,8 @@ VOID PrintHisto(
                                             ))
 
 void PrintFieldSep (
-    __in const ESEUTIL_SPACE_DUMP_CTX * const   pespCtx,
-    __in ULONG ieField
+    _In_ const ESEUTIL_SPACE_DUMP_CTX * const   pespCtx,
+    _In_ ULONG ieField
     )
 {
     wprintf( L"%ws", ( ieField != (pespCtx->cFields - 1) ) ? pespCtx->rgwchSep : L"\n" );
@@ -645,8 +645,8 @@ void PrintFieldSep (
 
 
 void PrintNullField(
-    __in const ESEUTIL_SPACE_DUMP_CTX * const   pespCtx,
-    __in ULONG eField
+    _In_ const ESEUTIL_SPACE_DUMP_CTX * const   pespCtx,
+    _In_ ULONG eField
     )
 {
     ULONG cSep = CchCountOfChar( rgSpaceFields[eField].wszSubFields, L',' );
@@ -796,8 +796,8 @@ ULONG PgnoMaxOwned( const BTREE_STATS_SPACE_TREES * const pSpaceTrees )
 
 
 JET_ERR ErrPrintField(
-    __in const ESEUTIL_SPACE_DUMP_CTX * const           pespCtx,
-    __in const BTREE_STATS * const                      pBTStats,
+    _In_ const ESEUTIL_SPACE_DUMP_CTX * const           pespCtx,
+    _In_ const BTREE_STATS * const                      pBTStats,
     _In_ const BTREE_POST_COMPUTED_SPACE_STATS * const  pComputedStats,
     _In_ const ULONG                                    eField
     )
@@ -821,7 +821,7 @@ JET_ERR ErrPrintField(
             if ( eField == eSPFieldNameFull )
             {
                 // This is the whole point of eSPFieldNameFull, lets assert we're achieving our goal.
-                assert( rgSpaceFields[eField].cchFieldSize >= ( cchFieldAdjust + wcslen(pBTStats->pBasicCatalog->rgName) ) );
+                assert( rgSpaceFields[eField].cchFieldSize >= ( cchFieldAdjust + LOSStrLengthW(pBTStats->pBasicCatalog->rgName) ) );
             }
 
             wprintf(L"%-*.*ws", rgSpaceFields[eField].cchFieldSize-cchFieldAdjust,
@@ -833,7 +833,7 @@ JET_ERR ErrPrintField(
         {
             assert( pBTStats->pBasicCatalog );
             // check for truncation
-            assert( rgSpaceFields[eField].cchFieldSize >= wcslen(WszTableOfStats( pBTStats )) );
+            assert( rgSpaceFields[eField].cchFieldSize >= (ULONG)LOSStrLengthW(WszTableOfStats( pBTStats )) );
 
             wprintf(L"%-*.*ws", rgSpaceFields[eField].cchFieldSize,
                             rgSpaceFields[eField].cchFieldSize,
@@ -1397,8 +1397,8 @@ JET_ERR ErrPrintField(
                 WCHAR wszSpaceHintsGrbits[12];
                 const JET_ERR err = ErrOSStrCbFormatW( wszSpaceHintsGrbits, sizeof(wszSpaceHintsGrbits), L"0x%x", pBTStats->pBasicCatalog->pSpaceHints->grbit );
                 assert( JET_errSuccess == err );
-                assert( rgSpaceFields[eField].cchFieldSize >= wcslen( wszSpaceHintsGrbits ) );
-                wprintf( L"%ws%ws", WszFillBuffer( L' ', rgSpaceFields[eField].cchFieldSize - wcslen( wszSpaceHintsGrbits ) ), wszSpaceHintsGrbits );
+                assert( rgSpaceFields[eField].cchFieldSize >= (ULONG)LOSStrLengthW( wszSpaceHintsGrbits ) );
+                wprintf( L"%ws%ws", WszFillBuffer( L' ', rgSpaceFields[eField].cchFieldSize - LOSStrLengthW( wszSpaceHintsGrbits ) ), wszSpaceHintsGrbits );
             }
             else
             {
@@ -1465,7 +1465,7 @@ JET_ERR ErrPrintField(
 //  Space dump context processing...
 //
 
-JET_ERR ErrSpaceDumpCtxInit( __out void ** ppvContext )
+JET_ERR ErrSpaceDumpCtxInit( _Out_ void ** ppvContext )
 {
     JET_ERR err = JET_errSuccess;
 
@@ -1500,7 +1500,7 @@ JET_ERR ErrSpaceDumpCtxInit( __out void ** ppvContext )
 
 JET_ERR ErrSpaceDumpCtxGetGRBIT(
     __inout void *                      pvContext,
-    __out JET_GRBIT *                   pgrbit )
+    _Out_ JET_GRBIT *                   pgrbit )
 {
     JET_ERR err = JET_errSuccess;
     ESEUTIL_SPACE_DUMP_CTX * pespCtx = (ESEUTIL_SPACE_DUMP_CTX*)pvContext;
@@ -1562,8 +1562,8 @@ WCHAR wszAllFieldsCmd [] = L"#all";
 
     
 void PrintSpaceDumpHelp(
-    __in const ULONG                    cchLineWidth,
-    __in const WCHAR                    wchNewLine,
+    _In_ const ULONG                    cchLineWidth,
+    _In_ const WCHAR                    wchNewLine,
     __in_z const WCHAR *                wszTab1,
     __in_z const WCHAR *                wszTab2 )
 {
@@ -1571,7 +1571,7 @@ void PrintSpaceDumpHelp(
     wprintf( L"%c", wchNewLine );
     wprintf( L"%wsSPACE USAGE OPTIONS:%c", wszTab1, wchNewLine );
 
-#if DEBUG
+#ifdef DEBUG
     // 'Detailed' sounds a little bit vague...
     wprintf( L"%ws%ws     /d[<n>]       - Prints more detailed information on trees.%c", wszTab1, wszTab2, wchNewLine );
     wprintf( L"%ws%ws                      /d1 - Prints space trees (default).%c", wszTab1, wszTab2, wchNewLine );
@@ -1584,7 +1584,7 @@ void PrintSpaceDumpHelp(
     wprintf( L"%ws%ws     - Space info fields to print. Sets of fields%c", wszTab1, wszTab2, wchNewLine );
 
     wprintf( L"%ws%ws       Sets of fields:%c", wszTab1, wszTab2, wchNewLine );
-    assert( 29 == wcslen(wszTab1) + wcslen(wszTab2) );  // text will need re-calibration
+    assert( 29 == LOSStrLengthW(wszTab1) + LOSStrLengthW(wszTab2) );  // text will need re-calibration
     wprintf( L"%ws%ws         /f#spacehints - Prints the spacehint settings%c", wszTab1, wszTab2, wchNewLine );
     wprintf( L"%ws%ws                         for the object.%c", wszTab1, wszTab2, wchNewLine );
     wprintf( L"%ws%ws         /f#default    - Produces default output.%c", wszTab1, wszTab2, wchNewLine );
@@ -1605,7 +1605,7 @@ void PrintSpaceDumpHelp(
     wprintf( L"%ws%ws       Independent fields:%c", wszTab1, wszTab2, wchNewLine );
 
     ULONG cchUsed = 0;
-    const ULONG cchTab = (ULONG) ( wcslen(wszTab1) + wcslen(wszTab2) + 4 );
+    const ULONG cchTab = (ULONG) ( LOSStrLengthW(wszTab1) + LOSStrLengthW(wszTab2) + 4 );
 
     for( ULONG eField = 1; eField < _countof(rgSpaceFields); eField++ )
     {
@@ -1618,10 +1618,10 @@ void PrintSpaceDumpHelp(
 
         const WCHAR * wszDelimator = FLastField(eField) ? L"" : L", ";
         if ( ( cchTab == cchUsed ) || // first check ensures 1 field printed ...
-            ( ( wcslen(wszDelimator) + cchUsed + wcslen(rgSpaceFields[eField].wszField) ) < cchLineWidth ) )
+            ( ( LOSStrLengthW(wszDelimator) + cchUsed + LOSStrLengthW(rgSpaceFields[eField].wszField) ) < cchLineWidth ) )
         {
             wprintf( L"%ws%ws", rgSpaceFields[eField].wszField, wszDelimator );
-            cchUsed += (ULONG) ( wcslen(rgSpaceFields[eField].wszField) + wcslen(wszDelimator) );
+            cchUsed += (ULONG) ( LOSStrLengthW(rgSpaceFields[eField].wszField) + LOSStrLengthW(wszDelimator) );
         }
         else
         {
@@ -1667,7 +1667,7 @@ JET_ERR ErrSpaceDumpCtxSetFields(
     for( ULONG eField = 0; eField < sizeof(rgSpaceFields)/sizeof(rgSpaceFields[0]); eField++ )
     {
         assert( eField == (ULONG)rgSpaceFields[eField].eField );
-        assert( (ULONG)wcslen(rgSpaceFields[eField].wszField) <= rgSpaceFields[eField].cchFieldSize );  // field header larger than field width.
+        assert( (ULONG)LOSStrLengthW(rgSpaceFields[eField].wszField) <= rgSpaceFields[eField].cchFieldSize );  // field header larger than field width.
     }
 #endif
 
@@ -1706,7 +1706,7 @@ JET_ERR ErrSpaceDumpCtxSetFields(
         ULONG cb = sizeof(WCHAR);   // for NUL
         for( ULONG eField = 1; eField < sizeof(rgSpaceFields)/sizeof(rgSpaceFields[0]); eField++ )
         {
-            cb += (ULONG)( sizeof(WCHAR) * ( 1 + wcslen(rgSpaceFields[eField].wszField) ) );
+            cb += (ULONG)( sizeof(WCHAR) * ( 1 + LOSStrLengthW(rgSpaceFields[eField].wszField) ) );
         }
         WCHAR * wszTemp;
         Alloc( wszTemp = (WCHAR*)malloc( cb ) );
@@ -1731,7 +1731,7 @@ JET_ERR ErrSpaceDumpCtxSetFields(
     }
 
     //  If the last character was a comma, we have over allocated.
-    ULONG cchFields = (ULONG) ( wszFields ? wcslen(wszFields) : 0 );
+    ULONG cchFields = (ULONG) ( wszFields ? LOSStrLengthW(wszFields) : 0 );
     if ( cchFields && wszFields[cchFields-1] == L',' )
     {
         assert( cb >= sizeof(E_SP_FIELD) );
@@ -1771,7 +1771,7 @@ JET_ERR ErrSpaceDumpCtxSetFields(
         }
         else
         {
-            wszField = wszField + wcslen(wszField);
+            wszField = wszField + LOSStrLengthW(wszField);
         }
     }
     assert( wszField == NULL || wszField[0] == L'\0' );
@@ -1799,7 +1799,7 @@ JET_ERR ErrSpaceDumpCtxSetOptions(
     __in_opt const ULONG *              pcbPageSize,
     __in_opt const JET_GRBIT *          pgrbitAdditional,
     __in_z_opt const PWSTR              wszSeparator,
-    __in const SPDUMPOPTS               fSPDumpOpts
+    _In_ const SPDUMPOPTS               fSPDumpOpts
     )
 {
     JET_ERR err = JET_errSuccess;
@@ -1864,8 +1864,8 @@ JET_ERR ErrSpaceDumpCtxSetOptions(
 }
 
 ULONG CpgSpaceDumpGetOwnedNonShelved(
-    __in const ESEUTIL_SPACE_DUMP_CTX * const pespCtx,
-    __in const BTREE_SPACE_EXTENT_INFO * const pextOwned )
+    _In_ const ESEUTIL_SPACE_DUMP_CTX * const pespCtx,
+    _In_ const BTREE_SPACE_EXTENT_INFO * const pextOwned )
 {
     if ( pextOwned->pgnoLast <= pespCtx->pgnoLast )
     {
@@ -1920,9 +1920,9 @@ ULONG CpgSpaceDumpGetOwnedNonShelved(
 }
 
 ULONG CpgSpaceDumpGetExtPagesEof(
-    __in const ESEUTIL_SPACE_DUMP_CTX * const pespCtx,
-    __in const BTREE_SPACE_EXTENT_INFO * const prgext,
-    __in const ULONG cext )
+    _In_ const ESEUTIL_SPACE_DUMP_CTX * const pespCtx,
+    _In_ const BTREE_SPACE_EXTENT_INFO * const prgext,
+    _In_ const ULONG cext )
 {
     ULONG cpgEof = 0;
 
@@ -1939,7 +1939,7 @@ ULONG CpgSpaceDumpGetExtPagesEof(
 
 
 ULONG /* cch */ EseutilSpaceDumpTableWidth(
-    __in const ESEUTIL_SPACE_DUMP_CTX * const       pespCtx
+    _In_ const ESEUTIL_SPACE_DUMP_CTX * const       pespCtx
     )
 {
     ULONG cchTableWidth = 0;
@@ -1951,8 +1951,8 @@ ULONG /* cch */ EseutilSpaceDumpTableWidth(
 }
 
 JET_ERR EseutilSpaceDumpPrintHeadersAndDbRoot(
-    __in const BTREE_STATS * const      pDbRoot,
-    __in ESEUTIL_SPACE_DUMP_CTX *       pespCtx )
+    _In_ const BTREE_STATS * const      pDbRoot,
+    _In_ ESEUTIL_SPACE_DUMP_CTX *       pespCtx )
 {
     JET_ERR err = JET_errSuccess;
 
@@ -1967,10 +1967,10 @@ JET_ERR EseutilSpaceDumpPrintHeadersAndDbRoot(
     wprintf( L"        PageSize: %d\n\n", pespCtx->cbPageSize );
 
     WCHAR * wszSpaceDump = L"******************************** SPACE DUMP *******";
-    ULONG cchTableWidth = (ULONG) max( wcslen( wszSpaceDump ), EseutilSpaceDumpTableWidth( pespCtx ) );
+    ULONG cchTableWidth = (ULONG) max( (ULONG)LOSStrLengthW( wszSpaceDump ), EseutilSpaceDumpTableWidth( pespCtx ) );
     ULONG cchTableLeft = cchTableWidth;
     wprintf( L"%ws", wszSpaceDump );
-    cchTableLeft -= (ULONG) wcslen( wszSpaceDump );
+    cchTableLeft -= (ULONG) LOSStrLengthW( wszSpaceDump );
     for( ULONG ieField = 0; cchTableLeft && ieField < pespCtx->cFields; ieField++ )
     {
         ULONG cchField = rgSpaceFields[pespCtx->rgeFields[ieField]].cchFieldSize + 1;
@@ -1996,7 +1996,7 @@ JET_ERR EseutilSpaceDumpPrintHeadersAndDbRoot(
         {
             wprintf( L"%ws%ws",
                         rgSpaceFields[pespCtx->rgeFields[ieField]].wszField,
-                        WszFillBuffer( L' ', rgSpaceFields[pespCtx->rgeFields[ieField]].cchFieldSize - wcslen( rgSpaceFields[pespCtx->rgeFields[ieField]].wszField ) ) );
+                        WszFillBuffer( L' ', rgSpaceFields[pespCtx->rgeFields[ieField]].cchFieldSize - LOSStrLengthW( rgSpaceFields[pespCtx->rgeFields[ieField]].wszField ) ) );
         }
         else
         {
@@ -2006,14 +2006,14 @@ JET_ERR EseutilSpaceDumpPrintHeadersAndDbRoot(
             {
                 // In CSV mode, we must keep the right number of CSV fields, or we won't be "CSV compliant"
                 wprintf( L"%ws%ws%ws",
-                        WszFillBuffer( L' ', rgSpaceFields[pespCtx->rgeFields[ieField]].cchFieldSize - wcslen( rgSpaceFields[pespCtx->rgeFields[ieField]].wszField ) - cExtraDelimitters ),
+                        WszFillBuffer( L' ', rgSpaceFields[pespCtx->rgeFields[ieField]].cchFieldSize - LOSStrLengthW( rgSpaceFields[pespCtx->rgeFields[ieField]].wszField ) - cExtraDelimitters ),
                         WszFillBuffer( L',', cExtraDelimitters  ),
                         rgSpaceFields[pespCtx->rgeFields[ieField]].wszField );
             }
             else
             {
                 wprintf( L"%ws%ws",
-                        WszFillBuffer( L' ', rgSpaceFields[pespCtx->rgeFields[ieField]].cchFieldSize - wcslen( rgSpaceFields[pespCtx->rgeFields[ieField]].wszField ) ),
+                        WszFillBuffer( L' ', rgSpaceFields[pespCtx->rgeFields[ieField]].cchFieldSize - LOSStrLengthW( rgSpaceFields[pespCtx->rgeFields[ieField]].wszField ) ),
                         rgSpaceFields[pespCtx->rgeFields[ieField]].wszField );
             }
         }
@@ -2066,8 +2066,8 @@ HandleError:
 }
 
 JET_ERR EseutilPrintSpecifiedSpaceFields(
-    __in const ESEUTIL_SPACE_DUMP_CTX * const   pespCtx,
-    __in const BTREE_STATS * const              pBTreeStats
+    _In_ const ESEUTIL_SPACE_DUMP_CTX * const   pespCtx,
+    _In_ const BTREE_STATS * const              pBTreeStats
     )
 {
     JET_ERR err = JET_errSuccess;
@@ -2331,7 +2331,7 @@ JET_ERR EseutilPrintSpaceTrees(
 
 
 
-BOOL FChildOfDbRoot( __in const BTREE_STATS * const pBTreeStats )
+BOOL FChildOfDbRoot( _In_ const BTREE_STATS * const pBTreeStats )
 {
     if ( pBTreeStats->pParent == NULL )
         return fFalse;
@@ -2339,7 +2339,7 @@ BOOL FChildOfDbRoot( __in const BTREE_STATS * const pBTreeStats )
         return fFalse;
     return fTrue;
 }
-BOOL FChildOfTable( __in const BTREE_STATS * const pBTreeStats )
+BOOL FChildOfTable( _In_ const BTREE_STATS * const pBTreeStats )
 {
     if ( pBTreeStats->pParent == NULL )
         return fFalse;
@@ -2347,7 +2347,7 @@ BOOL FChildOfTable( __in const BTREE_STATS * const pBTreeStats )
         return fFalse;
     return fTrue;
 }
-BOOL FChildOfLV( __in const BTREE_STATS * const pBTreeStats )
+BOOL FChildOfLV( _In_ const BTREE_STATS * const pBTreeStats )
 {
     if ( pBTreeStats->pParent == NULL )
         return fFalse;
@@ -2355,7 +2355,7 @@ BOOL FChildOfLV( __in const BTREE_STATS * const pBTreeStats )
         return fFalse;
     return fTrue;
 }
-BOOL FChildOfSecIdx( __in const BTREE_STATS * const pBTreeStats )
+BOOL FChildOfSecIdx( _In_ const BTREE_STATS * const pBTreeStats )
 {
     if ( pBTreeStats->pParent == NULL )
         return fFalse;
@@ -2450,8 +2450,8 @@ void EseutilCalculateLastAvailableDbLogicalExtentRange(
 
 void EseutilTrackSpace(
     __inout ESEUTIL_SPACE_DUMP_CTX * const  pespCtx,
-    __in const BTREE_STATS * const          pBTreeStats,
-    __in const JET_BTREETYPE                eBTType
+    _In_ const BTREE_STATS * const          pBTreeStats,
+    _In_ const JET_BTREETYPE                eBTType
     )
 {
     if ( !( pBTreeStats->pSpaceTrees && pBTreeStats->pParentOfLeaf ) )
@@ -2675,8 +2675,8 @@ void EseutilTrackSpace(
 }
 
 JET_ERR EseutilEvalBTreeData(
-    __in const BTREE_STATS * const      pBTreeStats,
-    __in JET_API_PTR                    pvContext )
+    _In_ const BTREE_STATS * const      pBTreeStats,
+    _In_ JET_API_PTR                    pvContext )
 {
     ESEUTIL_SPACE_DUMP_CTX * pespCtx = (ESEUTIL_SPACE_DUMP_CTX *)pvContext;
     JET_ERR err = JET_errSuccess;
@@ -2961,7 +2961,7 @@ void EseutilTrackSpaceComplete(
     
 JET_ERR ErrSpaceDumpCtxComplete(
     __inout void *          pvContext,
-    __in JET_ERR            err )
+    _In_ JET_ERR            err )
 {
     ESEUTIL_SPACE_DUMP_CTX * pespCtx = (ESEUTIL_SPACE_DUMP_CTX *)pvContext;
 
@@ -3248,8 +3248,8 @@ LOCAL VOID DBUTLPrintfIntN( INT iValue, INT ichMax )
 }
 
 JET_ERR ErrLegacySpaceDumpEvalBTreeData(
-    __in const BTREE_STATS * const      pBTreeStats,
-    __in JET_API_PTR                    pvContext )
+    _In_ const BTREE_STATS * const      pBTreeStats,
+    _In_ JET_API_PTR                    pvContext )
 {
     ULONG * pcpgAvailTotal = (ULONG*)pvContext;
 
@@ -3376,7 +3376,7 @@ JET_ERR JetLegacyDBSpaceDump( JET_DBUTIL_W * pdbutilW )
     return err;
 }
 
-#if DEBUG
+#ifdef DEBUG
 // Calls EseutilCalculateLastAvailableDbLogicalExtentRange and verifies that the returned
 // result is correct.
 void EseutilITestDbspacedump(
@@ -3408,7 +3408,7 @@ void EseutilITestDbspacedump(
 // Set up some fake AE/OE arrays, and call EseutilITestDbspacedump.
 void EseutilDbspacedumpUnitTest()
 {
-#if DEBUG
+#ifdef DEBUG
     BTREE_SPACE_EXTENT_INFO rgOETwoExtent[] =
     {
         { ulsppAvailExtLegacyGeneralPool, 8, 8, 1 },

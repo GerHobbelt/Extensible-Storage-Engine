@@ -1173,7 +1173,7 @@ namespace DBMScanObserverCleanupFactory
     ERR ErrCreateDBMScanObserverCleanup(
             INST * const pinst,
             const IFMP ifmp,
-            __out DBMScanObserver ** pobserver );
+            _Out_ DBMScanObserver ** pobserver );
 }
 
 //  ================================================================
@@ -1200,7 +1200,7 @@ protected:
     friend ERR DBMScanObserverCleanupFactory::ErrCreateDBMScanObserverCleanup(
             INST * const pinst,
             const IFMP ifmp,
-            __out DBMScanObserver ** pobserver );
+            _Out_ DBMScanObserver ** pobserver );
     DBMScanObserverCleanup( PIB * const ppib, const IFMP ifmp );
 
     ERR ErrGetHighestCommittedObjid_();
@@ -1219,7 +1219,7 @@ protected:
     ERR ErrCleanupLVPage_( CSR * const pcsr );
     ERR ErrZeroLV_( CSR * const pcsr, const INT iline );
     ERR ErrZeroLVChunks_(
-            __in CSR * const    pcsrRoot,
+            _In_ CSR * const    pcsrRoot,
             const OBJID         objid,
             const LvId          lid,
             const ULONG         ulSize );
@@ -1315,12 +1315,12 @@ HandleError:
 // namespace members that should not appear in the header
 namespace DBMScanFactory
 {
-    ERR ErrPdbmScanCreateForRecovery_( const IFMP ifmp, __out IDBMScan ** pdbmscan );
-    ERR ErrPdbmScanCreate_( const IFMP ifmp, __out IDBMScan ** pdbmscan );
+    ERR ErrPdbmScanCreateForRecovery_( const IFMP ifmp, _Out_ IDBMScan ** pdbmscan );
+    ERR ErrPdbmScanCreate_( const IFMP ifmp, _Out_ IDBMScan ** pdbmscan );
 }
 
 // Create a scan object to perform a scan during recovery. Cleanup is not performed.
-ERR DBMScanFactory::ErrPdbmScanCreateForRecovery_( const IFMP ifmp, __out IDBMScan ** pdbmscan )
+ERR DBMScanFactory::ErrPdbmScanCreateForRecovery_( const IFMP ifmp, _Out_ IDBMScan ** pdbmscan )
 {
     ERR err = JET_errSuccess;
     
@@ -1364,7 +1364,7 @@ HandleError:
 
 // Create a scan object to perform a scan during runtime. This is used when a
 // scan is started at database attach time. 
-ERR DBMScanFactory::ErrPdbmScanCreate_( const IFMP ifmp, __out IDBMScan ** pdbmscan )
+ERR DBMScanFactory::ErrPdbmScanCreate_( const IFMP ifmp, _Out_ IDBMScan ** pdbmscan )
 {
     ERR err = JET_errSuccess;
     
@@ -1435,7 +1435,7 @@ ERR DBMScanFactory::ErrPdbmScanCreateSingleScan(
     const INT csecMax,
     const INT cmsecSleep,
     const JET_CALLBACK pfnCallback,
-    __out IDBMScan ** pdbmscan )
+    _Out_ IDBMScan ** pdbmscan )
 {
     ERR err = JET_errSuccess;
     
@@ -1500,7 +1500,7 @@ HandleError:
 }
 
 // Create a scan object for automatic scan (i.e. a scan not started by JetDatabaseScan, or started by JetDatabaseScan with JET_bitDatabaseScanBatchStartContinuous)
-ERR DBMScanFactory::ErrPdbmScanCreate( const IFMP ifmp, __out IDBMScan ** pdbmscan )
+ERR DBMScanFactory::ErrPdbmScanCreate( const IFMP ifmp, _Out_ IDBMScan ** pdbmscan )
 {
     *pdbmscan = NULL;
     if ( PinstFromIfmp( ifmp )->FRecovering() )
@@ -1735,14 +1735,14 @@ VOID DBMScanFormatOpticalTime_( const __int64 ft, __out_ecount( cchLastFullCompl
     {
         size_t cwchRequired;
         CallS( ErrUtilFormatFileTimeAsDate( ft, wszLastFullCompletionTime, cchLastFullCompletionTime, &cwchRequired ) );
-        ULONG ichCurr = wcslen( wszLastFullCompletionTime );
+        ULONG ichCurr = LOSStrLengthW( wszLastFullCompletionTime );
         if ( ichCurr < cchLastFullCompletionTime - 2 )  // should always be true
         {
             wszLastFullCompletionTime[ichCurr] = L' ';
             wszLastFullCompletionTime[ichCurr+1] = L'\0';
             ichCurr++;
         }
-        Assert( ichCurr == wcslen( wszLastFullCompletionTime ) );
+        Assert( ichCurr == (size_t)LOSStrLengthW( wszLastFullCompletionTime ) );
         CallS( ErrUtilFormatFileTimeAsTimeWithSeconds( ft,
                         wszLastFullCompletionTime + ichCurr,
                         cchLastFullCompletionTime - ichCurr,
@@ -3144,7 +3144,7 @@ void DBMScanObserverPerfmon::ReadPage_( const IDBMScanState * const, const PGNO 
 ERR DBMScanObserverCleanupFactory::ErrCreateDBMScanObserverCleanup(
         INST * const pinst,
         const IFMP ifmp,
-        __out DBMScanObserver ** pobserver )
+        _Out_ DBMScanObserver ** pobserver )
 {
     ERR err;
     PIB * ppib = ppibNil;
@@ -3779,7 +3779,7 @@ HandleError:
 // 
 // Important: this call may release the page in case of failure.
 ERR DBMScanObserverCleanup::ErrZeroLVChunks_(
-    __in CSR * const    pcsrRoot,
+    _In_ CSR * const    pcsrRoot,
     const OBJID         objid,
     const LvId          lid,
     const ULONG         ulSize )
@@ -4117,7 +4117,7 @@ ERR DBMScanObserverCleanup::ErrOpenTableGetFucb_( const OBJID objid, BOOL* const
     {
         if ( err >= JET_errSuccess )
         {
-            err = ErrFILEOpenTable( m_ppib, m_ifmp, ppfucbTable, szTableName );
+            err = ErrFILEOpenTable( m_ppib, m_ifmp, ppfucbTable, szTableName, JET_bitTableAllowSensitiveOperation );
         }
     }
 
@@ -4203,6 +4203,11 @@ void DBMObjectCache::CacheObjectFucb( FUCB * const pfucb, const OBJID objid )
         Assert( m_rgstate[index].pfucb == pfucbNil );
     }
 
+#ifndef ENABLE_JET_UNIT_TEST
+    // There are tests that get here with a NULL pointer.
+    pfucb->m_iae.SetProtected();
+#endif
+
     m_rgstate[index].objid = objid;
     m_rgstate[index].ois = ois::Valid;
     m_rgstate[index].pfucb = pfucb;
@@ -4242,7 +4247,7 @@ void DBMObjectCache::CloseCachedObjectsWithPendingDeletes()
 {
     for( INT i = 0; i < m_cobjectsMax; ++i )
     {
-        if( pfucbNil != m_rgstate[i].pfucb && m_rgstate[i].pfucb->u.pfcb->FDeletePending() )
+        if ( ( pfucbNil != m_rgstate[i].pfucb ) && m_rgstate[i].pfucb->u.pfcb->FDeletePending() )
         {
             CloseObjectAt_( i );
         }
@@ -4303,7 +4308,11 @@ void DBMObjectCache::CloseObjectAt_( const INT index )
     if ( pfucbNil != m_rgstate[index].pfucb )
     {
         Assert( ois::Valid == m_rgstate[index].ois );
+
 #ifndef ENABLE_JET_UNIT_TEST
+        Assert( m_rgstate[index].pfucb->m_iae.FProtected() );
+        m_rgstate[index].pfucb->m_iae.ResetProtected();
+        
         if ( m_rgstate[index].pfucb->u.pfcb->FTypeLV() )
         {
             DIRClose( m_rgstate[index].pfucb );

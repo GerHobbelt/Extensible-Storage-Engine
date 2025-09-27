@@ -143,7 +143,7 @@ void OSSysTraceStationId( const DWORD /* TraceStationIdentificationReason */ tsi
 
 //  helpers for private feature staging checks (FUtilSystemBetaFeatureEnabled)
 
-enum UtilSystemBetaSiteMode;    //  usbsm
+enum UtilSystemBetaSiteMode : ULONG;    //  usbsm
 
 // stored in .fStaticFeature (normally just use a bool, but want to make sure it can't
 // get confused with the real values of true/false we pass back).
@@ -189,11 +189,11 @@ enum EseBetaFeatures
 
 inline BOOL FUtilSystemBetaFeatureEnabled_( const INST * const pinst, BOOL * const rgfStaticFeatures, const UtilSystemBetaSiteMode usbsmCurrent, const ULONG featureid, PCWSTR const wszFeatureName, const BOOL fTestStagingOnly = fFalse )
 {
-    extern INT usbsmPrimaryEnvironments;
-    extern INT usbsmExFeatures;
+    extern UtilSystemBetaSiteMode usbsmPrimaryEnvironments;
+    extern UtilSystemBetaSiteMode usbsmExFeatures;
 
-    const INT usbsmStageCurrent = usbsmCurrent & usbsmPrimaryEnvironments;
-    const INT usbsmFeatureCurrent = usbsmCurrent & usbsmExFeatures;
+    const UtilSystemBetaSiteMode usbsmStageCurrent = (UtilSystemBetaSiteMode)( usbsmCurrent & usbsmPrimaryEnvironments );
+    const UtilSystemBetaSiteMode usbsmFeatureCurrent = (UtilSystemBetaSiteMode)( usbsmCurrent & usbsmExFeatures );
 
     //  While the g_rgbetaconfigs table may use flags to enable, the actual setting _should_ be
     //  a single bit - environment.

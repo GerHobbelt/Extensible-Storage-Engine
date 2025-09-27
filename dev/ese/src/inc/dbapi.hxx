@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-ERR ErrDBOpenDatabase( PIB *ppib, __in PCWSTR wszDatabaseName, IFMP *pifmp, ULONG grbit );
+extern BOOL g_fExtentPageCountCacheCreateOverride;
+
+ERR ErrDBOpenDatabase( PIB *ppib, _In_ PCWSTR wszDatabaseName, IFMP *pifmp, ULONG grbit );
 ERR ErrDBCloseDatabase( PIB *ppib, IFMP ifmp, ULONG grbit );
 ERR ErrUtilWriteAttachedDatabaseHeaders(    const INST* const           pinst,
                                             IFileSystemAPI *const       pfsapi,
@@ -29,6 +31,13 @@ ERR ErrDBOpenDatabaseByIfmp( PIB *ppib, IFMP ifmp );
 CPG CpgDBDatabaseMinMin();
 #endif
 
+
+typedef enum class FEATURECONTROL {
+    NotSpecified = 0,
+    Disable,
+    Enable
+} fc;
+
 ERR ErrDBParseDbParams(
     _In_reads_opt_( csetdbparam )const JET_SETDBPARAM* const    rgsetdbparam,
     _In_ const ULONG                                            csetdbparam,
@@ -38,7 +47,8 @@ ERR ErrDBParseDbParams(
     _Out_opt_ LONG* const                                       pdtickShrinkDatabaseTimeQuota,      // JET_dbparamShrinkDatabaseTimeQuota
     _Out_opt_ CPG* const                                        pcpgShrinkDatabaseSizeLimit,        // JET_dbparamShrinkDatabaseSizeLimit
     _Out_opt_ BOOL* const                                       pfLeakReclaimerEnabled,             // JET_dbparamLeakReclaimerEnabled
-    _Out_opt_ LONG* const                                       pdtickLeakReclaimerTimeQuota );     // JET_dbparamLeakReclaimerTimeQuota
+    _Out_opt_ LONG* const                                       pdtickLeakReclaimerTimeQuota,       // JET_dbparamLeakReclaimerTimeQuota
+    _Out_opt_ FEATURECONTROL* const                             pfcMaintainExtentPageCountCache );  // JET_dbparamMaintainExtentPageCountCache
 
 ERR ErrDBCreateDatabase(
     _In_ PIB                                                    *ppib,

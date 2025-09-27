@@ -227,7 +227,7 @@ LOCAL VOID EDBUTLPrintLogo( void )
     wprintf( L"%c", wchNewLine );
 }
 
-LOCAL VOID EDBUTLHelpDefrag( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelpDefrag( _In_ PCWSTR wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"DEFRAGMENTATION/COMPACTION:%c", wchNewLine );
@@ -257,7 +257,7 @@ LOCAL VOID EDBUTLHelpDefrag( __in PCWSTR wszAppName )
     wprintf( L"                     contain the defragmented version of the database.%c", wchNewLine );
 }
 
-LOCAL VOID EDBUTLHelpRecovery( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelpRecovery( _In_ PCWSTR wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"RECOVERY:%c", wchNewLine );
@@ -322,7 +322,7 @@ LOCAL VOID EDBUTLHelpRecovery( __in PCWSTR wszAppName )
 #endif
 }
 
-LOCAL VOID EDBUTLHelpIntegrity( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelpIntegrity( _In_ PCWSTR wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"INTEGRITY:%c", wchNewLine );
@@ -360,7 +360,7 @@ LOCAL VOID EDBUTLHelpIntegrity( __in PCWSTR wszAppName )
     wprintf( L"                     database operations for the previous shutdown.%c", wchNewLine );
 }
 
-LOCAL VOID EDBUTLHelpChecksum( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelpChecksum( _In_ PCWSTR wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"CHECKSUM:%c", wchNewLine );
@@ -396,7 +396,7 @@ LOCAL VOID EDBUTLHelpChecksum( __in PCWSTR wszAppName )
 }
 
 
-LOCAL VOID EDBUTLHelpCopyFile( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelpCopyFile( _In_ PCWSTR wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"COPY FILE:%c", wchNewLine );
@@ -420,7 +420,7 @@ LOCAL VOID EDBUTLHelpCopyFile( __in PCWSTR wszAppName )
 #endif
 }
 
-LOCAL VOID EDBUTLHelpRepair( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelpRepair( _In_ PCWSTR wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"REPAIR:%c", wchNewLine );
@@ -453,7 +453,7 @@ LOCAL VOID EDBUTLHelpRepair( __in PCWSTR wszAppName )
     wprintf( L"                     overrides the /o option.%c", wchNewLine );
 }
 
-LOCAL VOID EDBUTLHelpDump( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelpDump( _In_ PCWSTR wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"FILE DUMP:%c", wchNewLine );
@@ -545,7 +545,7 @@ LOCAL VOID EDBUTLHelpDump( __in PCWSTR wszAppName )
 }
 
 #ifndef ESENT
-LOCAL VOID EDBUTLHelpHardRecovery( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelpHardRecovery( _In_ PCWSTR wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"RESTORE:%c", wchNewLine );
@@ -590,7 +590,7 @@ LOCAL VOID EDBUTLHelpHardRecovery( __in PCWSTR wszAppName )
 
 #ifdef DEBUG
 
-LOCAL VOID EDBUTLHelpBackup( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelpBackup( _In_ PCWSTR wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"BACKUP:%c", wchNewLine );
@@ -613,7 +613,7 @@ LOCAL VOID EDBUTLHelpBackup( __in PCWSTR wszAppName )
 
 #endif // DEBUG
 
-LOCAL VOID EDBUTLHelpScrub( __in PCWSTR const wszAppName )
+LOCAL VOID EDBUTLHelpScrub( _In_ PCWSTR const wszAppName )
 {
     wprintf( L"%c", wchNewLine );
     wprintf( L"SECURE:%c", wchNewLine );
@@ -630,7 +630,7 @@ LOCAL VOID EDBUTLHelpScrub( __in PCWSTR const wszAppName )
 }
 
 
-LOCAL VOID EDBUTLHelp( __in PCWSTR wszAppName )
+LOCAL VOID EDBUTLHelp( _In_ PCWSTR wszAppName )
 {
     wint_t c;
 
@@ -811,9 +811,9 @@ LOCAL JET_ERR __stdcall PrintStatus( JET_SESID sesid, JET_SNP snp, JET_SNT snt, 
 
                     // Center the status message above the status bar.
                     // Formula is: ( length of status bar - length of message ) / 2
-                    cchOper = wcslen( wszOperation );
-                    assert( cchOper + (ULONG)wcslen( wszStatusMsg ) <= 51 );
-                    cchPadding = ( 51 - ( cchOper + (ULONG)wcslen( wszStatusMsg ) ) ) / 2;
+                    cchOper = LOSStrLengthW( wszOperation );
+                    assert( cchOper + (ULONG)LOSStrLengthW( wszStatusMsg ) <= 51 );
+                    cchPadding = ( 51 - ( cchOper + (ULONG)LOSStrLengthW( wszStatusMsg ) ) ) / 2;
 
                     wprintf( L"          %*s%s%c%c", (INT)(cchPadding+cchOper), wszOperation, wszStatusMsg, wchNewLine, wchNewLine );
                     wprintf( L"          0    10   20   30   40   50   60   70   80   90  100\n" );
@@ -1292,10 +1292,10 @@ LOCAL JET_ERR ErrEDBUTLCheckBackupPath( UTILOPTS *popts )
 }
 #endif
 
-LOCAL BOOL FEDBUTLParsePath(    __in PCWSTR             arg,
+LOCAL BOOL FEDBUTLParsePath(    _In_ PCWSTR             arg,
                                 __deref_inout_z WCHAR **    pwszParam,
                                 __in_z PCWSTR               wszParamDesc,
-                                __in BOOL               fAllowEmpty     = fFalse )
+                                _In_ BOOL               fAllowEmpty     = fFalse )
 {
     BOOL    fResult = fTrue;
 
@@ -1343,11 +1343,11 @@ LOCAL BOOL FEDBUTLParsePath(    __in PCWSTR             arg,
 // Note that if <path1> is just one char long, we have a problem ...
 // The workaround for the user would be to provide full path instead.
 //
-LOCAL BOOL FEDBUTLParseDoublePath(  __in PCWSTR                 arg,
+LOCAL BOOL FEDBUTLParseDoublePath(  _In_ PCWSTR                 arg,
                                     __deref_inout_z PWSTR*      pwszParam1,
                                     __deref_opt_out_opt PWSTR*  pwszParam2,
                                     __in_z PCWSTR                   wszParamDesc,
-                                    __in BOOL                   fAllowEmpty     = fFalse )
+                                    _In_ BOOL                   fAllowEmpty     = fFalse )
 {
     BOOL fResult;
 
@@ -1359,7 +1359,7 @@ LOCAL BOOL FEDBUTLParseDoublePath(  __in PCWSTR                 arg,
         assert( *pwszParam1 );
 
         *pwszParam2 = NULL;
-        if ( wcslen( *pwszParam1 ) >= 2 )
+        if ( LOSStrLengthW( *pwszParam1 ) >= 2 )
         {
             // we start to look for the ":" with the 3rd position (it might be \0 but that's ok)
             WCHAR * wszDelim = wcschr( (*pwszParam1) + 2, L':' );
@@ -1560,7 +1560,7 @@ LOCAL VOID EseutilDumpSpaceCat(
     }
 }
 
-LOCAL BOOL FEDBUTLParseDefragment( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseDefragment( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL    fResult = fTrue;
 
@@ -1640,7 +1640,7 @@ LOCAL BOOL FEDBUTLParseDefragment( __in PCWSTR arg, UTILOPTS *popts )
     return fResult;
 }
 
-LOCAL BOOL FEDBUTLParseRecovery( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseRecovery( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL    fResult = fTrue;
 
@@ -1705,7 +1705,7 @@ LOCAL BOOL FEDBUTLParseRecovery( __in PCWSTR arg, UTILOPTS *popts )
             //
             lgposStop = lgposMax;
 
-            assert( wcslen(arg) >= 2 );
+            assert( LOSStrLengthW(arg) >= 2 );
 
             if ( arg[2] == L'\0' )
             {
@@ -1966,7 +1966,7 @@ LOCAL BOOL FEDBUTLParseRecovery( __in PCWSTR arg, UTILOPTS *popts )
     return fResult;
 }
 
-LOCAL BOOL FEDBUTLParseIntegrity( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseIntegrity( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL        fResult = fTrue;
 
@@ -2016,7 +2016,7 @@ LOCAL BOOL FEDBUTLParseIntegrity( __in PCWSTR arg, UTILOPTS *popts )
     return fResult;
 }
 
-LOCAL BOOL FEDBUTLParseChecksum( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseChecksum( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL        fResult = fTrue;
 
@@ -2047,7 +2047,7 @@ LOCAL BOOL FEDBUTLParseChecksum( __in PCWSTR arg, UTILOPTS *popts )
     return fResult;
 }
 
-LOCAL BOOL FEDBUTLParseRepair( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseRepair( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL    fResult = fTrue;
 
@@ -2097,7 +2097,7 @@ LOCAL BOOL FEDBUTLParseRepair( __in PCWSTR arg, UTILOPTS *popts )
     return fResult;
 }
 
-LOCAL VOID EDBUTLGetBaseName( __in PCWSTR const wszLogfile, __out_ecount(4) WCHAR * const wszBaseName )
+LOCAL VOID EDBUTLGetBaseName( _In_ PCWSTR const wszLogfile, __out_ecount(4) WCHAR * const wszBaseName )
 {
     WCHAR   wszNameT[_MAX_FNAME+1];
 
@@ -2116,10 +2116,10 @@ LOCAL BOOL FEDBUTLBaseNameOnly( const WCHAR * const wszName )
         return fFalse;
 
     _wsplitpath_s( wszName, NULL, 0, NULL, 0, wszFileT, sizeof( wszFileT ) / sizeof( wszFileT[0] ), wszExtT, sizeof( wszExtT ) / sizeof( wszExtT[0] ) );
-    return ( 3 == wcslen( wszFileT ) && 0 == wcslen( wszExtT ) );
+    return ( 3 == LOSStrLengthW( wszFileT ) && 0 == LOSStrLengthW( wszExtT ) );
 }
 
-LOCAL BOOL FEDBUTLParseDump( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseDump( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL    fResult = fFalse;
 
@@ -2228,7 +2228,7 @@ LOCAL BOOL FEDBUTLParseDump( __in PCWSTR arg, UTILOPTS *popts )
                 pdbutil->op = opDBUTILDumpPage;
             }
 
-            assert( wcslen(arg) >= 2 );
+            assert( LOSStrLengthW(arg) >= 2 );
 
             fResult = fTrue;
             if ( pdbutil->op != opDBUTILDumpSpaceCategory && pdbutil->op != opDBUTILDumpRBSHeader ) 
@@ -2251,7 +2251,7 @@ LOCAL BOOL FEDBUTLParseDump( __in PCWSTR arg, UTILOPTS *popts )
                 fResult = fFalse;
                 
                 // opDBUTILDumpSpaceCategory can take a range.
-                const SIZE_T cchArg = wcslen( arg + 2 );
+                const SIZE_T cchArg = LOSStrLengthW( arg + 2 );
                 LONG pgnoFirst, pgnoLast;
 
                 if ( arg[2] == '*' )
@@ -2288,7 +2288,7 @@ LOCAL BOOL FEDBUTLParseDump( __in PCWSTR arg, UTILOPTS *popts )
                  fResult = fFalse;
                 
                 // opDBUTILDumpSpaceCategory can take a range.
-                const SIZE_T cchArg = wcslen( arg + 2 );
+                const SIZE_T cchArg = LOSStrLengthW( arg + 2 );
                 LONG pgnoFirst, pgnoLast;
                 if ( wcsstr( arg + 2, L":max" ) != NULL )
                 {
@@ -2503,7 +2503,7 @@ LOCAL BOOL FEDBUTLParseDump( __in PCWSTR arg, UTILOPTS *popts )
     return fResult;
 }
 
-LOCAL BOOL FEDBUTLParseHardRecovery( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseHardRecovery( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL    fResult = fTrue;
 
@@ -2564,7 +2564,7 @@ LOCAL BOOL FEDBUTLParseHardRecovery( __in PCWSTR arg, UTILOPTS *popts )
 
 #ifdef DEBUG
 
-LOCAL BOOL FEDBUTLParseBackup( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseBackup( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL    fResult = fFalse;   // backup directory must be set at least.
 
@@ -2597,7 +2597,7 @@ LOCAL BOOL FEDBUTLParseBackup( __in PCWSTR arg, UTILOPTS *popts )
 
 #endif  //  DEBUG
 
-LOCAL BOOL FEDBUTLParseScrub( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseScrub( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL    fResult = fTrue;
 
@@ -2618,7 +2618,7 @@ LOCAL BOOL FEDBUTLParseScrub( __in PCWSTR arg, UTILOPTS *popts )
     return fResult;
 }
 
-LOCAL VOID EDBUTLGetUnpathedFilename( __in PCWSTR const wszFilename, __in_bcount(cbUnpathedFilename) PWSTR const wszUnpathedFilename, ULONG cbUnpathedFilename)
+LOCAL VOID EDBUTLGetUnpathedFilename( _In_ PCWSTR const wszFilename, __in_bcount(cbUnpathedFilename) PWSTR const wszUnpathedFilename, ULONG cbUnpathedFilename)
 {
     WCHAR   wszFile[_MAX_FNAME+1];
     WCHAR   wszExt[_MAX_EXT+1];
@@ -2627,7 +2627,7 @@ LOCAL VOID EDBUTLGetUnpathedFilename( __in PCWSTR const wszFilename, __in_bcount
     _wmakepath_s( wszUnpathedFilename, cbUnpathedFilename / sizeof(WCHAR), NULL, NULL, wszFile, wszExt );
 }
 
-LOCAL BOOL FEDBUTLParseCopyFile( __in PCWSTR arg, UTILOPTS *popts )
+LOCAL BOOL FEDBUTLParseCopyFile( _In_ PCWSTR arg, UTILOPTS *popts )
 {
     BOOL        fResult = fTrue;
 
@@ -2877,7 +2877,7 @@ LOCAL BOOL FVssPauseSupported( const UTILOPTS* const popts )
 
 LOCAL BOOL FEDBUTLParseOptions(
     UTILOPTS    *popts,
-    BOOL        (*pFEDBUTLParseMode)( __in PCWSTR arg, UTILOPTS *popts ) )
+    BOOL        (*pFEDBUTLParseMode)( _In_ PCWSTR arg, UTILOPTS *popts ) )
 {
     BOOL        fResult = fTrue;
     WCHAR       *arg = GetCurArg();
@@ -3068,9 +3068,9 @@ LOCAL BOOL FEDBUTLParseOptions(
             }
         }
 #endif
-        else if ( 0 == _wcsnicmp( &(arg[1]), wszConfigArgPrefix, wcslen( wszConfigArgPrefix ) ) )   // /config -config /config: -config:
+        else if ( 0 == _wcsnicmp( &(arg[1]), wszConfigArgPrefix, LOSStrLengthW( wszConfigArgPrefix ) ) )   // /config -config /config: -config:
         {
-            const WCHAR * wszConfigSpec = &( arg[ 1 + wcslen( wszConfigArgPrefix ) ] );
+            const WCHAR * wszConfigSpec = &( arg[ 1 + LOSStrLengthW( wszConfigArgPrefix ) ] );
             if ( wszConfigSpec[0] == L':' )
             {
                 //  inline arg, increment past ":"
@@ -3649,7 +3649,7 @@ ERR ErrPrintESEBCLI2Error ( HRESULT hr, HRESULT hrGLE, HMODULE hESEBCLI2 )
 
     if ( hr == hrErrorFromESECall || hr == hrErrorFromCallbackCall )
     {
-        size_t cbFinalMsg = sizeof( WCHAR ) * ( wcslen( (WCHAR *)lpMsgBuf ) + 1 ) + 32;
+        size_t cbFinalMsg = sizeof( WCHAR ) * ( LOSStrLengthW( (WCHAR *)lpMsgBuf ) + 1 ) + 32;
         wszFinalMsg = (WCHAR *) LocalAlloc( LMEM_FIXED | LMEM_ZEROINIT, cbFinalMsg );
         if ( wszFinalMsg )
         {
@@ -3679,40 +3679,40 @@ ERR ErrPrintESEBCLI2Error ( HRESULT hr, HRESULT hrGLE, HMODULE hESEBCLI2 )
 }
 
 typedef HRESULT (ESEBACK_API * PfnHrESERestoreReopen)(
-    IN  WCHAR *                 wszServerName,
-    IN  WCHAR *                 wszServiceAnnotation,
-    IN  WCHAR *                 wszRestoreLogPath,
-    OUT HCCX *                  phccxRestoreContext);
+    _In_  WCHAR *               wszServerName,
+    _In_  WCHAR *               wszServiceAnnotation,
+    _In_  WCHAR *               wszRestoreLogPath,
+    _Out_ HCCX *                phccxRestoreContext);
 
 typedef HRESULT (ESEBACK_API * PfnHrESERestoreClose)(
-    IN HCCX hccxRestoreContext,
-    IN ULONG fRestoreAbort);
+    _In_ HCCX hccxRestoreContext,
+    _In_ ULONG fRestoreAbort);
 
 typedef HRESULT (ESEBACK_API * PfnHrESERestoreComplete)(
-    IN  HCCX                hccxRestoreContext,
-    IN  WCHAR *             wszRestoreInstanceSystemPath,
-    IN  WCHAR *             wszRestoreInstanceLogPath,
-    IN  WCHAR *             wszTargetInstanceName,
-    IN  ULONG       fFlags);
+    _In_  HCCX                  hccxRestoreContext,
+    _In_  WCHAR *               wszRestoreInstanceSystemPath,
+    _In_  WCHAR *               wszRestoreInstanceLogPath,
+    _In_  WCHAR *               wszTargetInstanceName,
+    _In_  ULONG                 fFlags);
 
 typedef HRESULT (ESEBACK_API * PfnHrESERestoreLoadEnvironment)(
-    IN  WCHAR *             wszServerName,
-    IN  WCHAR *             wszRestoreLogPath,
-    OUT RESTORE_ENVIRONMENT **  ppRestoreEnvironment);
+    _In_  WCHAR *               wszServerName,
+    _In_  WCHAR *               wszRestoreLogPath,
+    _Out_ RESTORE_ENVIRONMENT **  ppRestoreEnvironment);
 
 typedef HRESULT (ESEBACK_API * PfnHrESERestoreGetEnvironment)(
-    IN  HCCX                    hccxRestoreContext,
-    OUT RESTORE_ENVIRONMENT **  ppRestoreEnvironment);
+    _In_  HCCX                  hccxRestoreContext,
+    _Out_ RESTORE_ENVIRONMENT **  ppRestoreEnvironment);
 
 typedef void (ESEBACK_API * PfnESERestoreFreeEnvironment)(
-    IN  RESTORE_ENVIRONMENT *   pRestoreEnvironment);
+    _In_  RESTORE_ENVIRONMENT * pRestoreEnvironment);
 
 typedef HRESULT (ESEBACK_API * PfnHrESERecoverAfterRestore2)(
-    IN  WCHAR *         wszRestoreLogPath,
-    IN  WCHAR *         wszCheckpointFilePath,
-    IN  WCHAR *         wszLogFilePath,
-    IN  WCHAR *         wszTargetInstanceCheckpointFilePath,
-    IN  WCHAR *         wszTargetInstanceLogPath);
+    _In_  WCHAR *               wszRestoreLogPath,
+    _In_  WCHAR *               wszCheckpointFilePath,
+    _In_  WCHAR *               wszLogFilePath,
+    _In_  WCHAR *               wszTargetInstanceCheckpointFilePath,
+    _In_  WCHAR *               wszTargetInstanceLogPath);
 
 #endif // ESENT
 
@@ -3723,7 +3723,7 @@ WCHAR * WszCopy( const WCHAR *  wsz )
     LONG cb;
 
     assert ( wsz );
-    cb = sizeof(WCHAR) * ((ULONG)wcslen( wsz ) + 1);
+    cb = sizeof(WCHAR) * ((ULONG)LOSStrLengthW( wsz ) + 1);
 
     if ( ( wszCopy = (WCHAR *) LocalAlloc( LMEM_FIXED | LMEM_ZEROINIT, cb ) ) == NULL )
         return(NULL);
@@ -3933,7 +3933,7 @@ LOCAL VOID DBUTLIDumpRestoreEnv( RESTORE_ENVIRONMENT * pREnv, INT   cDesc = 0 )
         while ( L'\0' != wszStreams[0] )
         {
             wprintf( L"%s ", wszStreams );
-            wszStreams += wcslen( wszStreams ) + 1;
+            wszStreams += LOSStrLengthW( wszStreams ) + 1;
         }
         wprintf( L"\n" );
         wszStreams = pREnv->m_wszDatabaseStreamsD[iDb];
@@ -3941,7 +3941,7 @@ LOCAL VOID DBUTLIDumpRestoreEnv( RESTORE_ENVIRONMENT * pREnv, INT   cDesc = 0 )
         while ( L'\0' != wszStreams[0] )
         {
             wprintf( L"%s ", wszStreams );
-            wszStreams += wcslen( wszStreams ) + 1;
+            wszStreams += LOSStrLengthW( wszStreams ) + 1;
         }
         PrintField( L"", cDesc, NULL );
         PrintField( L"", cDesc, NULL );
@@ -4311,7 +4311,7 @@ struct DUMPCOLUMN
 
 
 //  ================================================================
-LOCAL INT CchPrintForColtyp( IN const JET_COLTYP coltyp, IN const INT cchColumnName, IN const INT cbMax )
+LOCAL INT CchPrintForColtyp( _In_ const JET_COLTYP coltyp, _In_ const INT cchColumnName, _In_ const INT cbMax )
 //  ================================================================
 {
     INT cchPrint = 0;
@@ -4377,7 +4377,7 @@ LOCAL INT CchPrintForColtyp( IN const JET_COLTYP coltyp, IN const INT cchColumnN
 
 
 //  ================================================================
-LOCAL void PrintColumn( IN const JET_COLTYP coltyp, IN const INT cchMax, IN const void * const pv, IN const INT cb )
+LOCAL void PrintColumn( _In_ const JET_COLTYP coltyp, _In_ const INT cchMax, _In_ const void * const pv, _In_ const INT cb )
 //  ================================================================
 {
     switch( coltyp )
@@ -4478,11 +4478,11 @@ LOCAL void PrintColumn( IN const JET_COLTYP coltyp, IN const INT cchMax, IN cons
 
 //  ================================================================
 LOCAL JET_ERR ErrDumpcolumnFromColumnlist(
-    IN const JET_SESID          sesid,
-    IN const JET_COLUMNLIST&    columnlist,
-    OUT DUMPCOLUMN * const      rgdumpcolumn,
-    IN const ULONG      cdumpcolumnMax,
-    OUT ULONG&          cdumpcolumn )
+    _In_ const JET_SESID          sesid,
+    _In_ const JET_COLUMNLIST&    columnlist,
+    _Out_ DUMPCOLUMN * const      rgdumpcolumn,
+    _In_ const ULONG      cdumpcolumnMax,
+    _Out_ ULONG&          cdumpcolumn )
 //  ================================================================
 {
     JET_ERR err     = JET_errSuccess;
@@ -4575,8 +4575,8 @@ HandleError:
 
 //  ================================================================
 LOCAL void DBUTLDumpTableRecordsHeader(
-    IN const DUMPCOLUMN * const rgdumpcolumn,
-    IN const INT ccolumns )
+    _In_ const DUMPCOLUMN * const rgdumpcolumn,
+    _In_ const INT ccolumns )
 //  ================================================================
 //
 //  Print the name of each column, followed by a space
@@ -4605,9 +4605,9 @@ LOCAL void DBUTLDumpTableRecordsHeader(
 
 //  ================================================================
 LOCAL VOID EDBUTLPrintOneTableRecord(
-    IN const DUMPCOLUMN * const     rgdumpcolumn,
-    IN JET_RETRIEVECOLUMN * const   rgretcol,
-    IN const INT                    ccolumns )
+    _In_ const DUMPCOLUMN * const     rgdumpcolumn,
+    _In_ JET_RETRIEVECOLUMN * const   rgretcol,
+    _In_ const INT                    ccolumns )
 //  ================================================================
 {
     INT icolumn;
@@ -4627,11 +4627,11 @@ LOCAL VOID EDBUTLPrintOneTableRecord(
 
 //  ================================================================
 LOCAL JET_ERR ErrEDBUTLDumpOneTableRecord(
-    IN const JET_SESID              sesid,
-    IN const JET_TABLEID            tableid,
-    IN const DUMPCOLUMN * const     rgdumpcolumn,
-    IN JET_RETRIEVECOLUMN * const   rgretcol,
-    IN const INT                    ccolumns )
+    _In_ const JET_SESID              sesid,
+    _In_ const JET_TABLEID            tableid,
+    _In_ const DUMPCOLUMN * const     rgdumpcolumn,
+    _In_ JET_RETRIEVECOLUMN * const   rgretcol,
+    _In_ const INT                    ccolumns )
 //  ================================================================
 {
     JET_ERR                 err         = JET_errSuccess;
@@ -4646,11 +4646,11 @@ HandleError:
 
 //  ================================================================
 LOCAL JET_ERR ErrEDBUTLDumpTableRecords(
-    IN const JET_SESID          sesid,
-    IN const JET_TABLEID        tableid,
-    IN const DUMPCOLUMN * const rgdumpcolumn,
-    IN const INT                ccolumns,
-    IN const INT                crecordsMax )
+    _In_ const JET_SESID          sesid,
+    _In_ const JET_TABLEID        tableid,
+    _In_ const DUMPCOLUMN * const rgdumpcolumn,
+    _In_ const INT                ccolumns,
+    _In_ const INT                crecordsMax )
 //  ================================================================
 {
     JET_ERR                 err         = JET_errSuccess;
@@ -4712,11 +4712,11 @@ HandleError:
 
 //  ================================================================
 LOCAL_BROKEN JET_ERR ErrEDBUTLDumpTable(
-    IN const JET_INSTANCE   instance,
-    IN const JET_SESID      sesid,
-    IN const JET_DBID       dbid,
-    IN const WCHAR * const  wszTable,
-    IN const INT            crecordsMax )
+    _In_ const JET_INSTANCE   instance,
+    _In_ const JET_SESID      sesid,
+    _In_ const JET_DBID       dbid,
+    _In_ const WCHAR * const  wszTable,
+    _In_ const INT            crecordsMax )
 //  ================================================================
 {
     JET_ERR         err         = JET_errSuccess;
@@ -4783,7 +4783,7 @@ HandleError:
 IOREASON g_iorThunk( (IOREASONPRIMARY) 1 );
 
 //  ================================================================
-LOCAL JET_ERR ErrEDBUTLDumpFTLHeader( IN const WCHAR * const wszFTLFile )
+LOCAL JET_ERR ErrEDBUTLDumpFTLHeader( _In_ const WCHAR * const wszFTLFile )
 //  ================================================================
 {
     JET_ERR         err         = JET_errSuccess;
@@ -5120,7 +5120,7 @@ LOCAL JET_ERR ErrFileSystemDump( const WCHAR* const wszFilename, const BOOL fVer
 
     wprintf( L"File Information:%c", wchNewLine );
     wprintf( L"  File Name: %s%c", wszFilename, wchNewLine );
-    wprintf( L"  Volume Name: %s%c", 0 == wcslen( wszVolumeName ) ? wszVolumeRoot : wszVolumeName, wchNewLine );
+    wprintf( L"  Volume Name: %s%c", 0 == LOSStrLengthW( wszVolumeName ) ? wszVolumeRoot : wszVolumeName, wchNewLine );
     wprintf( L"  File System: %s%c", wszFSName, wchNewLine );
     wprintf( L"  Cluster Size: %u bytes%c", cbCluster, wchNewLine );
 
@@ -5362,7 +5362,7 @@ void PushEseutilArgTrace( INT argc, __in_ecount(argc) LPWSTR argv[] )
     size_t cbAllArgs = 0;
     for( INT iarg = 0; iarg < argc; iarg++ )
     {
-        cbAllArgs += sizeof(WCHAR) * ( wcslen( argv[iarg] ) + 2 /* one for space, one more because of .... ahhhh<fell off SOMEONE> */ );
+        cbAllArgs += sizeof(WCHAR) * ( LOSStrLengthW( argv[iarg] ) + 2 /* one for space, one more because of .... ahhhh<fell off SOMEONE> */ );
     }
     cbAllArgs += sizeof(WCHAR) + 783; // + NUL terminator space + Buffer for potential MBCS expansion (of 3 full paths) ... at top of stack, so 783 is fine.
     CHAR * szEseutilCmd = (CHAR*)alloca( cbAllArgs );
@@ -6802,7 +6802,7 @@ Usage:
     SetCurArgID( 0 );
     assert( GetCurArgID() == 0 );
 
-    _wcsupr_s( GetCurArg(), wcslen( GetCurArg() ) + 1 );
+    _wcsupr_s( GetCurArg(), LOSStrLengthW( GetCurArg() ) + 1 );
     EDBUTLHelp( GetCurArg() );
     
     OSTerm();

@@ -256,6 +256,10 @@ BOOL FOSLayerUp();
 //  Turns on FFB/StorageWriteBack mode always.
 //#define FORCE_STORAGE_WRITEBACK       1
 
+// Turn off some APIs that we don't want directly supported
+// ISSUE[SOMEONE] - Github side of build cannot handle this due to stdlib includes in rmemulator.hxx.  Some day figure this out for real.
+//#define wcscmp __USE_LOSSTRCOMPAREW__
+//#define wcslen __USE_LOSSTRLENGTHW__
 
 #endif  //  _OS_HXX_INCLUDED
 

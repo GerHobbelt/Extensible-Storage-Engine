@@ -413,7 +413,7 @@ COSFile::COSFile() :
 
 ERR COSFile::ErrInitFile(   COSFileSystem* const                posfs,
                             COSVolume * const                   posv,
-                            __in PCWSTR const                   wszAbsPath,
+                            _In_ PCWSTR const                   wszAbsPath,
                             const HANDLE                        hFile,
                             const QWORD                         cbFileSize,
                             const FileModeFlags                 fmf,
@@ -1044,7 +1044,7 @@ ERR COSFile::ErrRename( const WCHAR* const  wszAbsPathDest,
     // No one calls this on memory-mapped files today. It should work but we didn't test this.
     Expected( m_rghFileMap[ 0 ] == NULL && m_rghFileMap[ 1 ] == NULL );
     
-    const size_t cchPathDest = wcslen( wszAbsPathDest );
+    const size_t cchPathDest = LOSStrLengthW( wszAbsPathDest );
     const size_t cbPathDest = ( cchPathDest + 1 ) * sizeof( WCHAR );
     const DWORD cbBuffer = sizeof( FILE_RENAME_INFO ) + cbPathDest;
     FILE_RENAME_INFO* const pRenameInfo = (FILE_RENAME_INFO*) alloca( cbBuffer );
@@ -1595,7 +1595,7 @@ ERR ErrIORetrieveSparseSegmentsInRegion(    IFileAPI* const                     
 
 HandleError:
 
-#if DEBUG
+#ifdef DEBUG
     for ( size_t isparseseg = 0; isparseseg < parrsparseseg->Size(); isparseseg++ )
     {
         const SparseFileSegment& sparseseg = (*parrsparseseg)[isparseseg];

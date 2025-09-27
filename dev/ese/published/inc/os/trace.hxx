@@ -261,15 +261,15 @@ enum sysosirtl
 //  this is how much the client expects to be able to stuff in the system ref log
 #define cbSystemRefLogExtra         max( sizeof(ULONG) * 4, sizeof(void*) * 2 )
 
-ERR ErrOSTraceCreateRefLog( IN ULONG cLogSize, IN ULONG cbExtraBytes, OUT POSTRACEREFLOG *ppRefLog );
-VOID OSTraceDestroyRefLog( IN POSTRACEREFLOG pLog );
+ERR ErrOSTraceCreateRefLog( _In_ ULONG cLogSize, _In_ ULONG cbExtraBytes, _Out_ POSTRACEREFLOG *ppRefLog );
+VOID OSTraceDestroyRefLog( _In_ POSTRACEREFLOG pLog );
 
 VOID __cdecl OSTraceWriteRefLog(
-    IN POSTRACEREFLOG pLog,
-    IN LONG NewRefCount,
-    IN void * pContext,
+    _In_ POSTRACEREFLOG pLog,
+    _In_ LONG NewRefCount,
+    _In_ void * pContext,
     __in_bcount(cbExtraInformation) void * pExtraInformation = NULL,
-    IN LONG cbExtraInformation = 0 );
+    _In_ LONG cbExtraInformation = 0 );
 
 class COSTraceTrackErrors
 {
@@ -298,7 +298,7 @@ BOOL FOSRefTraceErrors();
 typedef USHORT  FTLTID;     //  ftltid (Fast Trace Log Trace ID)
 typedef BYTE    FTLTDESC;   //  ftltdesc (Fast Trace Log Trace DESCriptor)
 
-typedef ERR ( __stdcall * PfnErrFTLBFlushBuffer )( __inout void * const pvFlushBufferContext, __in const BYTE * const rgbBuffer, __in const ULONG cbBuffer );
+typedef ERR ( __stdcall * PfnErrFTLBFlushBuffer )( __inout void * const pvFlushBufferContext, _In_ const BYTE * const rgbBuffer, _In_ const ULONG cbBuffer );
 
 
 //
@@ -308,7 +308,7 @@ typedef ERR ( __stdcall * PfnErrFTLBFlushBuffer )( __inout void * const pvFlushB
 const static FTLTID     ftltidMax               = (FTLTID)(0x8000); //  we support ~32k trace IDs
 const static FTLTID     ftltidSmallMax          = (FTLTID)(0x000F); //  the first ftltid value that will not get a short trace ID when traced
 
-INLINE BOOL FFTLValidFTLTID( __in const FTLTID ftltid )
+INLINE BOOL FFTLValidFTLTID( _In_ const FTLTID ftltid )
 {
     return ftltid != 0 &&
             ftltid < ftltidMax &&
@@ -325,7 +325,7 @@ const static FTLTDESC   ftltdescNone            = (FTLTDESC)(0x00); //  this is 
 const static FTLTDESC   mskFtltdescFixedSize    = (FTLTDESC)(0x0F); //  defines the portion of the descriptor reserved to define fixed size
 
 
-INLINE USHORT CbFTLBIFixedSize( __in const FTLTDESC bTraceDescriptor )
+INLINE USHORT CbFTLBIFixedSize( _In_ const FTLTDESC bTraceDescriptor )
 {
     return bTraceDescriptor & mskFtltdescFixedSize;
 }
@@ -428,7 +428,7 @@ public:
     }
 private:
 
-    INLINE void FTLBITraceFlagsTick( __in const TICK tickTrace, __out BYTE * pfTickTrace, __out TICK * pdtick, __out ULONG * pcbTick ) const
+    INLINE void FTLBITraceFlagsTick( _In_ const TICK tickTrace, _Out_ BYTE * pfTickTrace, _Out_ TICK * pdtick, _Out_ ULONG * pcbTick ) const
     {
         Assert( pfTickTrace );
         Assert( pdtick );
@@ -527,7 +527,7 @@ public:
         m_fTracingDisabled = fTrue;
     }
 
-    INLINE ERR ErrFTLBTrace( __in const USHORT ftltid, __in const FTLTDESC ftltdesc, __in_bcount(cbTraceData) const BYTE * pbTraceData, __in const DWORD cbTraceData, __in const TICK tickTrace )
+    INLINE ERR ErrFTLBTrace( _In_ const USHORT ftltid, _In_ const FTLTDESC ftltdesc, __in_bcount(cbTraceData) const BYTE * pbTraceData, _In_ const DWORD cbTraceData, _In_ const TICK tickTrace )
     {
         ERR err = 0x0/*JET_errSuccess*/;
 
@@ -700,9 +700,9 @@ public:
     static const BYTE * s_pbPrev;
 #endif
 
-    static const BYTE * PbFTLBParseTraceTick( __in const BYTE fTickInfo, const BYTE * pbTick, __in const TICK tickBase, __out TICK * const ptick );
-    static ERR ErrFTLBParseTraceHeader( const BYTE * pbTrace, __out FTLTID * const pftltid, __in const TICK tickBase, __out TICK * const ptick );
-    static ERR ErrFTLBParseTraceData( const BYTE * pbTrace, __in const FTLTID ftltid, __in const FTLTDESC ftltdesc, __out ULONG * pcbTraceData, __out const BYTE ** ppbTraceData );
+    static const BYTE * PbFTLBParseTraceTick( _In_ const BYTE fTickInfo, const BYTE * pbTick, _In_ const TICK tickBase, _Out_ TICK * const ptick );
+    static ERR ErrFTLBParseTraceHeader( const BYTE * pbTrace, _Out_ FTLTID * const pftltid, _In_ const TICK tickBase, _Out_ TICK * const ptick );
+    static ERR ErrFTLBParseTraceData( const BYTE * pbTrace, _In_ const FTLTID ftltid, _In_ const FTLTDESC ftltdesc, _Out_ ULONG * pcbTraceData, _Out_ const BYTE ** ppbTraceData );
 
 };
 
@@ -862,7 +862,7 @@ private:
     const static FTLTDESC   ftltdescDefaultDescriptor = ftltdescNone;
     FTLDescriptor           m_ftldesc;          //  describes the schema of this specific trace file
 
-    FTLTDESC FtltdescFTLIGetDescriptor( __in const USHORT usTraceID ) const;
+    FTLTDESC FtltdescFTLIGetDescriptor( _In_ const USHORT usTraceID ) const;
 
 
     //  Writing / Flushing Buffers
@@ -886,8 +886,8 @@ private:
 
     void FTLIResetWriteBuffering( void );
     INT IFTLIGetFlushBuffer();
-    static ERR ErrFTLFlushBuffer( __inout void * const pvFlushBufferContext, __in_bcount(cbBuffer) const BYTE * const rgbBuffer, __in const ULONG cbBuffer );
-    ERR ErrFTLIFlushBuffer( __in_bcount(cbBuffer) const BYTE * rgbBuffer, __in const INT cbBuffer, const BOOL fForceTerm );
+    static ERR ErrFTLFlushBuffer( __inout void * const pvFlushBufferContext, __in_bcount(cbBuffer) const BYTE * const rgbBuffer, _In_ const ULONG cbBuffer );
+    ERR ErrFTLIFlushBuffer( __in_bcount(cbBuffer) const BYTE * rgbBuffer, _In_ const INT cbBuffer, const BOOL fForceTerm );
     static void FTLFlushBufferComplete( const ERR           err,
                                         IFileAPI* const     pfapi,
                                         const FullTraceContext& ptc,
@@ -915,7 +915,7 @@ private:
 
     CFTLReader *            m_pftlr;
 
-    ERR ErrFTLIReadBuffer( __out_bcount(cbBuffer) void * pvBuffer, __in QWORD ibOffset, __in ULONG cbBuffer );
+    ERR ErrFTLIReadBuffer( __out_bcount(cbBuffer) void * pvBuffer, _In_ QWORD ibOffset, _In_ ULONG cbBuffer );
 
 
 public:
@@ -947,8 +947,8 @@ public:
     };
 
     //  Must init the FTL trace log with intention of writing or reading, but not both.
-    ERR ErrFTLInitWriter( __in_z const WCHAR * wszTraceLogFile, IOREASON * pior, __in const FTLInitFlags ftlif );
-    ERR ErrFTLInitReader( __in_z const WCHAR * wszTraceLogFile, IOREASON * pior, __in const FTLInitFlags ftlif, __out CFTLReader ** ppftlr );
+    ERR ErrFTLInitWriter( __in_z const WCHAR * wszTraceLogFile, IOREASON * pior, _In_ const FTLInitFlags ftlif );
+    ERR ErrFTLInitReader( __in_z const WCHAR * wszTraceLogFile, IOREASON * pior, _In_ const FTLInitFlags ftlif, _Out_ CFTLReader ** ppftlr );
 
     //  cleans up all FTL allocated resources (note including the ppftlr returned by ErrFTLInitReader()).
     void FTLTerm();
@@ -957,7 +957,7 @@ public:
     //
 
     void SetFTLDisabled();
-    ERR ErrFTLTrace( __in const USHORT usTraceID, __in_bcount(cbTrace) const BYTE * pbTrace, __in const ULONG cbTrace, __in const TICK tickTrace = TickOSTimeCurrent() );
+    ERR ErrFTLTrace( _In_ const USHORT usTraceID, __in_bcount(cbTrace) const BYTE * pbTrace, _In_ const ULONG cbTrace, _In_ const TICK tickTrace = TickOSTimeCurrent() );
 
     //  FTL Reading APIs
     //
@@ -1039,7 +1039,7 @@ public:
         FTLTrace            m_ftltracePrev;
 #endif
 
-        ERR ErrFTLIFillBuffer( __in const QWORD ibBookmarkRead );
+        ERR ErrFTLIFillBuffer( _In_ const QWORD ibBookmarkRead );
 
         CFTLReader( CFastTraceLog * pftl, BOOL fKeepStats );
         ~CFTLReader( );
@@ -1088,12 +1088,12 @@ private:
         struct
         {
             IOREASONPRIMARY     m_iorp : 8;
-            IOREASONSECONDARY   m_iors : 4;
-            IOREASONTERTIARY    m_iort : 4;
+            IOREASONSECONDARY   m_iors : 8;
+            IOREASONTERTIARY    m_iort : 8;
             IOREASONUSER        m_ioru : 8;
             IOREASONFLAGS       m_iorf : 8;
         };
-        DWORD m_ior;
+        QWORD m_ior;
     };
 
 public:
@@ -1138,7 +1138,7 @@ public:
         return m_iorf;
     }
 
-    DWORD DwIor() const
+    QWORD QwIor() const
     {
         return m_ior;
     }
@@ -1151,13 +1151,13 @@ public:
 
     void SetIors( IOREASONSECONDARY iors )
     {
-        Assert( iors <= 0x0f );
+        Assert( iors <= 0xff );
         m_iors = iors;
     }
 
     void SetIort( IOREASONTERTIARY iort )
     {
-        Assert( iort <= 0x0f );
+        Assert( iort <= 0xff );
         m_iort = iort;
     }
 
@@ -1285,7 +1285,7 @@ public:
     }
 };
 
-static_assert( sizeof( IOREASON ) == 4, "IOREASON should be 4-bytes" );
+static_assert( sizeof( IOREASON ) == 8, "IOREASON should be 8 bytes" );
 
 struct OPERATION_CONTEXT
 {
@@ -1414,6 +1414,36 @@ private:
 };
 
 
+// Using TraceContext, TraceContextScope, PIBTraceContextScope: 
+// 1. What are these things: 
+//    a. TraceContext is a container for holding tracing info for an IO. e.g. it holds objid, IORs for categorizing the IO. 
+//    b. TraceContextScope is a helper class that creates a scope for a particular context. This particular context is defined by 
+//       the callstack of the current thread, starting from the JETAPI call. These scopes are hierarchical. 
+//       Each function that wants to create a new scope, declares an object of TraceContextScope on the stack and modifies one of its properties. 
+//       All the functions called from this function will see this context. 
+//    c. PIBTraceContextScope does exactly what TraceContextScope does, but needs a PIB* to access the TLS (reduces CPU cost of accessing the TLS). 
+// 
+// 2. Usage: 
+//    a. If you want to modify an IOR or any of the TraceContext properties, declare a new scope: 
+//       TraceContextScope tsScopeT( _some_ior ); 
+//    b. If you have a PIB available in the function, use the more performant version: 
+//       PIBTraceContextScope( ppib, _some_ior ); 
+//    c. If a function performs multiple distinct IO actions, that need separate scopes, create as many tcScopes as you want, enclosed by a c++ scope, to get rid of them appropriately. 
+//       { 
+//          TraceContextScope tcScopeT( _some_ior ); 
+//          Call( ErrSomeFunc() ); 
+//       }  // scope reverted 
+//
+//       Scopes are hierarchical, you will inherit everything from previous active scopes. 
+//
+//    d. If a function takes a TraceContext& arg, then it doesn't look at the TLS to get its context. You can pass in a TraceContext explicitly. 
+//       TraceContextScope tcScopeT( _some_ior_ ); 
+//       Call( ErrSomeFunc( *tcScopeT ) ); 
+//    e. If you are in a function that takes a TraceContext& as an arg, then you are in lower layers that don't look at TLS for context. 
+//       You shouldn't use TraceContextScope here because it will have no effect on called functions, but incur CPU cost of accessing the TLS. 
+//       With the assumption that called functions will also take TraceContext as a param, if they want it. 
+//       This assumption may have been violated in some rare cases. 
+ 
 const ULONG dwEngineObjidNone = 0xFFFFFFFF;
  
 //  Holds mutable tracing information related to an IO
@@ -1556,9 +1586,9 @@ public:
         m_ptcCurr = tfnGetEtc();
         m_tcSaved = *m_ptcCurr; // save a copy to restore back
 
-        iorp != iorpNone ? m_ptcCurr->iorReason.SetIorp( iorp ) : 0;
-        iors != iorsNone ? m_ptcCurr->iorReason.SetIors( iors ) : 0;
-        iort != iortNone ? m_ptcCurr->iorReason.SetIort( iort ) : 0;
+        ( iorp != iorpNone ) ? m_ptcCurr->iorReason.SetIorp( iorp ) : (VOID)NULL;
+        ( iors != iorsNone ) ? m_ptcCurr->iorReason.SetIors( iors ) : (VOID)NULL;
+        ( iort != iortNone ) ? m_ptcCurr->iorReason.SetIort( iort ) : (VOID)NULL;
         m_ptcCurr->iorReason.AddFlag( iorf );
     }
 
@@ -1567,8 +1597,8 @@ public:
         m_ptcCurr = tfnGetEtc();
         m_tcSaved = *m_ptcCurr; // save a copy to restore back
 
-        iors != iorsNone ? m_ptcCurr->iorReason.SetIors( iors ) : 0;
-        iort != iortNone ? m_ptcCurr->iorReason.SetIort( iort ) : 0;
+        ( iors != iorsNone ) ? m_ptcCurr->iorReason.SetIors( iors ) : (VOID)NULL;
+        ( iort != iortNone ) ? m_ptcCurr->iorReason.SetIort( iort ) : (VOID)NULL;
         m_ptcCurr->iorReason.AddFlag( iorf );
     }
 
@@ -1577,7 +1607,7 @@ public:
         m_ptcCurr = tfnGetEtc();
         m_tcSaved = *m_ptcCurr; // save a copy to restore back
 
-        iort != iortNone ? m_ptcCurr->iorReason.SetIort( iort ) : 0;
+        ( iort != iortNone ) ? m_ptcCurr->iorReason.SetIort( iort ) : (VOID)NULL;
         m_ptcCurr->iorReason.AddFlag( iorf );
     }
 

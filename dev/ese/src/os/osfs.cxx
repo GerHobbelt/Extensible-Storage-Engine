@@ -63,11 +63,11 @@ __kernel_entry NTSYSCALLAPI
 NTSTATUS
 NTAPI
 NtQueryVolumeInformationFile (
-    __in HANDLE FileHandle,
-    __out PIO_STATUS_BLOCK IoStatusBlock,
+    _In_ HANDLE FileHandle,
+    _Out_ PIO_STATUS_BLOCK IoStatusBlock,
     __out_bcount(Length) PVOID FsInformation,
-    __in ULONG Length,
-    __in FS_INFORMATION_CLASS FsInformationClass
+    _In_ ULONG Length,
+    _In_ FS_INFORMATION_CLASS FsInformationClass
     );
 
 
@@ -337,7 +337,7 @@ ERR COSFileSystem::ErrGetLastError( const DWORD error )
     return ErrOSErrFromWin32Err( error, JET_errDiskIO );
 }
 
-COSFileSystem::CVolumePathCacheEntry * COSFileSystem::GetVolInfoCacheEntry( __in PCWSTR wszTargetPath )
+COSFileSystem::CVolumePathCacheEntry * COSFileSystem::GetVolInfoCacheEntry( _In_ PCWSTR wszTargetPath )
 {
     CVolumePathCacheEntry*  pvpce       = NULL;
 
@@ -357,17 +357,78 @@ ERR COSFileSystem::ErrPathRoot( const WCHAR* const  wszPath,
     // UNDONE_BANAPI:
                                 __out_bcount(OSFSAPI_MAX_PATH*sizeof(WCHAR)) WCHAR* const       wszAbsRootPath )
 {
-    ERR                     err         = JET_errSuccess;
+    ERR                     err             = JET_errSuccess;
     WCHAR                   wszAbsPath[ IFileSystemAPI::cchPathMax ];
+    DWORD                   dwAttr          = INVALID_FILE_ATTRIBUTES;
+    HANDLE                  hFile           = INVALID_HANDLE_VALUE;
+    WCHAR*                  wszAbsPathT     = wszAbsPath;
+    DWORD                   cwchAbsPathT    = 0;
     WCHAR                   wszFolder[ IFileSystemAPI::cchPathMax ];
     WCHAR                   wszFileBase[ IFileSystemAPI::cchPathMax ];
     WCHAR                   wszFileExt[ IFileSystemAPI::cchPathMax ];
-    CVolumePathCacheEntry*  pvpce       = NULL;
+    CVolumePathCacheEntry*  pvpce           = NULL;
     WCHAR                   wszRootPath[ IFileSystemAPI::cchPathMax ];
 
     //  get the absolute path for the given path
 
     Call( ErrPathComplete( wszPath, wszAbsPath ) );
+
+    //  if the absolute path is a reparse point then it may be a symbolic link to another volume
+
+    dwAttr = GetFileAttributesW( wszAbsPath );
+    if ( dwAttr == INVALID_FILE_ATTRIBUTES )
+    {
+        err = ErrGetLastError( GetLastError() );
+        Call( err == JET_errFileNotFound || err == JET_errInvalidPath ? JET_errSuccess : err );
+    }
+
+    if ( dwAttr != INVALID_FILE_ATTRIBUTES && !!( dwAttr & FILE_ATTRIBUTE_REPARSE_POINT ) )
+    {
+        hFile = CreateFileW(    wszAbsPath,
+                                0,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL,
+                                OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
+                                NULL );
+        if ( hFile == INVALID_HANDLE_VALUE )
+        {
+            err = ErrGetLastError( GetLastError() );
+            Call( err == JET_errFileNotFound || err == JET_errInvalidPath ? JET_errSuccess : err );
+        }
+
+        if ( hFile != INVALID_HANDLE_VALUE )
+        {
+            cwchAbsPathT = GetFinalPathNameByHandleW( hFile, wszAbsPathT, _countof( wszAbsPath ), VOLUME_NAME_DOS );
+            if ( cwchAbsPathT == 0 )
+            {
+                Call( ErrGetLastError() );
+            }
+            else if ( cwchAbsPathT >= _countof( wszAbsPath ) )
+            {
+                Alloc( wszAbsPathT = new WCHAR[cwchAbsPathT] );
+                if ( !GetFinalPathNameByHandleW( hFile, wszAbsPathT, _countof( wszAbsPath ), VOLUME_NAME_DOS ) )
+                {
+                    Call( ErrGetLastError() );
+                }
+            }
+
+            const WCHAR* const wszPrefix = L"\\\\?\\";
+            DWORD cwchOffset = 0;
+            if ( wcsncmp( wszAbsPathT, wszPrefix, LOSStrLengthW( wszPrefix ) ) == 0 )
+            {
+                cwchOffset += LOSStrLengthW( wszPrefix );
+            }
+
+            if ( wmemmove_s( wszAbsPath, _countof( wszAbsPath ), wszAbsPathT + cwchOffset, cwchAbsPathT - cwchOffset ) )
+            {
+                Call( ErrERRCheck( JET_errInvalidPath ) );
+            }
+
+            CloseHandle( hFile );
+            hFile = INVALID_HANDLE_VALUE;
+        }
+    }
 
     //  get the folder of the absolute path
 
@@ -432,15 +493,23 @@ HandleError:
     {
         OSStrCbCopyW( wszAbsRootPath, cbOSFSAPI_MAX_PATHW, L"" );
     }
+    if ( wszAbsPathT != wszAbsPath )
+    {
+        delete[] wszAbsPathT;
+    }
+    if ( hFile != INVALID_HANDLE_VALUE )
+    {
+        CloseHandle( hFile );
+    }
     return err;
 }
 
 void COSFileSystem::PathVolumeCanonicalAndDiskId(   const WCHAR* const wszAbsRootPath,
                                                     __out_ecount(cchVolumeCanonicalPath) WCHAR* const wszVolumeCanonicalPath,
-                                                    __in const DWORD cchVolumeCanonicalPath,
+                                                    _In_ const DWORD cchVolumeCanonicalPath,
                                                     __out_ecount(cchDiskId) WCHAR* const wszDiskId,
-                                                    __in const DWORD cchDiskId,
-                                                    __out DWORD *pdwDiskNumber )
+                                                    _In_ const DWORD cchDiskId,
+                                                    _Out_ DWORD *pdwDiskNumber )
 {
     Assert( wszAbsRootPath != NULL );
 
@@ -673,13 +742,13 @@ HandleError:
 }
 
 ERR COSFileSystem::ErrOSFSGetDeviceHandle(
-    __in    PCWSTR  wszAbsVolumeRootPath,
-    __out   HANDLE* phDevice )
+    _In_    PCWSTR  wszAbsVolumeRootPath,
+    _Out_   HANDLE* phDevice )
 {
     ERR     err     = JET_errSuccess;
     DWORD   error   = ERROR_SUCCESS;
     const WCHAR wszDevPrefix [] = L"\\\\.\\";
-    WCHAR   wszDeviceName[ IFileSystemAPI::cchPathMax + 4 ]; // 4 = wcslen( wszDevPrefix )
+    WCHAR   wszDeviceName[ IFileSystemAPI::cchPathMax + 4 ]; // 4 = LOSStrLengthW( wszDevPrefix )
     wszDeviceName[0] = L'\0';
 
     Assert( phDevice );
@@ -735,11 +804,11 @@ ERR COSFileSystem::ErrOSFSGetDeviceHandle(
 
     //  Whether calculated w/ GetVolumeNameForVolumeMountPoint() or manually, CreatFileW()
     //  expects the trailing backslash to be removed.
-    ULONG cchDeviceName = wcslen(wszDeviceName);
+    ULONG cchDeviceName = LOSStrLengthW(wszDeviceName);
     if ( wszDeviceName[cchDeviceName-1] == L'\\' )
     {
         wszDeviceName[cchDeviceName-1] = L'\0';
-        Assert( wszDeviceName[wcslen(wszDeviceName)-1] != L'\\' );
+        Assert( wszDeviceName[LOSStrLengthW(wszDeviceName)-1] != L'\\' );
     }
 
     //
@@ -1162,7 +1231,7 @@ const WCHAR * const COSFileSystem::WszPathFileName( _In_z_ const WCHAR * const w
     {
         return wszOptionalFullPath;
     }
-    if ( wszLastDelimiter + 1 >= wszOptionalFullPath + wcslen( wszOptionalFullPath ) )
+    if ( wszLastDelimiter + 1 >= wszOptionalFullPath + LOSStrLengthW( wszOptionalFullPath ) )
     {
         ExpectedSz( FNegTest( fInvalidUsage ), "Path with delimiter at very end of string." );
         return L"UNKNOWN.PTH";
@@ -1197,7 +1266,7 @@ ERR COSFileSystem::ErrPathFolderNorm(   __inout_bcount(cbSize) PWSTR const  wszF
                                                              DWORD          cbSize )
 {
     ERR err = JET_errSuccess;
-    DWORD cch = wcslen(wszFolder);
+    DWORD cch = LOSStrLengthW(wszFolder);
 
     OSTrapPath( wszFolder );
 
@@ -1310,7 +1379,7 @@ ERR COSFileSystem::ErrPathFolderDefault(
     // If the process is packaged, then the directory shouldn't be the current
     // working directory.
 
-    Assert( FUtilProcessIsPackaged() || 0 == wcscmp( wszFolder, L".\\" ) );
+    Assert( FUtilProcessIsPackaged() || 0 == LOSStrCompareW( wszFolder, L".\\" ) );
 
 HandleError:
     return err;
@@ -2187,7 +2256,7 @@ HandleError:
 
 ERR COSFileSystem::ErrPathVolumeCanonical(   const WCHAR* const wszVolumePath,
                                             __out_ecount(cchVolumeCanonicalPath) WCHAR* const wszVolumeCanonicalPath,
-                                            __in const DWORD cchVolumeCanonicalPath )
+                                            _In_ const DWORD cchVolumeCanonicalPath )
 {
     if ( GetVolumeNameForVolumeMountPointW( wszVolumePath, wszVolumeCanonicalPath, cchVolumeCanonicalPath ) == 0 )
     {
@@ -2199,8 +2268,8 @@ ERR COSFileSystem::ErrPathVolumeCanonical(   const WCHAR* const wszVolumePath,
 
 ERR COSFileSystem::ErrDiskId(   const WCHAR* const wszVolumeCanonicalPath,
                                 __out_ecount(cchDiskId) WCHAR* const wszDiskId,
-                                __in const DWORD cchDiskId,
-                                __out DWORD *pdwDiskNumber )
+                                _In_ const DWORD cchDiskId,
+                                _Out_ DWORD *pdwDiskNumber )
 {
     ERR err                 = JET_errSuccess;
     HANDLE hVolume          = INVALID_HANDLE_VALUE;
@@ -2213,7 +2282,7 @@ ERR COSFileSystem::ErrDiskId(   const WCHAR* const wszVolumeCanonicalPath,
     WCHAR wszVolumeCanonicalPathT[ IFileSystemAPI::cchPathMax ];
     OSStrCbCopyW( wszVolumeCanonicalPathT, sizeof( wszVolumeCanonicalPathT ), wszVolumeCanonicalPath );
 
-    const size_t cchVolumePathT = wcslen( wszVolumeCanonicalPathT );
+    const size_t cchVolumePathT = LOSStrLengthW( wszVolumeCanonicalPathT );
     Assert( cchVolumePathT > 0 );
 
     if ( cchVolumePathT == 0 )
@@ -2861,13 +2930,13 @@ CFileIdentification g_fident;
 CCacheTelemetry g_ctm;
 CCacheRepository g_crep( &g_fident, &g_ctm );
 
-ERR ErrOSFSCreate( __out IFileSystemAPI** const ppfsapi )
+ERR ErrOSFSCreate( _Out_ IFileSystemAPI** const ppfsapi )
 {
     return ErrOSFSCreate( NULL, ppfsapi );
 }
 
-ERR ErrOSFSCreate(  __in IFileSystemConfiguration * const   pfsconfig,
-                    __out IFileSystemAPI** const            ppfsapi )
+ERR ErrOSFSCreate(  _In_ IFileSystemConfiguration * const   pfsconfig,
+                    _Out_ IFileSystemAPI** const            ppfsapi )
 {
     ERR                             err         = JET_errSuccess;
     IFileSystemConfiguration* const pfsconfigT  = pfsconfig ? pfsconfig : &g_fsconfigDefault;
@@ -2954,8 +3023,8 @@ COSVolume::~COSVolume()
 
 ERR COSVolume::ErrInitVolume( __in_z const WCHAR * const wszVolPath, __in_z const WCHAR * const wszVolCanonicalPath )
 {
-    if ( ( ( 1 + wcslen( wszVolPath ) ) * 2 ) >= sizeof( m_wszVolPath ) ||
-            ( ( 1 + wcslen( wszVolCanonicalPath ) ) * 2 ) >= sizeof( m_wszVolCanonicalPath ) )
+    if ( ( ( 1 + LOSStrLengthW( wszVolPath ) ) * 2 ) >= sizeof( m_wszVolPath ) ||
+            ( ( 1 + LOSStrLengthW( wszVolCanonicalPath ) ) * 2 ) >= sizeof( m_wszVolCanonicalPath ) )
     {
         AssertSz( fFalse, "We expect this to be protected by the out lying layer, but protect anyway" );
         return ErrERRCheck( JET_errInvalidParameter );
@@ -3155,7 +3224,7 @@ ERR COSVolume::ErrGetDisk( COSDisk ** pposd )
 ERR ErrOSVolumeICreate(
     __in_z const WCHAR * const  wszVolPath,
     __in_z const WCHAR * const  wszVolCanonicalPath,
-    __out COSVolume **          pposv,
+    _Out_ COSVolume **          pposv,
     __in_opt IDiskAPI * const   pdiskapi
     )
 {
@@ -3202,7 +3271,7 @@ HandleError:
     return err;
 }
 
-ERR ErrOSVolumeIRetrieve( __in PCWSTR wszVolPath, __out COSVolume ** pposv )
+ERR ErrOSVolumeIRetrieve( _In_ PCWSTR wszVolPath, _Out_ COSVolume ** pposv )
 {
     COSVolume * posv = NULL;
 
@@ -3223,9 +3292,9 @@ ERR ErrOSVolumeIRetrieve( __in PCWSTR wszVolPath, __out COSVolume ** pposv )
 }
 
 ERR ErrOSVolumeConnect(
-    __in COSFileSystem * const      posfs,
+    _In_ COSFileSystem * const      posfs,
     __in_z const WCHAR * const      wszFilePath,
-    __out IVolumeAPI **             ppvolapi
+    _Out_ IVolumeAPI **             ppvolapi
     )
 {
     ERR err                                 = JET_errSuccess;
@@ -3249,7 +3318,7 @@ ERR ErrOSVolumeConnect(
 
     //  Retrieve the volume canonical path and disk ID.
 
-    posfs->PathVolumeCanonicalAndDiskId( wszVolumePath,
+    posfs->PathVolumeCanonicalAndDiskId(    wszVolumePath,
                                             wszVolumeCanonicalPath, _countof( wszVolumeCanonicalPath ),
                                             wszDiskId, _countof( wszDiskId ),
                                             &dwDiskNumber );

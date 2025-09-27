@@ -127,7 +127,7 @@ HandleError:
         _In_ PCWSTR wszNewValue )
     {
         Assert( m_fAllocationAttempted );
-        return ErrStrDupLocalAlloc( &m_wszProcessName, wszNewValue, wcslen( wszNewValue ) );
+        return ErrStrDupLocalAlloc( &m_wszProcessName, wszNewValue, LOSStrLengthW( wszNewValue ) );
     }
 
 
@@ -140,7 +140,7 @@ HandleError:
         _In_ PCWSTR wszNewValue )
     {
         Assert( m_fAllocationAttempted );
-        return ErrStrDupLocalAlloc( &m_wszProcessFileName, wszNewValue, wcslen( wszNewValue ) );
+        return ErrStrDupLocalAlloc( &m_wszProcessFileName, wszNewValue, LOSStrLengthW( wszNewValue ) );
     }
 
 
@@ -153,7 +153,7 @@ HandleError:
         _In_ PCWSTR wszNewValue )
     {
         Assert( m_fAllocationAttempted );
-        return ErrStrDupLocalAlloc( &m_wszProcessPath, wszNewValue, wcslen( wszNewValue ) );
+        return ErrStrDupLocalAlloc( &m_wszProcessPath, wszNewValue, LOSStrLengthW( wszNewValue ) );
     }
 
     const WCHAR* WszImageName() const
@@ -165,7 +165,7 @@ HandleError:
         _In_ PCWSTR wszNewValue )
     {
         Assert( m_fAllocationAttempted );
-        return ErrStrDupLocalAlloc( &m_wszImageName, wszNewValue, wcslen( wszNewValue ) );
+        return ErrStrDupLocalAlloc( &m_wszImageName, wszNewValue, LOSStrLengthW( wszNewValue ) );
     }
 
     const WCHAR* WszImagePath() const
@@ -177,7 +177,7 @@ HandleError:
         _In_ PCWSTR wszNewValue )
     {
         Assert( m_fAllocationAttempted );
-        return ErrStrDupLocalAlloc( &m_wszImagePath, wszNewValue, wcslen( wszNewValue ) );
+        return ErrStrDupLocalAlloc( &m_wszImagePath, wszNewValue, LOSStrLengthW( wszNewValue ) );
     }
 
     const WCHAR* WszUtilImageBuildClass() const
@@ -189,7 +189,7 @@ HandleError:
         _In_ PCWSTR wszNewValue )
     {
         Assert( m_fAllocationAttempted );
-        return ErrStrDupLocalAlloc( &m_wszImageBuildClass, wszNewValue, wcslen( wszNewValue ) );
+        return ErrStrDupLocalAlloc( &m_wszImageBuildClass, wszNewValue, LOSStrLengthW( wszNewValue ) );
     }
 
 
@@ -230,7 +230,7 @@ private:
             }
             Call( ErrOSStrCbCopyW( *pwszDestination, cbAlloc, wszNewValue ) );
 
-            Assert( wcslen( *pwszDestination ) == wcslen( wszNewValue ) );
+            Assert( LOSStrLengthW( *pwszDestination ) == LOSStrLengthW( wszNewValue ) );
         }
 
 HandleError:
@@ -543,7 +543,7 @@ BOOL FAVXEnabled()
 
 BOOL FDeterminePopcntCapabilities()
 {
-#if ( defined _AMD64_ || defined _X86_ )
+#if ( defined _M_AMD64 || defined _M_IX86 )
         INT cpuidInfo[4];
         __cpuid(cpuidInfo, 1);
         return !!( cpuidInfo[2] & (1 << 23) );  // check bit 23 of CX
@@ -555,7 +555,7 @@ BOOL FDeterminePopcntCapabilities()
 
 BOOL FDetermineAVXCapabilities()
 {
-#if ( defined _AMD64_ || defined _X86_ )
+#if ( defined _M_AMD64 || defined _M_IX86 )
         INT cpuidInfo[4];
         __cpuid(cpuidInfo, 1);
         bool fAvxEnabled = false;
@@ -816,7 +816,7 @@ HandleError:
 VOID COSLayerPreInit::SetProcessFriendlyName( const WCHAR* const wszProcessFriendlyNameNew )
 {
     const WCHAR* wszProcessFriendlyNameT = wszProcessFriendlyNameNew;
-    if ( wszProcessFriendlyNameT == NULL || wcslen( wszProcessFriendlyNameT ) == 0 )
+    if ( wszProcessFriendlyNameT == NULL || LOSStrLengthW( wszProcessFriendlyNameT ) == 0 )
     {
         wszProcessFriendlyNameT = WszUtilProcessName();
     }
@@ -1019,7 +1019,7 @@ const BOOL FUtilIProcessIsWow64()
 //  Private Staging (for alpha, beta, and test in production staging) of features.
 //
 
-enum UtilSystemBetaSiteMode //  usbsm
+enum UtilSystemBetaSiteMode : ULONG //  usbsm
 {
     //  You can _NOT_ change these constants b/c some of them are extruded out the JET API, and so
     //  I have picked values that leave room in the middle for expansion - though technically the
@@ -1085,14 +1085,17 @@ enum UtilSystemBetaSiteMode //  usbsm
     usbsmExFeatLast,
     usbsmExFeatureMask                              = 0xFF00002A
 };
+// The previous line needs to be "enum UtilSystemBetaSiteMode : ULONG;" to be explicit for some
+// compilers, but let's compile this way for now to prove that it actually IS a ULONG.
+C_ASSERT( sizeof( UtilSystemBetaSiteMode ) == sizeof( ULONG ) );
 
 DEFINE_ENUM_FLAG_OPERATORS_BASIC( UtilSystemBetaSiteMode );
 
-INT usbsmPrimaryEnvironments    = ( usbsmTestEnvAll | usbsmSelfhostAll | usbsmProdAll );
-INT usbsmExFeatures             = usbsmExFeatureMask;
+UtilSystemBetaSiteMode usbsmPrimaryEnvironments    = ( usbsmTestEnvAll | usbsmSelfhostAll | usbsmProdAll );
+UtilSystemBetaSiteMode usbsmExFeatures             = usbsmExFeatureMask;
 #ifdef DEBUG    // used for unit tests
-INT usbsmExFeatureMin           = usbsmExFeatRiskyFeatTest;
-INT usbsmExFeatureMax           = usbsmExFeatLast;
+UtilSystemBetaSiteMode usbsmExFeatureMin           = usbsmExFeatRiskyFeatTest;
+UtilSystemBetaSiteMode usbsmExFeatureMax           = usbsmExFeatLast;
 #endif
 
 C_ASSERT( JET_bitStageTestEnvLocalMode == usbsmTestEnvLocalMode );
@@ -1157,7 +1160,7 @@ ERR ErrUtilSystemSlConfiguration(
     Assert( pdwValue );
     ERR err = JET_errSuccess;
 
-    ExpectedSz( 0 == wcscmp( pszValueName, L"ExtensibleStorageEngine-ISAM-ParamConfiguration" ),
+    ExpectedSz( 0 == LOSStrCompareW( pszValueName, L"ExtensibleStorageEngine-ISAM-ParamConfiguration" ),
                 "You are passing an unknown value (%ws) name into here, the single 55564 config override below may mess things up.", pszValueName );
 
 #if defined(ESENT) && defined(OS_LAYER_VIOLATIONS)

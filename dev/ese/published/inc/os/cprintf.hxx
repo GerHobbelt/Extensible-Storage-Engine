@@ -16,7 +16,7 @@ class CPRINTF
         CPRINTF() {}
         virtual ~CPRINTF() {}
 
-        static void SetThreadPrintfPrefix( __in const _TCHAR * szPrefix );
+        static void SetThreadPrintfPrefix( _In_ const _TCHAR * szPrefix );
 
     public:
         virtual void __cdecl operator()( const _TCHAR* szFormat, ... ) = 0;
@@ -112,7 +112,7 @@ class CPRINTINTRINBUF : public CPRINTF
         CHAR                m_rgchBuffer[ s_cchBuffer ];
         QWORD               m_cyichAppendMax;  // CYclic Index count CHaracaters ... as in the real index is % buffer size.
 
-        void CPRINTINTRINBUF::Append_( const CHAR * const szPrint );
+        void Append_( const CHAR * const szPrint );
 
         ULONG IchAppendNext_() const
         {

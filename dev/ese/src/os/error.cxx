@@ -55,7 +55,7 @@ ULONG UlLineLastCall()
 //  dynamically load MessageBox to avoid linking with the DLL
 
 
-INT UtilMessageBoxW( IN const WCHAR * const wszText, IN const WCHAR * const wszCaption, IN const UINT uType )
+INT UtilMessageBoxW( _In_ const WCHAR * const wszText, _In_ const WCHAR * const wszCaption, _In_ const UINT uType )
 {
     INT                     retval          = 0;
 
@@ -169,7 +169,7 @@ void UserDebugBreakPoint()
                 memset( &si, 0, sizeof( si ) );
 
                 OSStrCbFormatW( szCmd, sizeof(szCmd), szCmdFormat, GetCurrentProcessId(), hEvent );
-                Assert( wcslen( szCmd ) < _countof(szCmd) );
+                Assert( LOSStrLengthW( szCmd ) < _countof(szCmd) );
 
                 si.cb           = sizeof( si );
                 si.lpDesktop    = L"Winsta0\\Default";
@@ -367,7 +367,7 @@ INT g_fNoWriteAssertEvent = 0;
 static const ULONG  g_cchIssueSourceMax = 40 +          // for format below, some extra slop room
                                             CCH_MAX_SHORT_FILENAME * 2 +    // 2 file names below
                                             CCH_32_BIT_MAX * 12;            // 12 integers used below
-VOID ERRFormatIssueSource( __out_bcount( cbIssueSource ) WCHAR * wszIssueSource, __in const ULONG cbIssueSource, const DWORD dwSavedGLE, __in PCSTR szFilename, __in const LONG lLine )
+VOID ERRFormatIssueSource( __out_bcount( cbIssueSource ) WCHAR * wszIssueSource, _In_ const ULONG cbIssueSource, const DWORD dwSavedGLE, _In_ PCSTR szFilename, _In_ const LONG lLine )
 {
 
     const CHAR * szFilenameSourcePre    = "";
@@ -448,7 +448,7 @@ LOCAL DWORD g_tidAssert = GetCurrentThreadId();
 LOCAL const CHAR * g_szFilenameAssert;
 LOCAL LONG g_lLineAssert;
 
-HRESULT EDBGPrintf( __in PCSTR szFormat, ... );
+HRESULT EDBGPrintf( _In_ PCSTR szFormat, ... );
 
 LOCAL DWORD g_fDebuggerPrint = fTrue;
 
@@ -730,7 +730,7 @@ void __stdcall AssertFail( char const *szMessageFormat, char const *szFilename, 
 
         //  append the debugger message
 
-        cchOffset = wcslen( g_wszAssertText );
+        cchOffset = LOSStrLengthW( g_wszAssertText );
 
         OSStrCbFormatW( g_wszAssertText+cchOffset, _countof(g_wszAssertText) - cchOffset,
                 L"%hs%hs" L"%ws",
@@ -738,7 +738,7 @@ void __stdcall AssertFail( char const *szMessageFormat, char const *szFilename, 
                 IsDebuggerAttachable() || IsDebuggerAttached() ? wszAssertPrompt : wszAssertPrompt2
                  );
 
-        cchOffset += wcslen( g_wszAssertText + cchOffset );
+        cchOffset += LOSStrLengthW( g_wszAssertText + cchOffset );
 
         id = UtilMessageBoxW(   g_wszAssertText,
                                 wszAssertCaption,
@@ -1033,7 +1033,7 @@ LOCAL_BROKEN BOOL ExceptionDialog( const WCHAR wszException[] )
         IsDebuggerAttachable() || IsDebuggerAttached() ? wszExceptionPrompt : wszExceptionPrompt2
         );
 
-    Assert( wcslen( wszMessage ) < _countof( wszMessage ) );
+    Assert( LOSStrLengthW( wszMessage ) < _countof( wszMessage ) );
     const INT id = UtilMessageBoxW(
                         wszMessage,
                         wszExceptionCaption,
@@ -1195,7 +1195,7 @@ EExceptionFilterAction _ExceptionFail( const CHAR* szMessage, EXCEPTION exceptio
                 (QWORD)pexr,
                 (DWORD)sizeof( LONG_PTR ) * 2,
                 (QWORD)pcxr );
-    Assert( wcslen( szT ) < _countof(szT) );
+    Assert( LOSStrLengthW( szT ) < _countof(szT) );
 
     BOOL fDebug = ExceptionDialog( szT );
 
@@ -1337,7 +1337,7 @@ ERR ErrERRCheck_( const ERR err, const CHAR* szFile, const LONG lLine )
 
 //  Sets in OS TLS the result from the last Call(), CallJ(), etc type call site.
 
-void ERRSetLastCall( __in const CHAR* szFile, __in const LONG lLine, __in const ERR err )
+void ERRSetLastCall( _In_ const CHAR* szFile, _In_ const LONG lLine, _In_ const ERR err )
 {
     Postls()->ulLineLastCall = lLine;
     Postls()->szFileLastCall = szFile;
@@ -2177,7 +2177,7 @@ BOOL FUtilRepairIntegrityMsgBox( const WCHAR * const wszMsg )
 }
 
 //  map Win32 error to JET API error
-ERR ErrOSErrFromWin32Err( __in DWORD dwWinError, __in ERR errDefault )
+ERR ErrOSErrFromWin32Err( _In_ DWORD dwWinError, _In_ ERR errDefault )
 {
     switch ( dwWinError )
     {
@@ -2240,7 +2240,7 @@ ERR ErrOSErrFromWin32Err( __in DWORD dwWinError, __in ERR errDefault )
     }
 }
 
-ERR ErrOSErrFromWin32Err(__in DWORD dwWinError)
+ERR ErrOSErrFromWin32Err(_In_ DWORD dwWinError)
 {
     return ErrOSErrFromWin32Err( dwWinError, JET_errInternalError );
 }

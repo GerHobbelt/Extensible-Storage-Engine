@@ -125,7 +125,7 @@ LOCAL ERR ErrReplacePageImage(
 
     if ( pagetrimTrimmed == csr.PagetrimState() )
     {
-#if DEBUG
+#ifdef DEBUG
         Assert( g_rgfmp[ ifmp ].FPgnoInZeroedOrRevertedMaps( pgno ) );
 #endif
     }
@@ -195,7 +195,7 @@ LOCAL VOID RebuildPageImageHeaderTrailer(
                                 const INT cbHeader,
     __in_bcount( cbTrailer )    const VOID * const pvTrailer,
                                 const INT cbTrailer,
-    __out                       VOID * const pvDest )
+    _Out_                       VOID * const pvDest )
 {
     Assert( ( cbHeader + cbTrailer ) <= g_cbPage );
 
@@ -327,6 +327,7 @@ LOCAL ERR ErrLGRIReportDbtimeMismatch(
 //  If the page is trimmed (according to csr), then returns fFalse (and perr = JET_errSuccess).
 //
 INLINE BOOL FLGNeedRedoCheckDbtimeBefore(
+    const IFMP      ifmp,
     const CSR&      csr,
     const DBTIME    dbtimeAfter,
     const DBTIME    dbtimeBefore,
@@ -348,12 +349,12 @@ INLINE BOOL FLGNeedRedoCheckDbtimeBefore(
                 // dbtimeBefore on page should be the same one as in the record
                 if ( csr.Dbtime() != dbtimeBefore )
                 {
-                    FMP* const pfmp = &g_rgfmp[ csr.Cpage().Ifmp() ];
+                    FMP* const pfmp = &g_rgfmp[ ifmp ];
                     LOG* const plog = pfmp->Pinst()->m_plog;
 
 
                     if ( csr.Dbtime() < dbtimeBefore
-                         && plog->FRedoMapNeeded( csr.Cpage().Ifmp() ) )
+                         && plog->FRedoMapNeeded( ifmp ) )
                     {
                         // We're likely redoing a page operation that will be trimmed or shrunk
                         // in the future, but we do need to keep track of it just in case
@@ -384,7 +385,7 @@ INLINE BOOL FLGNeedRedoCheckDbtimeBefore(
                     {
                         *perr = ErrLGRIReportDbtimeMismatch(
                             pfmp->Pinst(),
-                            csr.Cpage().Ifmp(),
+                            ifmp,
                             csr.Pgno(),
                             dbtimeBefore,
                             csr.Dbtime(),
@@ -414,6 +415,26 @@ INLINE BOOL FLGNeedRedoCheckDbtimeBefore(
     }
 
     Assert( fRedoNeeded || JET_errSuccess == *perr );
+    // If we are beyond required range, all updates should require redo (i.e. not be already written out)
+    // Or in other words, if we do not require redo for an update, we should be in required range.
+    //
+    if ( !fRedoNeeded && !g_rgfmp[ ifmp ].FContainsDataFromFutureLogs() && *perr >= JET_errSuccess )
+    {
+        AssertTrack( fFalse, "RedoNotNeededBeyondRequiredRange" );
+        if ( BoolParam( g_rgfmp[ ifmp ].Pinst(), JET_paramFlight_CheckRedoNeededBeyondRequiredRange ) )
+        {
+            *perr = ErrLGRIReportDbtimeMismatch(
+                g_rgfmp[ ifmp ].Pinst(),
+                ifmp,
+                csr.Pgno(),
+                dbtimeBefore,
+                csr.Dbtime(),
+                dbtimeAfter,
+                g_rgfmp[ ifmp ].Pinst()->m_plog->LgposLGLogTipNoLock(),
+                1 );
+        }
+    }
+
     return fRedoNeeded;
 }
 
@@ -427,10 +448,10 @@ INLINE BOOL FLGNeedRedoPage( const CSR& csr, const DBTIME dbtime )
 #ifdef DEBUG
 //  checks if page needs a redo of operation
 //
-INLINE BOOL FAssertLGNeedRedo( const CSR& csr, const DBTIME dbtime, const DBTIME dbtimeBefore )
+INLINE BOOL FAssertLGNeedRedo( const IFMP ifmp, const CSR& csr, const DBTIME dbtime, const DBTIME dbtimeBefore )
 {
     ERR         err;
-    const BOOL  fRedoNeeded = FLGNeedRedoCheckDbtimeBefore( csr, dbtime, dbtimeBefore, &err );
+    const BOOL  fRedoNeeded = FLGNeedRedoCheckDbtimeBefore( ifmp, csr, dbtime, dbtimeBefore, &err );
 
     return ( fRedoNeeded && JET_errSuccess == err );
 }
@@ -569,7 +590,7 @@ VOID LGIReportBadRevertedPage( const INST* pinst, const IFMP ifmp, const PGNO pg
 //
 //  On success, the page is latched with latchRIW.
 //  On failure, the page is not latched.
-//  errSkipLogRedoOperation: the page is not latched, and the Pagetrim State is pagetrimTrimmed.
+//  errSkipLogRedoOperation: the page is not latched, and the Pagetrim State is pagetrimTrimmed unless fSkipSetRedoMapDbtimeRevert is set and dbtime of page is dbtimeRevert.
 //
 INLINE ERR LOG::ErrLGIAccessPage(
     PIB             *ppib,
@@ -577,7 +598,8 @@ INLINE ERR LOG::ErrLGIAccessPage(
     const IFMP      ifmp,
     const PGNO      pgno,
     const OBJID     objid,
-    const BOOL      fUninitPageOk )
+    const BOOL      fUninitPageOk,
+    const BOOL      fSkipSetRedoMapDbtimeRevert )
 {
     ERR err = JET_errSuccess, errPage = JET_errSuccess;
     DBTIME dbtime = 0;
@@ -588,6 +610,9 @@ INLINE ERR LOG::ErrLGIAccessPage(
     Assert( pgnoNull != pgno );
     Assert( NULL != ppib );
     Assert( !pcsr->FLatched() );
+
+    // Both fUninitPageOk and fSkipSetRedoMapDbtimeRevert shouldn't be true.
+    Assert( !( fUninitPageOk && fSkipSetRedoMapDbtimeRevert ) );
 
     //  right off the bat, if the pgno for this redo operation is already
     //  tracked by the log redo map, we should just skip it instead of
@@ -642,6 +667,15 @@ INLINE ERR LOG::ErrLGIAccessPage(
         if ( errPage >= JET_errSuccess )
         {
             pcsr->ReleasePage();
+        }
+
+        // The only LR which passes fSkipSetRedoMapDbtimeRevert as true currently is the scrub LR for an unused page.
+        // For that LR, we will skip redo operation if the dbtime of the page is set to dbtimeRevert.
+        // We don't want to add it to redomap as nothing is going to remove it as it was freed earlier.
+        //
+        if ( fRevertedNewPage && fSkipSetRedoMapDbtimeRevert )
+        {
+            Error( ErrERRCheck( errSkipLogRedoOperation ) );
         }
 
 
@@ -723,14 +757,14 @@ HandleError:
 
 //  ================================================================
 ERR LOG::ErrLGIAccessPageCheckDbtimes(
-    __in    PIB             * const ppib,
-    __in    CSR             * const pcsr,
+    _In_    PIB             * const ppib,
+    _In_    CSR             * const pcsr,
             const IFMP      ifmp,
             const PGNO      pgno,
             const OBJID     objid,
             const DBTIME    dbtimeBefore,
             const DBTIME    dbtimeAfter,
-    __out   BOOL * const    pfRedoRequired )
+    _Out_   BOOL * const    pfRedoRequired )
 //  ================================================================
 //
 // Given a page and its dbtimeBefore/After latch the page and determine
@@ -756,7 +790,7 @@ ERR LOG::ErrLGIAccessPageCheckDbtimes(
     
     Call( ErrLGIAccessPage( ppib, pcsr, ifmp, pgno, objid, fFalse ) );
 
-    *pfRedoRequired = FLGNeedRedoCheckDbtimeBefore( *pcsr, dbtimeAfter, dbtimeBefore, &err );
+    *pfRedoRequired = FLGNeedRedoCheckDbtimeBefore( ifmp, *pcsr, dbtimeAfter, dbtimeBefore, &err );
     Call( err );
 
     if( *pfRedoRequired )
@@ -1766,9 +1800,7 @@ ERR ErrLGICheckDatabaseFileSize( PIB *ppib, IFMP ifmp )
             if ( fAdjSize )
             {
                 //  set file size to what the FMP (and OwnExt) says it should be.
-                PIBTraceContextScope tcScope = ppib->InitTraceContextScope();
-                tcScope->iorReason.SetIort( iortRecovery );
-                err = ErrIONewSize( ifmp, *tcScope, pfmp->PgnoLast(), 0, JET_bitNil );
+                err = ErrIONewSize( ifmp, TcCurr(), pfmp->PgnoLast(), 0, JET_bitNil );
             }
         }
     }
@@ -2812,7 +2844,8 @@ ERR LOG::ErrLGRIRedoFreeEmptyPages(
 
         Assert( rgemptypage[i].pgno == pcsrEmpty->Pgno() );
 
-        fRedoNeeded = FLGNeedRedoCheckDbtimeBefore( *pcsrEmpty,
+        fRedoNeeded = FLGNeedRedoCheckDbtimeBefore( ifmp,
+                                                    *pcsrEmpty,
                                                     plremptytree->le_dbtime,
                                                     rgemptypage[i].dbtimeBefore,
                                                     &err );
@@ -2933,7 +2966,7 @@ ERR LOG::ErrLGRIRedoNodeOperation( const LRNODE_ *plrnode, ERR *perr )
 
     fRedoNeeded = lrtypUndoInfo == plrnode->lrtyp ?
                                 fFalse :
-                                FLGNeedRedoCheckDbtimeBefore( csr, dbtime, plrnode->le_dbtimeBefore, &err );
+                                FLGNeedRedoCheckDbtimeBefore( ifmp, csr, dbtime, plrnode->le_dbtimeBefore, &err );
 
     // for the FLGNeedRedoCheckDbtimeBefore error code
     Call( err );
@@ -3710,8 +3743,8 @@ ERR LOG::ErrLGRIRedoScrub( const LRSCRUB * const plrscrub )
     if ( !fSkip )
     {
         const IFMP ifmp = m_pinst->m_mpdbidifmp[ plrscrub->dbid ];
-        Call( ErrLGIAccessPage( ppib, &csr, ifmp, plrscrub->le_pgno, plrscrub->le_objidFDP, fFalse ) );
-        const BOOL fRedo = FLGNeedRedoCheckDbtimeBefore( csr, plrscrub->le_dbtime, plrscrub->le_dbtimeBefore, &err );
+        Call( ErrLGIAccessPage( ppib, &csr, ifmp, plrscrub->le_pgno, plrscrub->le_objidFDP, fFalse, plrscrub->FUnusedPage() ) );
+        const BOOL fRedo = FLGNeedRedoCheckDbtimeBefore( ifmp, csr, plrscrub->le_dbtime, plrscrub->le_dbtimeBefore, &err );
         Call( err );
         if( fRedo )
         {
@@ -3742,8 +3775,8 @@ HandleError:
 //  If the user does allow data loss, it will fix the log stream such
 //  that recovery can continue to create a clean / consistent database.
 ERR LOG::ErrLGEvaluateDestructiveCorrectiveLogOptions(
-    __in const LONG lgenBad,
-    __in const ERR errCondition     // Note: we expect ErrERRCheck() was already called on this param.
+    _In_ const LONG lgenBad,
+    _In_ const ERR errCondition     // Note: we expect ErrERRCheck() was already called on this param.
     )
 {
     ERR     err = errCondition;
@@ -4200,7 +4233,7 @@ AbruptEnd:
             #ifdef DEBUG
             WCHAR   wszNameDebug[IFileSystemAPI::cchPathMax];
             m_pLogStream->LGMakeLogName( wszNameDebug, sizeof(wszNameDebug), eArchiveLog );
-            Assert( 0 == wcscmp( wszNameDebug, m_pLogStream->LogName() ) );
+            Assert( 0 == LOSStrCompareW( wszNameDebug, m_pLogStream->LogName() ) );
             #endif
 
             CallR( m_pLogStream->ErrLGRRestartLOGAtLogGen( lgen, fTrue ) );
@@ -4555,7 +4588,8 @@ ERR LOG::ErrLGRISetupFMPFromAttach(
                 &dtickShrinkDatabaseTimeQuota,  // JET_dbparamShrinkDatabaseTimeQuota.
                 &cpgShrinkDatabaseSizeLimit,    // JET_dbparamShrinkDatabaseSizeLimit.
                 &fLeakReclaimerEnabled,         // JET_dbparamLeakReclaimerEnabled.
-                &dtickLeakReclaimerTimeQuota    // JET_dbparamLeakReclaimerTimeQuota.
+                &dtickLeakReclaimerTimeQuota,   // JET_dbparamLeakReclaimerTimeQuota.
+                NULL                            // JET_dbparamMaintainExtentPageCountCache (not used here).
                 ) );
 
     //  Get one free fmp entry
@@ -6567,7 +6601,7 @@ ERR LOG::ErrLGRIRedoConvertFDP( PIB *ppib, const LRCONVERTFDP *plrconvertfdp )
 
         //  Check if the FDP page need be redone, based on dbtime.
         //
-        fRedoRoot = FLGNeedRedoCheckDbtimeBefore( csrRoot, dbtime, plrconvertfdp->le_dbtimeBefore, &err );
+        fRedoRoot = FLGNeedRedoCheckDbtimeBefore( ifmp, csrRoot, dbtime, plrconvertfdp->le_dbtimeBefore, &err );
 
         // for the FLGNeedRedoCheckDbtimeBefore error code
         Call ( err );
@@ -6653,7 +6687,7 @@ ERR LOG::ErrLGRIRedoConvertFDP( PIB *ppib, const LRCONVERTFDP *plrconvertfdp )
 
     if ( fRedoRoot )
     {
-        Assert( FAssertLGNeedRedo( csrRoot, dbtime, plrconvertfdp->le_dbtimeBefore ) );
+        Assert( FAssertLGNeedRedo( ifmp, csrRoot, dbtime, plrconvertfdp->le_dbtimeBefore ) );
         csrRoot.UpgradeFromRIWLatch();
     }
 
@@ -6761,7 +6795,9 @@ ERR LOG::ErrLGRIRedoOperation( LR *plr )
 #endif
                 break;
             }
+
             case JET_errOutOfMemory:
+            case JET_errOutOfCursors:
                 break;
 
             default:
@@ -7453,7 +7489,7 @@ LOCAL ERR ErrLGIRedoSplitLineinfo( FUCB                 *pfucb,
     Assert( psplit != NULL );
     Assert( psplit->psplitPath == psplitPath );
     Assert( NULL == psplit->rglineinfo );
-    Assert( FAssertLGNeedRedo( psplitPath->csr,dbtime, psplitPath->dbtimeBefore )
+    Assert( FAssertLGNeedRedo( pfucb->ifmp, psplitPath->csr,dbtime, psplitPath->dbtimeBefore )
         || !FBTISplitPageBeforeImageRequired( psplit )
         || fDebugHasPageBeforeImage );
 
@@ -7466,7 +7502,7 @@ LOCAL ERR ErrLGIRedoSplitLineinfo( FUCB                 *pfucb,
     AllocR( psplit->rglineinfo = new LINEINFO[psplit->clines] );
     memset( psplit->rglineinfo, 0, sizeof( LINEINFO ) * psplit->clines );
 
-    if ( !FLGNeedRedoCheckDbtimeBefore( psplitPath->csr, dbtime, psplitPath->dbtimeBefore, &err ) )
+    if ( !FLGNeedRedoCheckDbtimeBefore( pfucb->ifmp, psplitPath->csr, dbtime, psplitPath->dbtimeBefore, &err ) )
     {
         CallS( err );
 
@@ -7703,7 +7739,7 @@ ERR LOG::ErrLGRIRedoInitializeSplit( PIB * const ppib, const LRSPLIT_ * const pl
     psplit->pgnoNew     = plrsplit->le_pgnoNew;
     Assert( g_rgfmp[ifmp].Dbid() == dbid );
 
-    BOOL fRedoSplitPage                     = FLGNeedRedoCheckDbtimeBefore( psplitPath->csr, dbtime, plrsplit->le_dbtimeBefore, &err );
+    BOOL fRedoSplitPage                     = FLGNeedRedoCheckDbtimeBefore( ifmp, psplitPath->csr, dbtime, plrsplit->le_dbtimeBefore, &err );
     Call( err );
     const BOOL fPageBeforeImageRequired     = FBTISplitPageBeforeImageRequired( psplit );
     const BOOL fHasPageBeforeImage          = ( CbPageBeforeImage( plrsplit ) > 0 );
@@ -7761,7 +7797,7 @@ ERR LOG::ErrLGRIRedoInitializeSplit( PIB * const ppib, const LRSPLIT_ * const pl
                 plrsplit->le_dbtime,
                 plrsplit->le_dbtimeBefore ) );
         
-        Assert( FAssertLGNeedRedo( psplitPath->csr, plrsplit->le_dbtime, plrsplit->le_dbtimeBefore ) );
+        Assert( FAssertLGNeedRedo( ifmp, psplitPath->csr, plrsplit->le_dbtime, plrsplit->le_dbtimeBefore ) );
         fRedoSplitPage = fTrue;
     }
     Assert( !( fRedoNewPage && !fRedoSplitPage && fPageBeforeImageRequired ) );
@@ -8020,7 +8056,7 @@ ERR LOG::ErrLGRIRedoInitializeMerge( PIB            *ppib,
     const IFMP      ifmp                = pinst->m_mpdbidifmp[ dbid ];
 
     const BOOL      fHasPageBeforeImage = ( CbPageBeforeImage( plrmerge ) > 0 );
-    BOOL            fRedoSourcePage     = FLGNeedRedoCheckDbtimeBefore( pmergePath->csr, dbtime, plrmerge->le_dbtimeBefore, &err );
+    BOOL            fRedoSourcePage     = FLGNeedRedoCheckDbtimeBefore( ifmp, pmergePath->csr, dbtime, plrmerge->le_dbtimeBefore, &err );
     Call( err );
 
     BOOL            fRedoLeftPage       = ( pgnoLeft != pgnoNull );
@@ -8111,13 +8147,13 @@ ERR LOG::ErrLGRIRedoInitializeMerge( PIB            *ppib,
     if( pcsrDest )
     {
         Assert( latchRIW == pcsrDest->Latch() );
-        fRedoDestPage = FLGNeedRedoCheckDbtimeBefore( *pcsrDest, dbtime, dbtimeDestBefore, &err );
+        fRedoDestPage = FLGNeedRedoCheckDbtimeBefore( ifmp, *pcsrDest, dbtime, dbtimeDestBefore, &err );
         Call( err );
     }
 
     if ( fRedoDestPage )
     {
-        Assert( FAssertLGNeedRedo( *pcsrDest, dbtime, dbtimeDestBefore ) );
+        Assert( FAssertLGNeedRedo( ifmp, *pcsrDest, dbtime, dbtimeDestBefore ) );
         Assert( mergetype == pmerge->mergetype );
 
         if ( FBTIMergePageBeforeImageRequired( pmerge ) )
@@ -8157,7 +8193,7 @@ ERR LOG::ErrLGRIRedoInitializeMerge( PIB            *ppib,
                         plrmerge->le_dbtime,
                         plrmerge->le_dbtimeBefore ) );
 
-                    Assert( FAssertLGNeedRedo( pmergePath->csr, plrmerge->le_dbtime, plrmerge->le_dbtimeBefore ) );
+                    Assert( FAssertLGNeedRedo( ifmp, pmergePath->csr, plrmerge->le_dbtime, plrmerge->le_dbtimeBefore ) );
                     fRedoSourcePage = fTrue;
                 }
                 else
@@ -8234,7 +8270,7 @@ ERR LOG::ErrLGRIRedoInitializeMerge( PIB            *ppib,
         keyPrefix.Nullify();
         if ( fRedoDestPage )
         {
-            Assert( FAssertLGNeedRedo( *pcsrDest, dbtime, dbtimeDestBefore ) );
+            Assert( FAssertLGNeedRedo( ifmp, *pcsrDest, dbtime, dbtimeDestBefore ) );
 
             NDGetPrefix( pfucb, pcsrDest );
             keyPrefix = pfucb->kdfCurr.key;
@@ -8322,7 +8358,7 @@ ERR LOG::ErrLGRIRedoInitializeMerge( PIB            *ppib,
 
             if ( fRedoDestPage )
             {
-                Assert( FAssertLGNeedRedo( *pcsrDest, dbtime, dbtimeDestBefore ) );
+                Assert( FAssertLGNeedRedo( ifmp, *pcsrDest, dbtime, dbtimeDestBefore ) );
 
                 //  calculate cbPrefix for node
                 //  with respect to prefix on right page
@@ -8546,7 +8582,7 @@ ERR LOG::ErrLGIRedoSplitStructures(
         err = JET_errSuccess;
 
         if ( psplitPath->psplit != NULL
-            && ( FLGNeedRedoCheckDbtimeBefore( psplitPath->csr, dbtime, psplitPath->dbtimeBefore, &err )
+            && ( FLGNeedRedoCheckDbtimeBefore( ifmp, psplitPath->csr, dbtime, psplitPath->dbtimeBefore, &err )
                 || FLGNeedRedoPage( psplitPath->psplit->csrNew, dbtime ) ) )
         {
             Call( err );
@@ -8559,6 +8595,7 @@ ERR LOG::ErrLGIRedoSplitStructures(
             Assert( NULL != psplit );
 
             const BOOL  fRedoSplitPage  = FLGNeedRedoCheckDbtimeBefore(
+                                                ifmp,
                                                 psplitPath->csr,
                                                 dbtime,
                                                 psplitPath->dbtimeBefore,
@@ -8739,7 +8776,7 @@ HandleError:
 
 //  upgrades latches on pages that need redo
 //
-LOCAL ERR ErrLGIRedoMergeUpgradeLatches( MERGEPATH *pmergePathLeaf, DBTIME dbtime )
+LOCAL ERR ErrLGIRedoMergeUpgradeLatches( const IFMP ifmp, MERGEPATH *pmergePathLeaf, DBTIME dbtime )
 {
     ERR         err         = JET_errSuccess;
     MERGEPATH*  pmergePath;
@@ -8766,7 +8803,7 @@ LOCAL ERR ErrLGIRedoMergeUpgradeLatches( MERGEPATH *pmergePathLeaf, DBTIME dbtim
                 Assert( ( pgnoNull == pmerge->csrLeft.Pgno()
                           && !pmerge->csrLeft.FLatched() )
                         || latchRIW == pmerge->csrLeft.Latch() );
-                if ( pmerge->csrLeft.FLatched() && FLGNeedRedoCheckDbtimeBefore( pmerge->csrLeft, dbtime, pmerge->dbtimeLeftBefore, &err ) )
+                if ( pmerge->csrLeft.FLatched() && FLGNeedRedoCheckDbtimeBefore( ifmp, pmerge->csrLeft, dbtime, pmerge->dbtimeLeftBefore, &err ) )
                 {
                     Call( err );
                     pmerge->csrLeft.UpgradeFromRIWLatch();
@@ -8785,7 +8822,7 @@ LOCAL ERR ErrLGIRedoMergeUpgradeLatches( MERGEPATH *pmergePathLeaf, DBTIME dbtim
             Assert( latchRIW == pmergePath->csr.Latch() );
         }
 
-        if ( FLGNeedRedoCheckDbtimeBefore( pmergePath->csr, dbtime, pmergePath->dbtimeBefore, &err ) )
+        if ( FLGNeedRedoCheckDbtimeBefore( ifmp, pmergePath->csr, dbtime, pmergePath->dbtimeBefore, &err ) )
         {
             Call( err );
             pmergePath->csr.UpgradeFromRIWLatch();
@@ -8800,7 +8837,7 @@ LOCAL ERR ErrLGIRedoMergeUpgradeLatches( MERGEPATH *pmergePathLeaf, DBTIME dbtim
                           && !pmerge->csrRight.FLatched() )
                         || latchRIW == pmerge->csrRight.Latch() );
 
-                if ( pmerge->csrRight.FLatched() && FLGNeedRedoCheckDbtimeBefore( pmerge->csrRight, dbtime, pmerge->dbtimeRightBefore, &err ) )
+                if ( pmerge->csrRight.FLatched() && FLGNeedRedoCheckDbtimeBefore( ifmp, pmerge->csrRight, dbtime, pmerge->dbtimeRightBefore, &err ) )
                 {
                     Call( err );
                     pmerge->csrRight.UpgradeFromRIWLatch();
@@ -8893,7 +8930,7 @@ HandleError:
 }
 
 //  ================================================================
-ERR LOG::ErrLGRIIRedoPageMove( __in PIB * const ppib, const LRPAGEMOVE * const plrpagemove )
+ERR LOG::ErrLGRIIRedoPageMove( _In_ PIB * const ppib, const LRPAGEMOVE * const plrpagemove )
 //  ================================================================
 {
     Assert( ppib );
@@ -9129,11 +9166,8 @@ ERR LOG::ErrLGRIRedoPagePatch( const LRPAGEPATCHREQUEST * const plrpagepatchrequ
     }
 
     BFLatch bfl;
-    TraceContextScope tcScope( iortPagePatching );
-    // LOG doesn't know TCE during replay;  will pollute stats for activated passive's cache
-    tcScope->nParentObjectClass = tceNone;
 
-    err = ErrBFWriteLatchPage( &bfl, ifmp, pgno, bflfUninitPageOk, BfpriBFMake( PctFMPCachePriority( ifmp ), (BFTEMPOSFILEQOS)qosIODispatchImmediate ), *tcScope );
+    err = ErrBFWriteLatchPage( &bfl, ifmp, pgno, bflfUninitPageOk, BfpriBFMake( PctFMPCachePriority( ifmp ), (BFTEMPOSFILEQOS)qosIODispatchImmediate ), TcCurr() );
     if ( err == JET_errPageNotInitialized )
     {
         // empty pages cannot be patched, just ignore - other than dbscan,
@@ -9315,10 +9349,6 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
 
     BFLatch bfl = { 0 };
     BOOL fLockedNLoaded = fFalse;   // have latch, AND loaded page ...
-    Assert( fDbScan || fDbShrink ); // Handle client type to set trace context below.
-    TraceContextScope tcScope( fDbScan ? iortDbScan : ( fDbShrink ? iortDbShrink : iortRecovery ) );
-    // LOG doesn't know TCE during replay;  will pollute stats for activated passive's cache
-    tcScope->nParentObjectClass = tceNone;
 
     C_ASSERT( pgnoSysMax < pgnoScanLastSentinel );
 
@@ -9354,7 +9384,7 @@ ERR LOG::ErrLGRIRedoScanCheck( const LRSCANCHECK2 * const plrscancheck, BOOL* co
                     bflfExtensiveChecks |
                     ( fDbScan ? bflfDBScan : bflfNone ) ),
                 BfpriBFMake( PctFMPCachePriority( ifmp ), (BFTEMPOSFILEQOS)qosIODispatchImmediate ),
-                *tcScope );
+                TcCurr() );
 
         if ( err >= JET_errSuccess )
         {
@@ -9852,7 +9882,7 @@ ERR LOG::ErrLGRIRedoMerge( PIB *ppib, DBTIME dbtime )
 
     //  write latch pages that need redo
     //
-    Call( ErrLGIRedoMergeUpgradeLatches( pmergePathLeaf, dbtime ) );
+    Call( ErrLGIRedoMergeUpgradeLatches( m_pinst->m_mpdbidifmp[ dbid ], pmergePathLeaf, dbtime ) );
 
     //  sets dirty and dbtime on all updated pages
     //
@@ -9882,7 +9912,7 @@ HandleError:
 
 //  upgrades latches on pages that need redo
 //
-LOCAL ERR ErrLGIRedoSplitUpgradeLatches( SPLITPATH *psplitPathLeaf, DBTIME dbtime )
+LOCAL ERR ErrLGIRedoSplitUpgradeLatches( const IFMP ifmp, SPLITPATH *psplitPathLeaf, DBTIME dbtime )
 {
     ERR         err         = JET_errSuccess;
     SPLITPATH*  psplitPath;
@@ -9901,7 +9931,7 @@ LOCAL ERR ErrLGIRedoSplitUpgradeLatches( SPLITPATH *psplitPathLeaf, DBTIME dbtim
     {
         Assert( latchRIW == psplitPath->csr.Latch() || pagetrimTrimmed == psplitPath->csr.PagetrimState() );
 
-        if ( FLGNeedRedoCheckDbtimeBefore( psplitPath->csr, dbtime, psplitPath->dbtimeBefore, &err ) )
+        if ( FLGNeedRedoCheckDbtimeBefore( ifmp, psplitPath->csr, dbtime, psplitPath->dbtimeBefore, &err ) )
         {
             Call ( err );
             psplitPath->csr.UpgradeFromRIWLatch();
@@ -9933,7 +9963,7 @@ LOCAL ERR ErrLGIRedoSplitUpgradeLatches( SPLITPATH *psplitPathLeaf, DBTIME dbtim
             }
 #endif
 
-            if ( psplit->csrRight.FLatched() && FLGNeedRedoCheckDbtimeBefore( psplit->csrRight, dbtime, psplit->dbtimeRightBefore, &err ) )
+            if ( psplit->csrRight.FLatched() && FLGNeedRedoCheckDbtimeBefore( ifmp, psplit->csrRight, dbtime, psplit->dbtimeRightBefore, &err ) )
             {
                 Call( err );
                 psplit->csrRight.UpgradeFromRIWLatch();
@@ -10014,7 +10044,7 @@ ERR LOG::ErrLGRIRedoSplit( PIB *ppib, DBTIME dbtime )
 
     //  upgrade latches on pages that need redo
     //
-    Call( ErrLGIRedoSplitUpgradeLatches( psplitPathLeaf, dbtime ) );
+    Call( ErrLGIRedoSplitUpgradeLatches( m_pinst->m_mpdbidifmp[ dbid ], psplitPathLeaf, dbtime ) );
 
     psplit = psplitPathLeaf->psplit;
 
@@ -10230,7 +10260,14 @@ ERR LOG::ErrLGIRedoRootMoveStructures( PIB* const ppib, const DBTIME dbtime, ROO
                     Assert( ( pcsrNew->PagetrimState() == pagetrimTrimmed ) ||
                             ( pcsrNew->Latch() == latchRIW ) );
                 }
+
+                // Remove the source page from dbtimerevert redo map as it is freed now.
+                if ( g_rgfmp[ ifmp ].PLogRedoMapDbtimeRevert() )
+                {
+                    g_rgfmp[ ifmp ].PLogRedoMapDbtimeRevert()->ClearPgno( plrpm->PgnoSource() );
+                }
             }
+
             break;
 
             // We expect N of these LRs, one for each "child" object (secondary index, LV).
@@ -10365,13 +10402,13 @@ HandleError:
 }
 
 
-ERR LOG::ErrLGIRedoRootMoveUpgradeLatches( ROOTMOVE* const prm )
+ERR ErrLGIRedoRootMoveUpgradeLatches( const IFMP ifmp, ROOTMOVE* const prm )
 {
     ERR err = JET_errSuccess;
     const DBTIME dbtimeAfter = prm->dbtimeAfter;
 
     // Root.
-    if ( FLGNeedRedoCheckDbtimeBefore( prm->csrFDP, dbtimeAfter, prm->dbtimeBeforeFDP, &err ) )
+    if ( FLGNeedRedoCheckDbtimeBefore( ifmp, prm->csrFDP, dbtimeAfter, prm->dbtimeBeforeFDP, &err ) )
     {
         Call ( err );
         prm->csrFDP.UpgradeFromRIWLatch();
@@ -10379,7 +10416,7 @@ ERR LOG::ErrLGIRedoRootMoveUpgradeLatches( ROOTMOVE* const prm )
     CallS( err );
 
     // OE.
-    if ( FLGNeedRedoCheckDbtimeBefore( prm->csrOE, dbtimeAfter, prm->dbtimeBeforeOE, &err ) )
+    if ( FLGNeedRedoCheckDbtimeBefore( ifmp, prm->csrOE, dbtimeAfter, prm->dbtimeBeforeOE, &err ) )
     {
         Call ( err );
         prm->csrOE.UpgradeFromRIWLatch();
@@ -10387,7 +10424,7 @@ ERR LOG::ErrLGIRedoRootMoveUpgradeLatches( ROOTMOVE* const prm )
     CallS( err );
 
     // AE.
-    if ( FLGNeedRedoCheckDbtimeBefore( prm->csrAE, dbtimeAfter, prm->dbtimeBeforeAE, &err ) )
+    if ( FLGNeedRedoCheckDbtimeBefore( ifmp, prm->csrAE, dbtimeAfter, prm->dbtimeBeforeAE, &err ) )
     {
         Call ( err );
         prm->csrAE.UpgradeFromRIWLatch();
@@ -10436,7 +10473,7 @@ ERR LOG::ErrLGIRedoRootMoveUpgradeLatches( ROOTMOVE* const prm )
             prmc != NULL;
             prmc = prmc->prootMoveChildNext )
     {
-        if ( FLGNeedRedoCheckDbtimeBefore( prmc->csrChildFDP, dbtimeAfter, prmc->dbtimeBeforeChildFDP, &err ) )
+        if ( FLGNeedRedoCheckDbtimeBefore( ifmp, prmc->csrChildFDP, dbtimeAfter, prmc->dbtimeBeforeChildFDP, &err ) )
         {
             Call ( err );
             prmc->csrChildFDP.UpgradeFromRIWLatch();
@@ -10447,7 +10484,7 @@ ERR LOG::ErrLGIRedoRootMoveUpgradeLatches( ROOTMOVE* const prm )
     // Change catalog pages to point to new root.
     for ( int iCat = 0; iCat < 2; iCat++ )
     {
-        if ( FLGNeedRedoCheckDbtimeBefore( prm->csrCatObj[iCat], dbtimeAfter, prm->dbtimeBeforeCatObj[iCat], &err ) )
+        if ( FLGNeedRedoCheckDbtimeBefore( ifmp, prm->csrCatObj[iCat], dbtimeAfter, prm->dbtimeBeforeCatObj[iCat], &err ) )
         {
             Call ( err );
             prm->csrCatObj[iCat].UpgradeFromRIWLatch();
@@ -10469,7 +10506,7 @@ ERR LOG::ErrLGIRedoRootMoveUpgradeLatches( ROOTMOVE* const prm )
         if ( ( prm->pgnoCatClustIdx[iCat] != pgnoNull ) &&
              ( prm->pgnoCatClustIdx[iCat] != prm->pgnoCatObj[iCat] ) )
         {
-            if ( FLGNeedRedoCheckDbtimeBefore( prm->csrCatClustIdx[iCat], dbtimeAfter, prm->dbtimeBeforeCatClustIdx[iCat], &err ) )
+            if ( FLGNeedRedoCheckDbtimeBefore( ifmp, prm->csrCatClustIdx[iCat], dbtimeAfter, prm->dbtimeBeforeCatClustIdx[iCat], &err ) )
             {
                 Call ( err );
                 prm->csrCatClustIdx[iCat].UpgradeFromRIWLatch();
@@ -10611,7 +10648,7 @@ ERR LOG::ErrLGRIRedoRootPageMove( PIB* const ppib, const DBTIME dbtime )
     Assert( dbtime == rm.dbtimeAfter );
 
     // Upgrade latches of pages that need to be redone.
-    Call( ErrLGIRedoRootMoveUpgradeLatches( &rm ) );
+    Call( ErrLGIRedoRootMoveUpgradeLatches( ifmp, &rm ) );
 
     // Make sure all pages are dirty and have the final dbtime.
     LGIRedoRootMoveUpdateDbtime( &rm );
@@ -10923,7 +10960,7 @@ ERR LOG::ErrLGRIRedoShrinkDB( const LRSHRINKDB3 * const plrdbshrink )
                     OSFormat( "%hs: Shrinking (truncating) to pgno=%lu",
                               __FUNCTION__, pgnoDbLastNew ) );
 
-        Call( ErrLGRIRedoShrinkDBFileTruncation( ifmp, pgnoDbLastNew ) );
+        Call( ErrLGRIRedoShrinkDBFileTruncation( ifmp, pgnoDbLastNew, cpgShrunkLR ) );
     }
     }
 
@@ -10950,7 +10987,6 @@ ERR LOG::ErrLGRIRedoShrinkDBPageReset( const IFMP ifmp, const PGNO pgnoShrinkFir
     PGNO pgnoPrereadWaypoint = pgnoShrinkFirstReset, pgnoPrereadNext = pgnoShrinkFirstReset;
     PGNO pgnoWriteMin = pgnoShrinkLastReset + 1, pgnoWriteMax = pgnoShrinkFirstReset - 1;
     const BFPriority bfprio = BfpriBFMake( PctFMPCachePriority( ifmp ), (BFTEMPOSFILEQOS)qosIODispatchImmediate );
-    TraceContextScope tcScope( iortDbShrink );
 
     Assert( pfmp->FShrinkIsActive() );
     Assert( ( pgnoShrinkFirstReset != pgnoNull ) && ( pgnoShrinkLastReset != pgnoNull ) );
@@ -10969,7 +11005,7 @@ ERR LOG::ErrLGRIRedoShrinkDBPageReset( const IFMP ifmp, const PGNO pgnoShrinkFir
                                 cpgPrereadCurrent,
                                 bfprfDefault,
                                 bfprio,
-                                *tcScope );
+                                TcCurr() );
             pgnoPrereadNext += cpgPrereadCurrent;
             pgnoPrereadWaypoint = pgnoPrereadNext - ( cpgPrereadCurrent / 2 );
         }
@@ -10981,7 +11017,7 @@ ERR LOG::ErrLGRIRedoShrinkDBPageReset( const IFMP ifmp, const PGNO pgnoShrinkFir
                 pgno,
                 BFLatchFlags( bflfNoTouch | bflfNoFaultFail | bflfUninitPageOk | bflfExtensiveChecks ),
                 bfprio,
-                *tcScope ) );
+                TcCurr() ) );
         fPageLatched = fTrue;
         const ERR errPageStatus = ErrBFLatchStatus( &bfl );
         const BOOL fPageUninit = ( errPageStatus == JET_errPageNotInitialized );
@@ -11000,7 +11036,7 @@ ERR LOG::ErrLGRIRedoShrinkDBPageReset( const IFMP ifmp, const PGNO pgnoShrinkFir
              ( cpageCheck.Dbtime() < dbtimeShrink ) )
         {
             // Reset it.
-            BFDirty( &bfl, bfdfDirty, *tcScope );
+            BFDirty( &bfl, bfdfDirty, TcCurr() );
             CPAGE cpageWrite;
             cpageWrite.GetShrunkPage( ifmp, pgno, bfl.pv, g_cbPage );
             cpageWrite.UnloadPage();
@@ -11038,11 +11074,10 @@ HandleError:
     return err;
 }
 
-ERR LOG::ErrLGRIRedoShrinkDBFileTruncation( const IFMP ifmp, const PGNO pgnoDbLastNew )
+ERR LOG::ErrLGRIRedoShrinkDBFileTruncation( const IFMP ifmp, const PGNO pgnoDbLastNew, const CPG cpgShrunkLR )
 {
     ERR err = JET_errSuccess;
     FMP* const pfmp = &g_rgfmp[ ifmp ];
-    TraceContextScope tcScope( iorpDatabaseShrink );
 
     Assert( pfmp->FShrinkIsActive() );
     Assert( pgnoDbLastNew != pgnoNull );
@@ -11056,6 +11091,9 @@ ERR LOG::ErrLGRIRedoShrinkDBFileTruncation( const IFMP ifmp, const PGNO pgnoDbLa
     // Write out any snapshot for pages about to be shrunk
     if ( pfmp->FRBSOn() )
     {
+        // Capture all shrunk pages as if they need to be reverted to empty pages when RBS is applied.
+        // If we already captured a preimage for one of those shrunk pages, the revert to an empty page will be ignored for that page when we apply the snapshot.
+        Call( pfmp->PRBS()->ErrCaptureEmptyPages( pfmp->Dbid(), pgnoDbLastNew + 1, cpgShrunkLR ) );
         Call( pfmp->PRBS()->ErrFlushAll() );
     }
 
@@ -11064,7 +11102,7 @@ ERR LOG::ErrLGRIRedoShrinkDBFileTruncation( const IFMP ifmp, const PGNO pgnoDbLa
     Call( ErrIOResizeUpdateDbHdrCount( ifmp, fFalse /* fExtend */ ) );
 
     pfmp->SetOwnedFileSize( CbFileSizeOfPgnoLast( pgnoDbLastNew ) );
-    Call( ErrIONewSize( ifmp, *tcScope, pgnoDbLastNew, 0, JET_bitResizeDatabaseOnlyShrink ) );
+    Call( ErrIONewSize( ifmp, TcCurr(), pgnoDbLastNew, 0, JET_bitResizeDatabaseOnlyShrink ) );
     pfmp->ResetPgnoMaxTracking( pgnoDbLastNew );
 
     if ( pfmp->ErrDBFormatFeatureEnabled( JET_efvLgposLastResize ) == JET_errSuccess )
@@ -11195,14 +11233,12 @@ ERR LOG::ErrLGRIRedoExtentFreed( const LREXTENTFREED * const plrextentfreed )
     const CPG cpgExtent     = plrextentfreed->CpgExtent();
 
     Assert( m_fRecoveringMode == fRecoveringRedo );
-    TraceContextScope tcScope( iortRecovery );
-    tcScope->nParentObjectClass = tceNone;
 
     for( int i = 0; i < cpgExtent; ++i )
     {
         BFLatch bfl;
 
-        err = ErrBFWriteLatchPage( &bfl, ifmp, pgnoFirst + i, bflfUninitPageOk, BfpriBFMake( PctFMPCachePriority( ifmp ), (BFTEMPOSFILEQOS)qosIODispatchImmediate ), *tcScope );
+        err = ErrBFWriteLatchPage( &bfl, ifmp, pgnoFirst + i, bflfUninitPageOk, BfpriBFMake( PctFMPCachePriority( ifmp ), (BFTEMPOSFILEQOS)qosIODispatchImmediate ), TcCurr() );
         if ( err == JET_errPageNotInitialized )
         {
             // pre image for empty pages cannot be captured, just ignore
@@ -11241,7 +11277,7 @@ ERR LOG::ErrLGRIRedoExtentFreed( const LREXTENTFREED * const plrextentfreed )
 ERR LOG::ErrLGIUpdateGenRecovering(
     const LONG              lGenRecovering,
     __out_ecount_part( dbidMax, *pcifmpsAttached ) IFMP *rgifmpsAttached,
-    __out ULONG *           pcifmpsAttached )
+    _Out_ ULONG *           pcifmpsAttached )
 {
     ERR err = JET_errSuccess;
 
@@ -11488,7 +11524,8 @@ ERR LOG::ErrLGRIRedoOperations(
     BYTE *pbAttach,
     BOOL fKeepDbAttached,
     BOOL* const pfRcvCleanlyDetachedDbs,
-    LGSTATUSINFO *plgstat )
+    LGSTATUSINFO *plgstat,
+    TraceContextScope& tcScope )
 {
     ERR                 err                     = JET_errSuccess;
     ERR                 errT                    = JET_errSuccess;
@@ -11509,9 +11546,6 @@ ERR LOG::ErrLGRIRedoOperations(
     ZeroMemory( cLRs, sizeof(cLRs) );
 
     *pfRcvCleanlyDetachedDbs = fTrue;
-
-    TraceContextScope tcScope( iortRecovery );
-    tcScope->nParentObjectClass = tceNone;
 
     OSTrace( JET_tracetagInitTerm, OSFormat( "[Recovery] Begin redo operations. [pinst=%p, fKeep=%d]", m_pinst, fKeepDbAttached ) );
 
@@ -11855,6 +11889,27 @@ ERR LOG::ErrLGRIRedoOperations(
 
                     OnNonRTM( m_lgposRedoPreviousLog = m_lgposRedo );
 
+                    // set the recovery redo mode to new logs if we are out of the required range
+
+                    {
+                        // No locking needed since this is recovery thread
+                        BOOL fContainsDataFromFutureLogs = fFalse;
+                        for ( DBID dbidT = dbidUserLeast; dbidT < dbidMax; dbidT++ )
+                        {
+                            const IFMP ifmpT = m_pinst->m_mpdbidifmp[dbidT];
+                            if ( ifmpT < g_ifmpMax && g_rgfmp[ifmpT].FContainsDataFromFutureLogs() )
+                            {
+                                fContainsDataFromFutureLogs = fTrue;
+                                break;
+                            }
+                        }
+
+                        if ( tcScope->iorReason.Iort() == iortRecoveryRedo && !fContainsDataFromFutureLogs )
+                        {
+                            tcScope->iorReason.SetIort( iortRecoveryRedoNewLogs );
+                        }
+                    }
+
                     // we will get the current lgpos right here
                     // so we can compare it with the m_lgposRecoveryStop
                     // before doing the EventLog
@@ -11926,6 +11981,8 @@ ProcessNextRec:
             LGAddUsage( CbLGSizeOfRec( plr ) );
             cLRs[ plr->lrtyp ]++;
         }
+
+        tcScope->iorReason.SetIors( IorsFromLr( plr ) );
 
 #ifdef MINIMAL_FUNCTIONALITY
 #else  //  !MINIMAL_FUNCTIONALITY
@@ -12856,6 +12913,8 @@ ProcessNextRec:
         } /* outer default */
     } /* outer switch */
 
+    tcScope->iorReason.SetIors( iorsNone );
+
 #ifdef DEBUG
         m_fDBGNoLog = fFalse;
 #endif
@@ -13578,6 +13637,9 @@ ERR LOG::ErrLGRRedo( BOOL fKeepDbAttached, CHECKPOINT *pcheckpoint, LGSTATUSINFO
     BOOL    fSkipUndo               = fFalse;   // default is to perform undo
     BOOL    fRcvCleanlyDetachedDbs  = fTrue;
 
+    TraceContextScope tcScope( iortRecoveryRedo );
+    tcScope->nParentObjectClass = tceNone;
+
     //  set flag to suppress logging
     //
     m_fRecovering = fTrue;
@@ -13655,7 +13717,8 @@ ERR LOG::ErrLGRRedo( BOOL fKeepDbAttached, CHECKPOINT *pcheckpoint, LGSTATUSINFO
                     pcheckpoint->rgbAttach,
                     fKeepDbAttached,
                     &fRcvCleanlyDetachedDbs,
-                    plgstat );
+                    plgstat,
+                    tcScope );
     //  remember the error code from ErrLGRIRedoOperations() which may have a corruption warning
     //      from ErrLGCheckReadLastLogRecordFF() which it may eventually call
     errRedo = err;
@@ -13891,6 +13954,8 @@ ERR LOG::ErrLGRRedo( BOOL fKeepDbAttached, CHECKPOINT *pcheckpoint, LGSTATUSINFO
 
 
     //  switch to undo mode
+
+    tcScope->iorReason.SetIort( iortRecoveryUndo );
 
     m_fRecoveringMode = fRecoveringUndo;
 
@@ -14288,8 +14353,8 @@ VOID LGFakeCheckpointToLogFile( CHECKPOINT * const pcheckpointT, const LGFILEHDR
 }
 
 ERR LOG::ErrLGICheckClosedNormallyInPreviousLog(
-    __in const LONG         lGenPrevious,
-    __out BOOL *            pfCloseNormally
+    _In_ const LONG         lGenPrevious,
+    _Out_ BOOL *            pfCloseNormally
     )
 {
     ERR err = JET_errSuccess;

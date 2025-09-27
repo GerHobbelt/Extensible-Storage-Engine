@@ -93,12 +93,12 @@ ERR ErrRECIAccessColumn( FUCB *pfucb, COLUMNID columnid, FIELD * const pfieldFix
         FID     fidFirst;
         FID     fidLast;
 
-        if ( FTaggedFid( fid ) )
+        if ( fid.FTagged() )
         {
             fidFirst = ptdb->FidTaggedFirst();
             fidLast = ptdb->FidTaggedLast();
         }
-        else if ( FFixedFid( fid ) )
+        else if ( fid.FFixed() )
         {
             fidFirst = ptdb->FidFixedFirst();
             fidLast = ptdb->FidFixedLast();
@@ -107,7 +107,7 @@ ERR ErrRECIAccessColumn( FUCB *pfucb, COLUMNID columnid, FIELD * const pfieldFix
         }
         else
         {
-            Assert( FVarFid( fid ) );
+            Assert( fid.FVar() );
             fidFirst = ptdb->FidVarFirst();
             fidLast = ptdb->FidVarLast();
         }
@@ -148,7 +148,7 @@ ERR ErrRECIAccessColumn( FUCB *pfucb, COLUMNID columnid, FIELD * const pfieldFix
     BOOL        fUseDMLLatch    = fFalse;
     FIELDFLAG   ffield;
 
-    if ( FTaggedFid( fid ) )
+    if ( fid.FTagged() )
     {
         if ( fid > ptdb->FidTaggedLastInitial() )
         {
@@ -167,7 +167,7 @@ ERR ErrRECIAccessColumn( FUCB *pfucb, COLUMNID columnid, FIELD * const pfieldFix
 
         ffield = ptdb->PfieldTagged( columnid )->ffield;
     }
-    else if ( FFixedFid( fid ) )
+    else if ( fid.FFixed() )
     {
         if ( fid > ptdb->FidFixedLastInitial() )
         {
@@ -198,7 +198,7 @@ ERR ErrRECIAccessColumn( FUCB *pfucb, COLUMNID columnid, FIELD * const pfieldFix
             ffield = pfieldT->ffield;
         }
     }
-    else if ( FVarFid( fid ) )
+    else if ( fid.FVar() )
     {
         if ( fid > ptdb->FidVarLastInitial() )
         {
@@ -316,8 +316,7 @@ ERR ErrRECIRetrieveFixedColumn(
     
     const REC   *prec = (REC *)dataRec.Pv();
 
-    Assert( prec->FidFixedLastInRec() >= fidFixedLeast-1 );
-    Assert( prec->FidFixedLastInRec() <= fidFixedMost );
+    Assert( prec->FidFixedLastInRec().FFixedNone() || prec->FidFixedLastInRec().FFixed() );
 
 #ifdef DEBUG
     const BOOL  fUseDMLLatchDBG     = ( pfcbNil != pfcb && fid > ptdb->FidFixedLastInitial() );
@@ -372,12 +371,12 @@ ERR ErrRECIRetrieveFixedColumn(
         return err;
     }
 
-    Assert( prec->FidFixedLastInRec() >= fidFixedLeast );
+    Assert( prec->FidFixedLastInRec().FFixed() );
     Assert( ptdb->PfieldFixed( columnid )->ibRecordOffset < prec->IbEndOfFixedData() );
 
     // check nullity
 
-    const UINT  ifid            = fid - fidFixedLeast;
+    const UINT  ifid            = fid.IndexOf( fidtypFixed );
     const BYTE  *prgbitNullity  = prec->PbFixedNullBitMap() + ifid/8;
 
     //  bit is not set: column is NULL
@@ -444,8 +443,7 @@ ERR ErrRECIRetrieveVarColumn(
 
     const REC   *prec = (REC *)dataRec.Pv();
 
-    Assert( prec->FidVarLastInRec() >= fidVarLeast-1 );
-    Assert( prec->FidVarLastInRec() <= fidVarMost );
+    Assert( prec->FidVarLastInRec().FVarNone() || prec->FidVarLastInRec().FVar() );
 
 #ifdef DEBUG
     const BOOL  fUseDMLLatchDBG     = ( pfcbNil != pfcb && fid > ptdb->FidVarLastInitial() );
@@ -498,13 +496,13 @@ ERR ErrRECIRetrieveVarColumn(
     if ( fUseDMLLatchDBG )
         pfcb->LeaveDML();
 
-    Assert( prec->FidVarLastInRec() >= fidVarLeast );
+    Assert( prec->FidVarLastInRec().FVar() );
 
     UnalignedLittleEndian<REC::VAROFFSET>   *pibVarOffs     = prec->PibVarOffsets();
 
     //  adjust fid to an index
     //
-    const UINT              ifid            = fid - fidVarLeast;
+    const UINT              ifid            = fid.IndexOf( fidtypVar );
 
     //  beginning of current column is end of previous column
     const REC::VAROFFSET    ibStartOfColumn = prec->IbVarOffsetStart( fid );
@@ -535,7 +533,7 @@ ERR ErrRECIRetrieveVarColumn(
         //  set output parameter: column address
         //
         BYTE    *pbVarData = prec->PbVarData();
-        Assert( pbVarData + IbVarOffset( pibVarOffs[prec->FidVarLastInRec()-fidVarLeast] )
+        Assert( pbVarData + IbVarOffset( pibVarOffs[ prec->FidVarLastInRec().IndexOf( fidtypVar ) ] )
                     <= (BYTE *)dataRec.Pv() + dataRec.Cb() );
         pdataField->SetPv( pbVarData + ibStartOfColumn );
         Assert( pdataField->Pv() >= (BYTE *)prec );
@@ -798,12 +796,13 @@ COLUMNID ColumnidRECFirstTaggedForScanOfDerivedTable( const TDB * const ptdb )
         //  since no ESE97 tagged columns in template, template and derived tables
         //  must both start numbering at same place
         Assert( ptdbTemplate->FidTaggedFirst() == ptdb->FidTaggedFirst() );
-        if ( ptdbTemplate->FidTaggedLast() >= fidTaggedLeast )
+        if ( ptdbTemplate->FidTaggedLast().FTagged() )
         {
             columnidT = ColumnidOfFid( ptdbTemplate->FidTaggedFirst(), fTrue );
         }
         else
         {
+            Assert(  ptdbTemplate->FidTaggedLast().FTaggedNone() );
             //  no template columns, go to derived columns
             columnidT = ColumnidOfFid( ptdb->FidTaggedFirst(), fFalse );
         }
@@ -1484,7 +1483,7 @@ LOCAL ERR ErrRECIDecompressDataForRetrieve(
     const INT ibOffset,
     __out_bcount_part_opt( cbDataMax, *pcbDataActual ) BYTE * const pbData,
     const INT cbDataMax,
-    __out INT * const pcbDataActual )
+    _Out_ INT * const pcbDataActual )
 //  ================================================================
 //
 //  Decompress data, dealing with the ibOffset
@@ -1587,7 +1586,7 @@ INLINE ERR ErrRECIGetIntrinsicAvail(
         //  columnid should already have been validated
         Assert( fidT >= ptdbT->FidFixedFirst() );
         Assert( fidT <= ptdbT->FidFixedLast() );
-        Assert( precT->FidFixedLastInRec() >= fidFixedLeast );
+        Assert( precT->FidFixedLastInRec().FFixed() );
         pfieldT = ptdbT->PfieldFixed( columnid );
         //  if setting fixed field does not require any space, or if the space required is available then return the full size of the fixed column.
         //  Otherwise, return 0.  With fixed columns, its all or nothing.
@@ -1718,7 +1717,7 @@ ERR VTAPI ErrIsamRetrieveColumn(
 
     CallR( ErrPIBCheck( ppib ) );
     CheckFUCB( ppib, pfucb );
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucb );
 
     //  set ptdb.  ptdb is same for indexes and for sorts.
     //
@@ -1757,7 +1756,7 @@ ERR VTAPI ErrIsamRetrieveColumn(
         fTransactionStarted = fTrue;
     }
 
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucb );
 
     Assert( FFUCBSort( pfucb ) || FFUCBIndex( pfucb ) );
 
@@ -1880,7 +1879,7 @@ ERR VTAPI ErrIsamRetrieveColumn(
         }
     }
 
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucb );
 
     fieldFixed.ffield = 0;
     fieldFixed.ibRecordOffset = 0;
@@ -1893,7 +1892,7 @@ ERR VTAPI ErrIsamRetrieveColumn(
         {
             Error( ErrERRCheck( JET_errColumnNoEncryptionKey ) );
         }
-        AssertDIRNoLatch( ppib );
+        AssertDIRMaybeNoLatch( ppib, pfucb );
     }
     else
     {
@@ -2282,7 +2281,7 @@ HandleError:
         CallS( ErrDIRCommitTransaction( ppib, NO_GRBIT ) );
     }
     
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucb );
     return err;
 }
 
@@ -2402,7 +2401,7 @@ LOCAL ERR ErrRECRetrieveColumns(
     //
     Assert( pfucb->u.pfcb->Ptdb() == pfucb->u.pscb->fcb.Ptdb() );
     Assert( pfucb->u.pfcb->Ptdb() != ptdbNil );
-    AssertDIRNoLatch( pfucb->ppib );
+    AssertDIRMaybeNoLatch( pfucb->ppib, pfucb );
 
     *pfBufferTruncated = fFalse;
 
@@ -2974,7 +2973,7 @@ HandleError:
         CallS( ErrDIRRelease( pfucb ) );
     }
 
-    AssertDIRNoLatch( pfucb->ppib );
+    AssertDIRMaybeNoLatch( pfucb->ppib, pfucb );
 
     return err;
 }
@@ -2993,7 +2992,7 @@ ERR VTAPI ErrIsamRetrieveColumns(
 
     CallR( ErrPIBCheck( ppib ) );
     CheckFUCB( ppib, pfucb );
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucb );
 
     if ( 0 == ppib->Level() )
     {
@@ -3003,7 +3002,7 @@ ERR VTAPI ErrIsamRetrieveColumns(
         fTransactionStarted = fTrue;
     }
 
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucb );
     Assert( FFUCBSort( pfucb ) || FFUCBIndex( pfucb ) );
 
     Call( ErrRECRetrieveColumns(
@@ -3020,7 +3019,7 @@ HandleError:
         //  No updates performed, so force success.
         CallS( ErrDIRCommitTransaction( ppib, NO_GRBIT ) );
     }
-    AssertDIRNoLatch( ppib );
+    AssertDIRMaybeNoLatch( ppib, pfucb );
 
     return err;
 }
@@ -3115,7 +3114,7 @@ LOCAL ERR ErrRECIBuildTaggedColumnList(
 
     //  if necessary, advance to starting column
 
-    if ( FTaggedFid( (WORD)columnidStart ) )     //  can't use FCOLUMNIDTagged() because it assumes a valid columnid
+    if ( FidOfColumnid( columnidStart ).FTagged() )
     {
         if ( precordIterator )
         {

@@ -15,6 +15,8 @@ extern const CHAR   szMSORootObjectsIndex[];
 //  which functions like a secondary index on the catalog.
 extern const CHAR   szMSObjids[];
 
+extern const CHAR   szMSExtentPageCountCache[];
+
 extern const CHAR   szMSLocales[];
 
 
@@ -83,43 +85,43 @@ const ULONG iMSO_LVChunkMax             = 27;
 const ULONG idataMSOMax                 = 28;
 
 
-const FID   fidMSO_ObjidTable           = fidFixedLeast;
-const FID   fidMSO_Type                 = fidFixedLeast+1;
-const FID   fidMSO_Id                   = fidFixedLeast+2;
-const FID   fidMSO_Coltyp               = fidFixedLeast+3;  // overloaded
-const FID   fidMSO_PgnoFDP              = fidFixedLeast+3;  // overloaded
-const FID   fidMSO_SpaceUsage           = fidFixedLeast+4;
-const FID   fidMSO_Flags                = fidFixedLeast+5;
-const FID   fidMSO_Pages                = fidFixedLeast+6;  // overloaded
-const FID   fidMSO_Localization         = fidFixedLeast+6;  // overloaded
-const FID   fidMSO_RootFlag             = fidFixedLeast+7;
-const FID   fidMSO_RecordOffset         = fidFixedLeast+8;  // overloaded
-const FID   fidMSO_LCMapFlags           = fidFixedLeast+9;
-const FID   fidMSO_KeyMost              = fidFixedLeast+10;
-const FID   fidMSO_LVChunkMax           = fidFixedLeast+11;
+const FID   fidMSO_ObjidTable           = FID( fidtypFixed, 0 );
+const FID   fidMSO_Type                 = FID( fidtypFixed, 1 );
+const FID   fidMSO_Id                   = FID( fidtypFixed, 2 );
+const FID   fidMSO_Coltyp               = FID( fidtypFixed, 3 );  // overloaded
+const FID   fidMSO_PgnoFDP              = FID( fidtypFixed, 3 );  // overloaded
+const FID   fidMSO_SpaceUsage           = FID( fidtypFixed, 4 );
+const FID   fidMSO_Flags                = FID( fidtypFixed, 5 );
+const FID   fidMSO_Pages                = FID( fidtypFixed, 6 );  // overloaded
+const FID   fidMSO_Localization         = FID( fidtypFixed, 6 );  // overloaded
+const FID   fidMSO_RootFlag             = FID( fidtypFixed, 7 );
+const FID   fidMSO_RecordOffset         = FID( fidtypFixed, 8 );
+const FID   fidMSO_LCMapFlags           = FID( fidtypFixed, 9 );
+const FID   fidMSO_KeyMost              = FID( fidtypFixed, 10 );
+const FID   fidMSO_LVChunkMax           = FID( fidtypFixed, 11 );
 
 const FID   fidMSO_FixedLast            = fidMSO_LVChunkMax;
 
-const FID   fidMSO_Name                 = fidVarLeast;
-const FID   fidMSO_Stats                = fidVarLeast+1;
-const FID   fidMSO_TemplateTable        = fidVarLeast+2;    // overloaded
-const FID   fidMSO_Callback             = fidVarLeast+2;    // overloaded
-const FID   fidMSO_DefaultValue         = fidVarLeast+3;
-const FID   fidMSO_KeyFldIDs            = fidVarLeast+4;
-const FID   fidMSO_VarSegMac            = fidVarLeast+5;
-const FID   fidMSO_ConditionalColumns   = fidVarLeast+6;
-const FID   fidMSO_TupleLimits          = fidVarLeast+7;
-const FID   fidMSO_Version              = fidVarLeast+8;
-const FID   fidMSO_SortID               = fidVarLeast+9;
+const FID   fidMSO_Name                 = FID( fidtypVar, 0 );
+const FID   fidMSO_Stats                = FID( fidtypVar, 1 );
+const FID   fidMSO_TemplateTable        = FID( fidtypVar, 2 );    // overloaded
+const FID   fidMSO_Callback             = FID( fidtypVar, 2 );    // overloaded
+const FID   fidMSO_DefaultValue         = FID( fidtypVar, 3 );
+const FID   fidMSO_KeyFldIDs            = FID( fidtypVar, 4 );
+const FID   fidMSO_VarSegMac            = FID( fidtypVar, 5 );
+const FID   fidMSO_ConditionalColumns   = FID( fidtypVar, 6 );
+const FID   fidMSO_TupleLimits          = FID( fidtypVar, 7 );
+const FID   fidMSO_Version              = FID( fidtypVar, 8 );
+const FID   fidMSO_SortID               = FID( fidtypVar, 9 );
 
 const FID   fidMSO_VarLast              = fidMSO_SortID;
 
-const FID   fidMSO_CallbackData         = fidTaggedLeast;
-const FID   fidMSO_CallbackDependencies = fidTaggedLeast+1;
-const FID   fidMSO_SeparateLVThreshold  = fidTaggedLeast+2;
-const FID   fidMSO_SpaceHints           = fidTaggedLeast+3;
-const FID   fidMSO_SpaceLVDeferredHints = fidTaggedLeast+4;
-const FID   fidMSO_LocaleName           = fidTaggedLeast+5;
+const FID   fidMSO_CallbackData         = FID( fidtypTagged, 0 );
+const FID   fidMSO_CallbackDependencies = FID( fidtypTagged, 1 );
+const FID   fidMSO_SeparateLVThreshold  = FID( fidtypTagged, 2 );
+const FID   fidMSO_SpaceHints           = FID( fidtypTagged, 3 );
+const FID   fidMSO_SpaceLVDeferredHints = FID( fidtypTagged, 4 );
+const FID   fidMSO_LocaleName           = FID( fidtypTagged, 5 );
 
 const FID   fidMSO_TaggedLast           = fidMSO_LocaleName;
 
@@ -198,12 +200,12 @@ ERR ErrCATCheckJetSpaceHints(
     );
 
 ULONG * PulCATIGetExtendedHintsStart(
-    __in const SYSOBJ                   sysobj,
-    __in const BOOL                     fDeferredLongValueHints,
-    __in const JET_SPACEHINTS * const   pSpacehints,
-    __out ULONG *                       pcTotalHints );
+    _In_ const SYSOBJ                   sysobj,
+    _In_ const BOOL                     fDeferredLongValueHints,
+    _In_ const JET_SPACEHINTS * const   pSpacehints,
+    _Out_ ULONG *                       pcTotalHints );
 
-INLINE BOOL FCATHasExtendedHints(  __in const SYSOBJ sysobj, const JET_SPACEHINTS * pjsph )
+INLINE BOOL FCATHasExtendedHints(  _In_ const SYSOBJ sysobj, const JET_SPACEHINTS * pjsph )
 {
     ULONG cTotalHints;
     ULONG * pulHints =  PulCATIGetExtendedHintsStart( sysobj, fFalse, pjsph, &cTotalHints );
@@ -243,10 +245,15 @@ extern const JET_SPACEHINTS g_jsphSystemDefaults[ eJSPHDefaultMax ];
 
 //  we don't know the pgnoFDP for MSU as its created dynamically
 
-INLINE BOOL FCATUnicodeFixupTable( IN const CHAR * const szTableName )
+INLINE BOOL FCATUnicodeFixupTable( _In_ const CHAR * const szTableName )
 {
     return (    0 == UtilCmpName( szTableName, szMSU ) ||
                 0 == UtilCmpName( szTableName, szMSU1 ) );
+}
+
+INLINE BOOL FCATExtentPageCountCacheTable( const CHAR * const szTableName )
+{
+    return ( 0 == UtilCmpName( szTableName, szMSExtentPageCountCache ) );
 }
 
 INLINE BOOL FCATObjidsTable( const CHAR * const szTableName )
@@ -603,12 +610,12 @@ ERR ErrCATSeekTable(
     _Out_opt_ OBJID         *pobjidTable = NULL );
 
 ERR ErrCATSeekTableByObjid(
-    IN PIB          * const ppib,
-    IN const IFMP   ifmp,
-    IN const OBJID  objidTable,
+    _In_ PIB          * const ppib,
+    _In_ const IFMP   ifmp,
+    _In_ const OBJID  objidTable,
     __out_ecount_z( cchTableName ) PSTR const szTableName,
-    IN const INT    cchTableName,
-    OUT PGNO        * const ppgnoTableFDP );
+    _In_ const INT    cchTableName,
+    _Out_ PGNO        * const ppgnoTableFDP );
 
 ERR ErrCATGetObjidMetadata(
     _In_ PIB* const     ppib,
@@ -800,7 +807,7 @@ ERR ErrCATInitCatalogFCB( FUCB *pfucbTable );
 ERR ErrCATInitTempFCB( FUCB *pfucbTable );
 ERR ErrCATInitFCB( FUCB *pfucbTable, OBJID objidTable );
 
-enum CATCheckIndicesFlags  //  catcif
+enum CATCheckIndicesFlags : ULONG  //  catcif
 {
     catcifReadOnly = 0x1,                           // Use defaults: Look for out-of-date indices, returning error if any were found.
     catcifDeleteOutOfDateSecondaryIndices = 0x2,    // Attempt to delete out-of-date indices (default is to return an error).
@@ -809,6 +816,9 @@ enum CATCheckIndicesFlags  //  catcif
     catcifForceDeleteIndices = 0x10,                // Force delete the localized text index unconditionally.
     catcifAllowValidOutOfDateVersions = 0x20,       // Allow indices with sort versions which are out-of-date but valid
 };
+// The previous line needs to be "enum CATCheckIndicesFlags : ULONG;" to be explicit for some
+// compilers, but let's compile this way for now to prove that it actually IS a ULONG.
+C_ASSERT( sizeof( CATCheckIndicesFlags ) == sizeof( ULONG ) );
 
 DEFINE_ENUM_FLAG_OPERATORS_BASIC( CATCheckIndicesFlags )
 
@@ -831,11 +841,11 @@ ERR ErrCATChangeColumnDefaultValue(
     const DATA& dataDefault );
 
 ERR ErrCATDeleteOrUpdateOutOfDateLocalizedIndexes(
-        IN PIB * const ppib,
-        IN const IFMP ifmp,
-        IN CATCheckIndicesFlags catcifFlags,
-        OUT BOOL * const pfIndexesUpdated,
-        OUT BOOL * const pfIndexesDeleted);
+        _In_ PIB * const ppib,
+        _In_ const IFMP ifmp,
+        _In_ CATCheckIndicesFlags catcifFlags,
+        _Out_ BOOL * const pfIndexesUpdated,
+        _Out_ BOOL * const pfIndexesDeleted);
 
 ERR ErrCATRenameTable(
     PIB         * const ppib,
@@ -966,7 +976,7 @@ class CATHashKey
         {
         }
 
-        CATHashKey( IFMP ifmpIn, __in PCSTR const szNameIn )
+        CATHashKey( IFMP ifmpIn, _In_ PCSTR const szNameIn )
         {
             m_uiHashIfmpName = UiHashIfmpName( ifmpIn, szNameIn );
             m_ifmp = ifmpIn;
@@ -1135,17 +1145,17 @@ VOID CATHashAssertClean();
 
 BOOL FCATHashILookup(
     IFMP            ifmp,
-    __in PCSTR const    szTableName,
+    _In_ PCSTR const    szTableName,
     PGNO            *ppgnoTableFDP,
     OBJID           *pobjidTable );
 
 //  insert an entry into the catalog hash (called by CATHashInsert)
 
-VOID CATHashIInsert( FCB *pfcb, __in PCSTR const szTable );
+VOID CATHashIInsert( FCB *pfcb, _In_ PCSTR const szTable );
 
 //  delete an entry from the catalog hash (called by CATHashDelete)
 
-VOID CATHashIDelete( FCB *pfcb, __in PCSTR const szTable );
+VOID CATHashIDelete( FCB *pfcb, _In_ PCSTR const szTable );
 
 
 //  returns fTrue when catalog hash is "active"
@@ -1168,7 +1178,7 @@ INLINE BOOL FCATHashActive( INST *pinst )
 
 INLINE BOOL FCATHashLookup(
     IFMP            ifmp,
-    __in PCSTR const    szTableName,
+    _In_ PCSTR const    szTableName,
     PGNO* const     ppgnoTableFDP,
     OBJID* const    pobjidTable )
 {
@@ -1183,7 +1193,7 @@ INLINE BOOL FCATHashLookup(
 
 //  wrapper for the real insert function
 
-INLINE VOID CATHashInsert( FCB *pfcb, __in PCSTR const szTable )
+INLINE VOID CATHashInsert( FCB *pfcb, _In_ PCSTR const szTable )
 {
     Assert( pfcbNil != pfcb );
     Assert( ptdbNil != pfcb->Ptdb() );
@@ -1197,7 +1207,7 @@ INLINE VOID CATHashInsert( FCB *pfcb, __in PCSTR const szTable )
 
 //  wrapper for the real delete function
 
-INLINE VOID CATHashDelete( FCB *pfcb, __in PCSTR const szTable )
+INLINE VOID CATHashDelete( FCB *pfcb, _In_ PCSTR const szTable )
 {
     Assert( pfcbNil != pfcb );
     Assert( ptdbNil != pfcb->Ptdb() );
@@ -1209,76 +1219,149 @@ INLINE VOID CATHashDelete( FCB *pfcb, __in PCSTR const szTable )
 }
 
 ERR ErrCATDeleteMSU(
-        IN PIB * const ppib,
-        IN const IFMP ifmp );
+        _In_ PIB * const ppib,
+        _In_ const IFMP ifmp );
+
+VOID CATSetExtentPageCounts(
+    PIB * const ppib,
+    const IFMP ifmp,
+    const OBJID objid,
+    const CPG cpgOE,
+    const CPG cpgAE );
+
+VOID CATResetExtentPageCounts(
+    PIB * const ppib,
+    const IFMP ifmp,
+    const OBJID objid );
+
+#define ErrCATAdjustExtentPageCountsPrepare(X) _ErrCATAdjustExtentPageCountsPrepare( (X), __LINE__)
+ERR _ErrCATAdjustExtentPageCountsPrepare(
+    const FUCB * const pfucb,
+    ULONG ulLine
+    );
+
+VOID CATAdjustExtentPageCounts(
+    const FUCB * const pfucb,
+    const CPG lAddCpgOE,
+    const CPG lAddCpgAE );
+
+ERR ErrCATGetExtentPageCounts(
+    PIB * const ppib,
+    const IFMP ifmp,
+    const OBJID objid,
+    CPG * const pcpgOE,
+    CPG * const pcpgAE );
+
+INLINE BOOL FCATExtentPageCountsCached( const FUCB * const pfucb )
+{
+    switch ( ErrCATGetExtentPageCounts(
+                 pfucb->ppib,
+                 pfucb->ifmp,
+                 pfucb->u.pfcb->ObjidFDP(),
+                 NULL,
+                 NULL ) )
+
+    {
+        case JET_errRecordNotFound:
+        case JET_errNotInitialized:
+            return fFalse;
+
+        case JET_errSuccess:
+            return fTrue;
+
+        default:
+            AssertSz( fFalse, "Failed to find object in cache in unepxected way.");
+            return fFalse;
+    }
+}
 
 ERR ErrCATCheckMSObjidsReady(
-        __in PIB * const ppib,
+        _In_ PIB * const ppib,
         const IFMP ifmp,
-        __out BOOL * const pfReady );
+        _Out_ BOOL * const pfReady );
 
 ERR ErrCATCreateMSObjids(
-        __in PIB * const ppib,
-        const IFMP ifmp );
+        _In_ PIB * const ppib,
+        const IFMP ifmp,
+        PGNO * const ppgnoFDP = NULL,
+        OBJID * const pobjidFDP = NULL );
 
 ERR ErrCATDeleteMSObjids(
         _In_ PIB * const ppib,
         _In_ const IFMP ifmp );
 
 ERR ErrCATPopulateMSObjids(
-        __in PIB * const ppib,
+        _In_ PIB * const ppib,
         const IFMP ifmp );
 
 ERR ErrCATInsertMSObjidsRecord(
-        __in PIB * const ppib,
+        _In_ PIB * const ppib,
         const IFMP ifmp,
         const OBJID objid,
         const OBJID objidTable,
         const SYSOBJ sysobj );
 
 ERR ErrCATMSObjidsRecordExists(
-        __in PIB * const ppib,
+        _In_ PIB * const ppib,
         const IFMP ifmp,
         const OBJID objid,
-        __out bool * const pfExists );
+        _Out_ bool * const pfExists );
 
 ERR ErrCATDeleteMSObjidsRecord(
-        __in PIB * const ppib,
+        _In_ PIB * const ppib,
         const IFMP ifmp,
         const OBJID objid );
 
 ERR ErrCATPossiblyDeleteMSObjidsRecord(
-        __in PIB * const ppib,
+        _In_ PIB * const ppib,
         FUCB * const pfucbCatalog );
 
 ERR ErrCATVerifyMSObjids(
-        __in PIB * const ppib,
+        _In_ PIB * const ppib,
         const IFMP ifmp,
               CPRINTF * const pcprintfError );
 
+ERR ErrCATCreateMSExtentPageCountCache(
+        _In_ PIB * const ppib,
+        const IFMP ifmp,
+        PGNO *ppgnoFDP,
+        OBJID *pobjidFDP );
+
+enum class EXTENT_CACHE_DELETE_REASON {
+    FeatureOff = 0,
+    Repair     = 1,
+};
+
+ERR ErrCATDeleteMSExtentPageCountCache(
+        _In_ PIB * const ppib,
+        _In_ const IFMP ifmp,
+        _In_ const EXTENT_CACHE_DELETE_REASON ecdrReason,
+        _Out_opt_ BOOL *pfTableExisted = NULL
+    );
+    
 ERR ErrCATCreateMSLocales(
-        __in PIB * const ppib,
+        _In_ PIB * const ppib,
         const IFMP ifmp );
 
 ERR ErrCATCreateOrUpgradeMSLocales(
-        __in PIB * const ppib,
+        _In_ PIB * const ppib,
         const IFMP ifmp );
 
 ERR ErrCATDeleteMSLocales(
-        __in PIB * const ppib,
-        __in const IFMP ifmp );
+        _In_ PIB * const ppib,
+        _In_ const IFMP ifmp );
 
 VOID CATTermMSLocales(
         FMP * const pfmp );
 
 ERR ErrCATCheckForOutOfDateLocales(
         const IFMP ifmp,
-        __out BOOL * const pfOutOfDateNLSVersion );
+        _Out_ BOOL * const pfOutOfDateNLSVersion );
 
 ERR ErrCATVerifyMSLocales(
-    __in PIB * const ppib,
-    __in const IFMP ifmp,
-    __in const BOOL fFixupMSysLocales );
+    _In_ PIB * const ppib,
+    _In_ const IFMP ifmp,
+    _In_ const BOOL fFixupMSysLocales );
 
 ERR ErrCATDumpMSLocales(
         JET_SESID sesid,
@@ -1312,7 +1395,7 @@ ERR ErrCATISeekTableType(
 #define PERSISTED_SORTID_MAX_LENGTH 37
 
 INLINE VOID WszCATFormatSortID(
-    __in const SORTID & sortID,
+    _In_ const SORTID & sortID,
     __out_ecount( cch ) WCHAR * wsz,
-    __in INT cch );
+    _In_ INT cch );
 

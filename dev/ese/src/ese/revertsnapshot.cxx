@@ -27,7 +27,7 @@ JETUNITTEST( CmpRbspos, Test )
 }
 #endif
 
-LOCAL ERR ErrAllocAndSetStr( __in PCWSTR wszName, __out WCHAR** pwszResult )
+LOCAL ERR ErrAllocAndSetStr( _In_ PCWSTR wszName, _Out_ WCHAR** pwszResult )
 {
     Assert( wszName );
     ERR err = JET_errSuccess;
@@ -70,7 +70,7 @@ HandleError:
     return err;
 }
 
-LOCAL ERR ErrRBSInitPaths_( INST* pinst, __out WCHAR** wszRBSAbsRootDir, __out WCHAR** wszRBSBaseName )
+LOCAL ERR ErrRBSInitPaths_( INST* pinst, _Out_ WCHAR** wszRBSAbsRootDir, _Out_ WCHAR** wszRBSBaseName )
 {
     Assert( pinst );
     Assert( wszRBSAbsRootDir );
@@ -136,8 +136,8 @@ LOCAL ERR ErrRBSGetDirSize( IFileSystemAPI *pfsapi, PCWSTR wszDirPath, _Out_ QWO
         wszDirT[0] = 0;
         Call( pfsapi->ErrPathBuild( wszDirT, wszFileT, wszExtT, wszFileNameT ) );
 
-         if ( wcscmp( wszFileNameT, L"." ) == 0 ||
-             wcscmp( wszFileNameT, L".." ) == 0 )
+         if ( LOSStrCompareW( wszFileNameT, L"." ) == 0 ||
+             LOSStrCompareW( wszFileNameT, L".." ) == 0 )
          {
              continue;
          }
@@ -215,8 +215,8 @@ LOCAL ERR ErrRBSDeleteAllFiles( IFileSystemAPI *const pfsapi, PCWSTR wszDir, PCW
 
         /* not . , and .. and not temp
         /**/
-        if (    wcscmp( wszFileNameT, L"." ) != 0 &&
-                wcscmp( wszFileNameT, L".." ) != 0 )
+        if (    LOSStrCompareW( wszFileNameT, L"." ) != 0 &&
+                LOSStrCompareW( wszFileNameT, L".." ) != 0 )
         {
             if ( !fFolder )
             {
@@ -273,8 +273,8 @@ HandleError:
 
 LOCAL ERR ErrRBSGetLowestAndHighestGen_( 
     IFileSystemAPI *const pfsapi, 
-    __in const PCWSTR wszRBSDirRootPath, 
-    __in const PCWSTR wszLogBaseName,  
+    _In_ const PCWSTR wszRBSDirRootPath, 
+    _In_ const PCWSTR wszLogBaseName,  
     LONG *rbsGenMin,
     LONG *rbsGenMax )
 {
@@ -356,7 +356,7 @@ LOCAL VOID RBSSzIdAppend( __inout_bcount_z( cbFName ) PWSTR wszRBSFileName, size
 
     Assert( wszRBSFileName );
 
-    ichBase = wcslen( wszRBSFileName ); // wcslen(wszLogFileName) for log base name or res log base size
+    ichBase = LOSStrLengthW( wszRBSFileName ); // LOSStrLengthW(wszLogFileName) for log base name or res log base size
 
     Assert( cbFName >= ( ( ichBase+cchRBSDigits+1 )*sizeof(WCHAR) ) );
 
@@ -384,7 +384,7 @@ LOCAL VOID RBSSzIdAppend( __inout_bcount_z( cbFName ) PWSTR wszRBSFileName, size
 LOCAL ERR ErrRBSFilePathForGen_( 
     PCWSTR cwszPath,
     PCWSTR cwszRBSBaseName,
-    __in IFileSystemAPI* const pfsapi,
+    _In_ IFileSystemAPI* const pfsapi,
     __out_bcount ( cbDirPath ) WCHAR* wszRBSDirPath,
     LONG cbDirPath,
     __out_bcount ( cbFilePath ) WCHAR* wszRBSFilePath,
@@ -466,7 +466,7 @@ LOCAL ERR ErrRBSInitAttachInfo(
     UtilMemCpy( &prbsattachinfo->signDb, &signDb, sizeof( SIGNATURE ) );
     UtilMemCpy( &prbsattachinfo->signDbHdrFlush, &signDbHdrFlush, sizeof( SIGNATURE ) );
 
-    DWORD cbDatabaseName = (wcslen(wszDatabaseName) + 1)*sizeof(WCHAR);
+    DWORD cbDatabaseName = (LOSStrLengthW(wszDatabaseName) + 1)*sizeof(WCHAR);
     if ( cbDatabaseName > sizeof(prbsattachinfo->wszDatabaseName) )
     {
         return ErrERRCheck( JET_errBufferTooSmall );
@@ -1037,7 +1037,7 @@ VOID *CSnapshotBuffer::s_pReserveBuffer = NULL;
 //                  CRevertSnapshot
 //  ================================================================
 
-CRevertSnapshot::CRevertSnapshot( __in INST* const pinst )
+CRevertSnapshot::CRevertSnapshot( _In_ INST* const pinst )
     : CZeroInit( sizeof( CRevertSnapshot ) ),
     m_pinst ( pinst ),
     m_cresRBSBuf( pinst ),
@@ -1082,7 +1082,7 @@ HandleError:
     return err;
 }
 
-VOID CRevertSnapshot::EnterDbHeaderFlush( CRevertSnapshot* prbs, __out SIGNATURE* const psignRBSHdrFlush )
+VOID CRevertSnapshot::EnterDbHeaderFlush( CRevertSnapshot* prbs, _Out_ SIGNATURE* const psignRBSHdrFlush )
 {
     if ( prbs != NULL && prbs->m_fInitialized && !prbs->m_fInvalid )
     {
@@ -1123,7 +1123,7 @@ ERR CRevertSnapshot::ErrSetDbtimeForFmp( FMP *pfmp, DBTIME dbtime )
 }
 
 // Used to set file api for dumping snapshot
-ERR CRevertSnapshot::ErrSetRBSFileApi( __in IFileAPI *pfapiRBS )
+ERR CRevertSnapshot::ErrSetRBSFileApi( _In_ IFileAPI *pfapiRBS )
 {
     // Make sure it hasn't already been initialized to something else.
     Assert( !m_fInitialized );
@@ -1367,11 +1367,17 @@ VOID CRevertSnapshot::RBSLogSpaceUsage()
         m_pinst );
 }
 
-ERR CRevertSnapshot::ErrRBSRecordDbAttach( __in FMP* const pfmp )
+ERR CRevertSnapshot::ErrRBSRecordDbAttach( _In_ FMP* const pfmp )
 {
     ERR err                     = JET_errSuccess;
 
     //OSTrace( JET_tracetagRBS, OSFormat( "\tErrRBSRecordDbAttach(DBName - %ls, RBSEnabled - %d, m_fInitialized - %d, m_fInvalid - %d)\n", pfmp->WszDatabaseName(), BoolParam( m_pinst, JET_paramEnableRBS ), m_fInitialized, m_fInvalid ) );
+
+    // Skip capturing page preimages for temp db.
+    if ( pfmp->Dbid() == dbidTemp )
+    {
+        return JET_errSuccess;
+    }
 
     // If database doesn't support the revert snapshot format version, the revert snapshot shouldn't have been initialized to begin with.
     // TODO SOMEONE: Is it possible for a newly created db to not support even though existing databases support?
@@ -1439,7 +1445,7 @@ HandleError:
     return err;
 }
 
-ERR CRevertSnapshot::ErrRBSInitDBFromRstmap( __in const RSTMAP* const prstmap, LONG lgenLow, LONG lgenHigh )
+ERR CRevertSnapshot::ErrRBSInitDBFromRstmap( _In_ const RSTMAP* const prstmap, LONG lgenLow, LONG lgenHigh )
 {
     Assert( prstmap );
     Assert( m_fInitialized );
@@ -1950,6 +1956,31 @@ ERR CRevertSnapshot::ErrCaptureNewPage(
     return ErrCaptureRec( &dbRec, &dataDummy, prbsposRecord );
 }
 
+ERR CRevertSnapshot::ErrCaptureEmptyPages(
+    DBID dbid,
+    PGNO pgnoFirst,
+    CPG  cpg )
+{
+    Assert( m_fInitialized );
+    Assert( !m_fInvalid );
+    Assert( pgnoFirst > 0 );
+    Assert( dbid != dbidTemp );
+    Assert( cpg > 0 );
+
+    RBS_POS rbspos;
+    DATA dataDummy;
+    dataDummy.Nullify();
+
+    RBSDbEmptyPagesRecord dbRec;
+    dbRec.m_bRecType    = rbsrectypeDbEmptyPages;
+    dbRec.m_usRecLength = sizeof( RBSDbEmptyPagesRecord );
+    dbRec.m_dbid        = dbid;
+    dbRec.m_pgnoFirst   = pgnoFirst;
+    dbRec.m_cpg         = cpg;
+
+    return ErrCaptureRec( &dbRec, &dataDummy, &rbspos );
+}
+
 ERR CRevertSnapshot::ErrCaptureDbHeader( FMP * const pfmp )
 {
     RBS_POS dummy;
@@ -1971,7 +2002,7 @@ ERR CRevertSnapshot::ErrCaptureDbAttach( FMP * const pfmp )
 
     DATA dataRec;
     dataRec.SetPv( pfmp->WszDatabaseName() );
-    dataRec.SetCb( ( wcslen( pfmp->WszDatabaseName() ) + 1 ) * sizeof(WCHAR) );
+    dataRec.SetCb( ( LOSStrLengthW( pfmp->WszDatabaseName() ) + 1 ) * sizeof(WCHAR) );
 
     RBSDbAttachRecord dbRec;
     dbRec.m_bRecType = rbsrectypeDbAttach;
@@ -2732,7 +2763,7 @@ BOOL CRevertSnapshot::FRollSnapshot()
 
 // Create a cleaner object for automatic cleanup of RBS.
 // This doesn't start the cleaner thread.
-ERR RBSCleanerFactory::ErrRBSCleanerCreate( INST*  pinst, __out RBSCleaner ** prbscleaner)
+ERR RBSCleanerFactory::ErrRBSCleanerCreate( INST*  pinst, _Out_ RBSCleaner ** prbscleaner)
 {
      ERR err = JET_errSuccess;
 
@@ -3146,7 +3177,7 @@ VOID RBSCleaner::TermCleaner()
 //                  CRBSDatabaseRevertContext
 //  ================================================================
 
-CRBSDatabaseRevertContext::CRBSDatabaseRevertContext( __in INST* const pinst )
+CRBSDatabaseRevertContext::CRBSDatabaseRevertContext( _In_ INST* const pinst )
     : CZeroInit( sizeof( CRBSDatabaseRevertContext ) ),
     m_pinst ( pinst ),
     m_dbidCurrent ( dbidMax ),
@@ -3663,7 +3694,7 @@ ERR CRBSDatabaseRevertContext::ErrBeginTracingToIRS()
 //                  CRBSRevertContext
 //  ================================================================
 
-CRBSRevertContext::CRBSRevertContext( __in INST* const pinst )
+CRBSRevertContext::CRBSRevertContext( _In_ INST* const pinst )
     : CZeroInit( sizeof( CRBSRevertContext ) ),
     m_pinst ( pinst )
 {
@@ -3723,7 +3754,7 @@ CRBSRevertContext::~CRBSRevertContext()
 }
 
 ERR CRBSRevertContext::ErrMakeRevertTracingNames(
-    __in IFileSystemAPI* pfsapi,
+    _In_ IFileSystemAPI* pfsapi,
     __in_range( cbOSFSAPI_MAX_PATHW, cbOSFSAPI_MAX_PATHW ) ULONG cbRBSRCRawPath,
     __out_bcount_z( cbRBSRCRawPath ) WCHAR* wszRBSRCRawPath,
     __in_range( cbOSFSAPI_MAX_PATHW, cbOSFSAPI_MAX_PATHW ) ULONG cbRBSRCRawBackupPath,
@@ -4027,7 +4058,7 @@ ERR CRBSRevertContext::ErrComputeRBSRangeToApply( LOGTIME ltRevertExpected, LOGT
     Assert( m_lRBSMinGenToApply > 0 );
 
 HandleError:
-    if ( err == JET_errReadVerifyFailure )
+    if ( err == JET_errReadVerifyFailure || err == JET_errFileInvalidType || err == JET_errBadRBSVersion || err == JET_errRBSInvalidSign )
     {
         ErrERRCheck( JET_errRBSRCInvalidRBS );
     }
@@ -4221,9 +4252,9 @@ HandleError:
 //
 ERR CRBSRevertContext::ErrRBSRevertContextInit( 
                 INST*       pinst, 
-        __in    LOGTIME     ltRevertExpected,
-        __in    CPG         cpgCache,
-        __in    JET_GRBIT   grbit,
+        _In_    LOGTIME     ltRevertExpected,
+        _In_    CPG         cpgCache,
+        _In_    JET_GRBIT   grbit,
         _Out_   LOGTIME*    pltRevertActual,
         _Out_   CRBSRevertContext**    pprbsrc )
 {
@@ -4273,6 +4304,58 @@ BOOL CRBSRevertContext::FPageAlreadyCaptured( DBID dbid, PGNO pgno )
     Assert( m_rgprbsdbrcAttached[ m_mpdbidirbsdbrc[ dbid ] ] );
 
     return m_rgprbsdbrcAttached[ m_mpdbidirbsdbrc[ dbid ] ]->FPageAlreadyCaptured( pgno );
+}
+
+// Adds the given pgno as a reverted new page to the list of pages to reverted for the given database.
+//
+ERR CRBSRevertContext::ErrAddRevertedNewPage( DBID dbid, PGNO pgnoRevertNew )
+{
+    ERR err         = JET_errSuccess;
+    void*   pvPage  = NULL;
+
+    if ( !FPageAlreadyCaptured( dbid, pgnoRevertNew ) )
+    {
+        pvPage = PvOSMemoryPageAlloc( m_cbDbPageSize, NULL );
+        Alloc( pvPage );
+
+        CPAGE cpage;
+        cpage.GetRevertedNewPage( pgnoRevertNew, pvPage, m_cbDbPageSize );
+        Assert( cpage.Pgft() == CPAGE::PageFlushType::pgftUnknown );
+
+        // For new page/multi new page record type, we don't store the preimage of the page since it indicates that it was a new page before it was updated.
+        // We will just write out an empty page for such a page.
+        Call( ErrAddPageRecord( pvPage, dbid, pgnoRevertNew ) );
+    }
+
+HandleError:
+    if ( err < JET_errSuccess && pvPage )
+    {
+        OSMemoryPageFree( pvPage );
+    }
+
+    return err;
+}
+
+// Checks whether we continue applying RBS, taking any required actions.
+//
+ERR CRBSRevertContext::ErrCheckApplyRBSContinuation()
+{
+    ERR err = JET_errSuccess;
+
+    // Flush the cached pages if full.
+    if ( m_cpgCached >= m_cpgCacheMax )
+    {
+        Call( ErrFlushPages( fFalse ) );
+    }
+
+    // Cancel revert if requested.
+    if ( m_fRevertCancelled )
+    {
+        Error( ErrERRCheck( JET_errRBSRCRevertCancelled ) );
+    }
+
+HandleError:
+    return err;
 }
 
 // Apply the given RBS record to the databases.
@@ -4417,19 +4500,24 @@ ERR CRBSRevertContext::ErrApplyRBSRecord( RBSRecord* prbsrec, BOOL fCaptureDbHdr
             }
 
             RBSDbNewPageRecord* prbsdbnewpgrec = ( RBSDbNewPageRecord* ) prbsrec;
+            Call( ErrAddRevertedNewPage( prbsdbnewpgrec->m_dbid, prbsdbnewpgrec->m_pgno ) );
+            break;
+        }
 
-            if ( !FPageAlreadyCaptured( prbsdbnewpgrec->m_dbid, prbsdbnewpgrec->m_pgno ) )
+        case rbsrectypeDbEmptyPages:
+        {
+            if ( fDbHeaderOnly )
             {
-                pvPage = PvOSMemoryPageAlloc( m_cbDbPageSize, NULL );
-                Alloc( pvPage );
+                return JET_errSuccess;
+            }
 
-                CPAGE cpage;
-                cpage.GetRevertedNewPage( prbsdbnewpgrec->m_pgno, pvPage, m_cbDbPageSize );
-                Assert( cpage.Pgft() == CPAGE::PageFlushType::pgftUnknown );
+            RBSDbEmptyPagesRecord* prbsdbemptypgrec = ( RBSDbEmptyPagesRecord* ) prbsrec;
+            PGNO pgnoLast = prbsdbemptypgrec->m_pgnoFirst + prbsdbemptypgrec->m_cpg - 1;
 
-                // For new page record type, we don't store the preimage of the page since it indicates that it was a new page before it was updated.
-                // We will just write out an empty page for such a page.
-                Call( ErrAddPageRecord( pvPage, prbsdbnewpgrec->m_dbid, prbsdbnewpgrec->m_pgno ) );
+            for ( PGNO pgno = prbsdbemptypgrec->m_pgnoFirst; pgno <= pgnoLast; ++pgno )
+            {
+                Call( ErrAddRevertedNewPage( prbsdbemptypgrec->m_dbid, pgno ) );
+                Call( ErrCheckApplyRBSContinuation() );
             }
 
             break;
@@ -4519,16 +4607,7 @@ ERR CRBSRevertContext::ErrRBSGenApply( LONG lRBSGen, BOOL fDbHeaderOnly )
     while ( err != JET_wrnNoMoreRecords && err == JET_errSuccess )
     {
         Call( ErrApplyRBSRecord( prbsRecord, lRBSGen == m_lRBSMinGenToApply, fDbHeaderOnly, &fGivenDbfilehdrCaptured ) );
-
-        if ( m_cpgCached >= m_cpgCacheMax )
-        {
-            Call( ErrFlushPages( fFalse ) );
-        }
-
-        if ( m_fRevertCancelled )
-        {
-            Error( ErrERRCheck( JET_errRBSRCRevertCancelled ) );
-        }
+        Call( ErrCheckApplyRBSContinuation() );
 
         // We just want to go through the RBS till we capture the database header for all the databases attached.
         // If the current record was db file header record and was captured, we will check if we are done and break out of the loop.

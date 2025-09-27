@@ -1515,6 +1515,7 @@ ERR FMP::ErrInitializeOneFmp(
     pfmp->SetPfapi( NULL );
     pfmp->m_cbOwnedFileSize = 0; // not using the setter to avoid asserts.
     pfmp->AcquireIOSizeChangeLatch();
+    pfmp->SetExtentPageCountCacheTableInfo( pgnoNull, objidNil );
     pfmp->SetPgnoSnapBackupMost( pgnoNull );
     pfmp->SetFsFileSizeAsyncTarget( 0 );
     pfmp->ReleaseIOSizeChangeLatch();
@@ -2430,7 +2431,7 @@ PdbfilehdrReadWrite FMP::PdbfilehdrUpdateable()
     return m_dbfilehdrLock.GetRWHeader();
 }
 
-ERR FMP::ErrSetPdbfilehdr( DBFILEHDR_FIX * pdbfilehdr, __out DBFILEHDR ** ppdbfilehdr )
+ERR FMP::ErrSetPdbfilehdr( DBFILEHDR_FIX * pdbfilehdr, _Out_ DBFILEHDR ** ppdbfilehdr )
 {
     ERR err = JET_errSuccess;
 
@@ -2962,6 +2963,27 @@ ERR FMP::FPgnoInZeroedOrRevertedMaps( const PGNO pgno ) const
 {
     return ( PLogRedoMapZeroed() && PLogRedoMapZeroed()->FPgnoSet( pgno ) ) || 
            ( PLogRedoMapDbtimeRevert() && PLogRedoMapDbtimeRevert()->FPgnoSet( pgno ) );
+}
+
+//  ================================================================
+VOID FMP::PauseOLD2Tasks()
+//  ================================================================
+{
+    OLD2PauseTasks();
+}
+
+//  ================================================================
+VOID FMP::UnpauseOLD2Tasks()
+//  ================================================================
+{
+    OLD2UnpauseTasks();
+}
+
+//  ================================================================
+BOOL FMP::FOLD2TasksPaused()
+//  ================================================================
+{
+    return COLD2Tasks() == 0;
 }
 
 #ifdef ENABLE_JET_UNIT_TEST

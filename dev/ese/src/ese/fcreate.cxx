@@ -390,7 +390,7 @@ BOOL FFILEIIndicesHasSystemSpaceHints( __in_ecount(cIndexes) const JET_INDEXCREA
     return fFalse;
 }
 
-BOOL FFILEITableHasSystemSpaceHints( __in const JET_TABLECREATE5_A * const ptablecreate )
+BOOL FFILEITableHasSystemSpaceHints( _In_ const JET_TABLECREATE5_A * const ptablecreate )
 {
     if ( FIsSystemSpaceHint( ptablecreate->pSeqSpacehints ) )
     {
@@ -405,7 +405,7 @@ BOOL FFILEITableHasSystemSpaceHints( __in const JET_TABLECREATE5_A * const ptabl
 
 ERR ErrIDXCheckUnicodeFlagAndDefn(
     __in_ecount( cIndexCreate ) JET_INDEXCREATE3_A * pindexcreate,
-    __in ULONG                               cIndexCreate )
+    _In_ ULONG                               cIndexCreate )
 {
     JET_INDEXCREATE3_A * pidxCurr = pindexcreate;
     JET_INDEXCREATE3_A * pidxNext = NULL;
@@ -1152,7 +1152,7 @@ LOCAL ERR ErrFILEIAddColumns(
     JET_COLUMNCREATE_A  *pcolcreate;
     JET_COLUMNCREATE_A  *plastcolcreate;
     BOOL                fSetColumnError     = fFalse;
-    TCIB                tcib                = { fidFixedLeast-1, fidVarLeast-1, fidTaggedLeast-1 };
+    TCIB                tcib;
     USHORT              ibNextFixedOffset   = ibRECStartFixedColumns;
     FID                 fidVersion          = 0;
     FID                 fidAutoInc          = 0;
@@ -1230,7 +1230,7 @@ LOCAL ERR ErrFILEIAddColumns(
         ibNextFixedOffset = ptdbTemplateTable->IbEndFixedColumns();
     }
 
-    Assert( fidTaggedLeast-1 == tcib.fidTaggedLast );
+    Assert( tcib.fidTaggedLast.FTaggedNone() );
 
     CallR( ErrCATOpen( ppib, ifmp, &pfucbCatalog ) );
     Assert( pfucbNil != pfucbCatalog );
@@ -1289,7 +1289,7 @@ LOCAL ERR ErrFILEIAddColumns(
 
         //  for fixed-length columns, make sure record not too big
         //
-        Assert( tcib.fidFixedLast >= fidFixedLeast ?
+        Assert( tcib.fidFixedLast.FFixed() ?
             ibNextFixedOffset > ibRECStartFixedColumns :
             ibNextFixedOffset == ibRECStartFixedColumns );
         if ( ( ( pcolcreate->grbit & JET_bitColumnFixed ) || FCOLTYPFixedLength( field.coltyp ) )
@@ -1359,7 +1359,7 @@ LOCAL ERR ErrFILEIAddColumns(
             Assert( !FFIELDVersion( field.ffield ) );
             Assert( !FFIELDAutoincrement( field.ffield ) );
             Assert( field.coltyp == JET_coltypLong || field.coltyp == JET_coltypLongLong );
-            Assert( FFixedFid( (WORD)pcolcreate->columnid ) );
+            Assert( FidOfColumnid( pcolcreate->columnid ).FFixed() );
         }
         else if ( FFIELDUserDefinedDefault( field.ffield ) )
         {
@@ -1806,8 +1806,8 @@ LOCAL ERR ErrFILEIValidateCreateIndex(
 }
 
 JET_SPACEHINTS * PjsphFromDensity(
-    __out JET_SPACEHINTS * pjsphPreAlloc,
-    __in const JET_SPACEHINTS * const pjsphTemplateOrTable )
+    _Out_ JET_SPACEHINTS * pjsphPreAlloc,
+    _In_ const JET_SPACEHINTS * const pjsphTemplateOrTable )
 {
     Assert( pjsphPreAlloc );
 
@@ -2169,7 +2169,6 @@ LOCAL ERR ErrFILEICreateIndexes(
         }
         else
         {
-
             Call( ErrDIRCreateDirectory(
                         pfucbTableExtent,
                         CpgInitial( &jsphIndex, g_rgfmp[ ifmp ].CbPage() ),
@@ -2624,7 +2623,7 @@ HandleError:
 //              work done will be undone if a failure occurs.
 // SEE ALSO     ErrIsamAddColumn, ErrIsamCreateIndex, ErrIsamDeleteTable
 //-
-ERR ErrFILECreateTable( PIB *ppib, IFMP ifmp, JET_TABLECREATE5_A *ptablecreate )
+ERR ErrFILECreateTable( PIB *ppib, IFMP ifmp, JET_TABLECREATE5_A *ptablecreate, UINT fSPFlags )
 {
     ERR         err;
     CHAR        szTable[JET_cbNameMost+1];
@@ -2635,6 +2634,7 @@ ERR ErrFILECreateTable( PIB *ppib, IFMP ifmp, JET_TABLECREATE5_A *ptablecreate )
     BOOL        fOpenedTable    = fFalse;
     BOOL        fCreatedRCE     = fFalse;
 
+    Expected( 0 == (fSPFlags & ~fSPMultipleExtent)); // Only expected flag (if there is a flag) is MultipleExtent.
     FMP::AssertVALIDIFMP( ifmp );
 
     Assert( sizeof(JET_TABLECREATE5_A) == ptablecreate->cbStruct );
@@ -2653,6 +2653,7 @@ ERR ErrFILECreateTable( PIB *ppib, IFMP ifmp, JET_TABLECREATE5_A *ptablecreate )
         || FCATObjidsTable( szTable )
         || MSysDBM::FIsSystemTable( szTable )
         || FKVPTestTable( szTable )
+        || FCATExtentPageCountCacheTable( szTable )
         || FCATLocalesTable( szTable ) );
 
     const BOOL  fTemplateTable      = !!( ptablecreate->grbit & JET_bitTableCreateTemplateTable );
@@ -2754,7 +2755,7 @@ ERR ErrFILECreateTable( PIB *ppib, IFMP ifmp, JET_TABLECREATE5_A *ptablecreate )
                 &fdpinfo.pgnoFDP,
                 &fdpinfo.objidFDP,
                 CPAGE::fPagePrimary,
-                FFMPIsTempDB( ifmp ) ? fSPUnversionedExtent : 0 ) );    // For temp. tables, create unversioned extents
+                fSPFlags | ( FFMPIsTempDB( ifmp ) ? fSPUnversionedExtent : 0 ) ) );    // For temp. tables, create unversioned extents
     DIRClose( pfucb );
     pfucb = pfucbNil;
 
@@ -2799,6 +2800,7 @@ ERR ErrFILECreateTable( PIB *ppib, IFMP ifmp, JET_TABLECREATE5_A *ptablecreate )
                 Assert( FOLDSystemTable( szTable )
                     || FSCANSystemTable( szTable )
                     || FCATObjidsTable( szTable )
+                    || FCATExtentPageCountCacheTable( szTable )
                     || MSysDBM::FIsSystemTable( szTable )
                     || FKVPTestTable( szTable )
                     || FCATLocalesTable( szTable ) );
@@ -3045,24 +3047,24 @@ ERR ErrFILEGetNextColumnid(
 
     if ( ( grbit & JET_bitColumnTagged ) || FRECLongValue( coltyp ) )
     {
-        Assert( fidTaggedLeast-1 == ptcib->fidTaggedLast || FTaggedFid( ptcib->fidTaggedLast ) );
+        Assert( ptcib->fidTaggedLast.FTaggedNone() || ptcib->fidTaggedLast.FTagged() );
         fid = ++(ptcib->fidTaggedLast);
-        fidMost = fidTaggedMost;
+        fidMost = FID( fidtypTagged, fidlimMost );
     }
     else if ( ( grbit & JET_bitColumnFixed ) || FCOLTYPFixedLength( coltyp ) )
     {
-        Assert( fidFixedLeast-1 == ptcib->fidFixedLast || FFixedFid( ptcib->fidFixedLast ) );
+        Assert( ptcib->fidFixedLast.FFixedNone() || ptcib->fidFixedLast.FFixed() );
         fid = ++(ptcib->fidFixedLast);
-        fidMost = fidFixedMost;
+        fidMost = FID( fidtypFixed, fidlimMost );
     }
     else
     {
         Assert( !( grbit & JET_bitColumnTagged ) );
         Assert( !( grbit & JET_bitColumnFixed ) );
         Assert( JET_coltypText == coltyp || JET_coltypBinary == coltyp );
-        Assert( fidVarLeast-1 == ptcib->fidVarLast || FVarFid( ptcib->fidVarLast ) );
+        Assert( ptcib->fidVarLast.FVarNone() || ptcib->fidVarLast.FVar() );
         fid = ++(ptcib->fidVarLast);
-        fidMost = fidVarMost;
+        fidMost = FID( fidtypVar, fidlimMost );
     }
     if ( fid > fidMost )
     {
@@ -3466,7 +3468,7 @@ ERR VTAPI ErrIsamAddColumn(
 
     //  for fixed-length columns, make sure record not too big
     //
-    Assert( ptdb->FidFixedLast() >= fidFixedLeast ?
+    Assert( ptdb->FidFixedLast().FFixed() ?
         ptdb->IbEndFixedColumns() > ibRECStartFixedColumns :
         ptdb->IbEndFixedColumns() == ibRECStartFixedColumns );
     if ( ( ( pcolumndef->grbit & JET_bitColumnFixed ) || FCOLTYPFixedLength( field.coltyp ) )
@@ -3603,7 +3605,7 @@ ERR VTAPI ErrIsamAddColumn(
     {
         Assert( FidOfColumnid( columnid ) == ptdb->FidFixedLast() + 1 );
         ptdb->IncrementFidFixedLast();
-        Assert( FFixedFid( ptdb->FidFixedLast() ) );
+        Assert( ptdb->FidFixedLast().FFixed() );
         pfieldNew = ptdb->PfieldFixed( columnid );
 
         //  Adjust the location of the FIELD structures for tagged and variable
@@ -3634,7 +3636,7 @@ ERR VTAPI ErrIsamAddColumn(
             // Append the new FIELD structure to the end of the tagged column
             // FIELD structures.
             ptdb->IncrementFidTaggedLast();
-            Assert( FTaggedFid( ptdb->FidTaggedLast() ) );
+            Assert( ptdb->FidTaggedLast().FTagged() );
             pfieldNew = ptdb->PfieldTagged( columnid );
         }
         else
@@ -3644,7 +3646,7 @@ ERR VTAPI ErrIsamAddColumn(
             Assert( FCOLUMNIDVar( columnid ) );
             Assert( FidOfColumnid( columnid ) == ptdb->FidVarLast() + 1 );
             ptdb->IncrementFidVarLast();
-            Assert( FVarFid( ptdb->FidVarLast() ) );
+            Assert( ptdb->FidVarLast().FVar() );
             pfieldNew = ptdb->PfieldVar( columnid );
 
             //  adjust the location of the FIELD structures for tagged columns to
@@ -4980,12 +4982,14 @@ ERR ErrFILEBuildAllIndexes(
     //  equal to the page size)
     //
     Call( ErrSPGetInfo(
-                ppib,
-                pfucbTable->ifmp,
-                pfucbTable,
-                (BYTE *)&cpgTable,
-                sizeof(cpgTable),
-                fSPOwnedExtent ) );
+              ppib,
+              pfucbTable->ifmp,
+              pfucbTable,
+              (BYTE *)&cpgTable,
+              sizeof(cpgTable),
+              fSPOwnedExtent,
+              gci::Allow ) );
+
     Call( Param( pinst, JET_paramDbExtensionSize )->Set( pinst, ppibNil, max( cpgDbExtensionSizeSave, (CPG)min( g_cbPage, cpgTable / 100 ) ), NULL ) );
 
     //  if we have a lot of indices to rebuild, make sure we
@@ -5006,12 +5010,14 @@ ERR ErrFILEBuildAllIndexes(
         //  add on any free space in the temp. db, since that's potentially re-usable
         //
         Call( ErrSPGetInfo(
-                    ppib,
-                    pinst->m_mpdbidifmp[ dbidTemp ],
-                    pfucbNil,
-                    (BYTE *)&cpgFreeTempDb,
-                    sizeof(cpgFreeTempDb),
-                    fSPAvailExtent ) );
+                  ppib,
+                  pinst->m_mpdbidifmp[ dbidTemp ],
+                  pfucbNil,
+                  (BYTE *)&cpgFreeTempDb,
+                  sizeof(cpgFreeTempDb),
+                  fSPAvailExtent,
+                  gci::Forbid ) ); // gci::Allow doesn't necessarily include pages in split buffers.
+        
         cbFreeTempDisk += ( cpgFreeTempDb * g_cbPage );
 
         if ( cbFreeTempDisk > QWORD( cbTable * 0.75 ) )
@@ -8086,7 +8092,7 @@ HandleError:
 //
 // SEE ALSO     ErrIsamCreateTable
 //-
-ERR VTAPI ErrIsamDeleteTable( JET_SESID vsesid, JET_DBID vdbid, const CHAR *szName )
+ERR VTAPI ErrIsamDeleteTable( JET_SESID vsesid, JET_DBID vdbid, const CHAR *szName, BOOL fAllowTableDeleteSensitive )
 {
     ERR     err;
     PIB     *ppib = (PIB *)vsesid;
@@ -8103,11 +8109,17 @@ ERR VTAPI ErrIsamDeleteTable( JET_SESID vsesid, JET_DBID vdbid, const CHAR *szNa
         // Must use CloseTable instead.
         err = ErrERRCheck( JET_errCannotDeleteTempTable );
     }
+    else if ( !fAllowTableDeleteSensitive &&
+              ( FCATObjidsTable( szName ) ||
+                FCATExtentPageCountCacheTable( szName ) ) )
+    {
+        err = ErrERRCheck( JET_errCannotDeleteSystemTable );
+    }
     else
     {
         CallR( ErrPIBCheckUpdatable( ppib ) );
-
-        err = ErrFILEDeleteTable( ppib, ifmp, szName );
+        
+        err = ErrFILEDeleteTable( ppib, ifmp, szName, fAllowTableDeleteSensitive );
     }
 
     return err;
@@ -8131,7 +8143,7 @@ ERR VTAPI ErrIsamDeleteTable( JET_SESID vsesid, JET_DBID vdbid, const CHAR *szNa
 //
 // SEE ALSO     ErrIsamCreateTable
 //-
-ERR ErrFILEDeleteTable( PIB *ppib, IFMP ifmp, const CHAR *szName )
+ERR ErrFILEDeleteTable( PIB *ppib, IFMP ifmp, const CHAR *szName, BOOL fAllowTableDeleteSensitive )
 {
     ERR     err;
     FUCB    *pfucb              = pfucbNil;
@@ -8173,13 +8185,20 @@ ERR ErrFILEDeleteTable( PIB *ppib, IFMP ifmp, const CHAR *szName )
     //
     Call( ErrDIROpen( ppib, pgnoSystemRoot, ifmp, &pfucbParent ) );
 
+    {
+    JET_GRBIT grbit = JET_bitTableDelete|JET_bitTableDenyRead ;
+    if ( fAllowTableDeleteSensitive )
+    {
+        grbit |= JET_bitTableAllowSensitiveOperation;
+    }
     Call( ErrFILEOpenTable(
                 ppib,
                 ifmp,
                 &pfucb,
                 szName,
-                JET_bitTableDelete|JET_bitTableDenyRead ) );
+                grbit ) );
     fInUseBySystem = ( JET_wrnTableInUseBySystem == err );
+    }
 
     // We should now have exclusive use of the table.
     pfcb = pfucb->u.pfcb;

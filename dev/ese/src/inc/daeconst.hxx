@@ -192,9 +192,9 @@ const ULONG cmsecWaitWriteLatch         = 10;
 const ULONG cmsecWaitLogWrite           = 2;
 #ifdef RFS2
 const ULONG cmsecWaitLogWriteMax        = 1000;         // 1 sec
-#else  RFS2
+#else  // RFS2
 const ULONG cmsecWaitLogWriteMax        = 300000;       // 5 min
-#endif RFS2
+#endif // RFS2
 const ULONG cmsecWaitIOComplete         = 10;
 const ULONG cmsecAsyncBackgroundCleanup = 60000;        //  1 min
 const ULONG cmsecWaitForBackup          = 300000;       //  5 min
@@ -325,11 +325,13 @@ const INT rankBFLgposModifyHist         = 65;
 const INT rankBFFMPContext              = 66;
 const INT rankBFLRUK                    = 70;
 const INT rankRBSWrite                  = 70;
+const INT rankDefragPauseManager        = 70;
 const INT rankFMPDetaching              = 75;
 const INT rankFMPGlobal                 = 80;
 const INT rankSysParamFixup             = 85;
 const INT rankPIBGlobal                 = 90;
 const INT rankRCEChain                  = 100;
+const INT rankOSUInit                   = 100;
 
 const INT rankBFLatch               = 1000;
 const INT rankBFCacheSizeResize     = 1000;
@@ -426,6 +428,7 @@ const char szCompact[]              = "JetCompact";
 const char szRBSBuf[]               = "RBSBuffer";
 const char szRBSWrite[]             = "RBSWrite";
 const char szRBSFirstValidGen[]     = "RBSFirstValidGen";
+const char szOSUInit[]              = "OSUInit";
 
 //  Internal user IDs for OPERATION_CONTEXT (required to set identifiable context on internal PIBs)
 const DWORD OCUSER_UNINIT           = ( OC_bitInternalUser );

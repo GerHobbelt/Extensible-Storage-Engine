@@ -3,6 +3,22 @@
 
 #include "osstd.hxx"
 
+// Undefine these tokens.  They are defined such that you get an error
+// when you try to use certain APIs, but this file implements the
+// indirect APIs you should use instead, and thus needs access to the
+// native APIs.
+#ifdef wcslen
+#undef wcslen
+#endif
+
+#ifdef wcscmp
+#undef wcscmp
+#endif
+
+#ifdef wcsncmp
+#undef wcsncmp
+#endif
+
 ERR ErrFromStrsafeHr ( HRESULT hr)
 {
     ERR err = (hr == SEC_E_OK) ?
@@ -19,7 +35,7 @@ ERR ErrFromStrsafeHr ( HRESULT hr)
 
 //  get the length of the string
 
-LONG LOSStrLengthA( __in PCSTR const sz )
+LONG LOSStrLengthA( _In_ PCSTR const sz )
 {
     // According to Windows OACR, strlen cannot handle NULL.
     if ( NULL == sz )
@@ -29,22 +45,34 @@ LONG LOSStrLengthA( __in PCSTR const sz )
 
     return strlen( sz );
 }
-LONG LOSStrLengthW( __in PCWSTR const wsz )
+LONG LOSStrLengthW( _In_ PCWSTR const wsz )
 {
     // According to Windows OACR, wcslen cannot handle NULL.
     if ( NULL == wsz )
     {
         return 0;
     }
-    
+
     return wcslen( wsz );
 }
 
-LONG LOSStrLengthUnalignedW( __in const UnalignedLittleEndian< WCHAR > * wsz )
+LONG LOSStrLengthUnalignedW( _In_ const UnalignedLittleEndian< WCHAR > * wsz )
 {
     LONG                                    cchCurrent  = 0;
     const UnalignedLittleEndian< WCHAR > *  wszCurrent  = wsz;
 
+    if ( NULL == wsz )
+    {
+        return 0;
+    }
+
+    // Could we do
+    // if ( 0 == ( wsz % sizeof(WCHAR) ) )
+    //   or
+    // if ( isAligned( wsz, WCHAR ) )
+    // {
+    //    return wcslen( wsz );
+    // }
     while ( wszCurrent[ cchCurrent ] != L'\0' )
     {
         cchCurrent++;
@@ -53,11 +81,15 @@ LONG LOSStrLengthUnalignedW( __in const UnalignedLittleEndian< WCHAR > * wsz )
     return cchCurrent;
 }
 
-LONG LOSStrLengthMW( __in PCWSTR const wsz )
+LONG LOSStrLengthMW( _In_ PCWSTR const wsz )
 {
     LONG        cchCurrent  = 0;
     PCWSTR      wszCurrent  = wsz;
 
+    if ( NULL == wsz )
+    {
+        return 0;
+    }
 
     while ( wszCurrent[ cchCurrent ] != L'\0' )
     {
@@ -68,109 +100,125 @@ LONG LOSStrLengthMW( __in PCWSTR const wsz )
 }
 
 
-//  compare the strings (up to the given maximum length).  if the first string
-//  is "less than" the second string, -1 is returned.  if the strings are "equal",
-//  0 is returned.  if the first string is "greater than" the second string, +1 is returned.
-
-LONG LOSStrCompareA( __in PCSTR const szStr1, __in PCSTR const szStr2, __in const ULONG cchMax )
+//  Compare the strings (up to the given maximum length).  Does ordinal, not lexical compare.
+//  That means byte for byte equality.  If the first string is "less than" the second string, -1
+//  is returned.  If the strings are "equal", 0 is returned.  If the first string is "greater than"
+//  the second string, +1 is returned.
+LONG LOSStrCompareA( _In_ PCSTR const szStr1, _In_ PCSTR const szStr2, _In_ const ULONG cchMax )
 {
-    ULONG cch1 = ( NULL == szStr1 ) ? 0 : strlen( szStr1 );
-    ULONG cch2 = ( NULL == szStr2 ) ? 0 : strlen( szStr2 );
-    ULONG ich;
-
-    //  limit the lengths
-
-    if ( cch1 > cchMax )
+    LONG lCmp;
+    if ( 0 == cchMax )
     {
-        cch1 = cchMax;
-    }
-    if ( cch2 > cchMax )
-    {
-        cch2 = cchMax;
+        // Why are you doing this?
+        return 0;
     }
 
-    //  compare the lengths
-
-    if ( cch1 < cch2 )
+    if ( ( NULL == szStr1 ) || ( NULL == szStr2 ) )
     {
-        return -1;
-    }
-    else if ( cch1 > cch2 )
-    {
-        return +1;
-    }
+        // strcmp, strlen, and strncmp don't play well with NULLs.
+        // NULLs are treated as 0 length strings, and we're sure that
+        // cchmax is greater than 0, so a non-NULL string is longer.
+        LONG_PTR lpCmp = (LONG_PTR)szStr1 - (LONG_PTR)szStr2;
 
-    //  compare the strings
-
-    ich = 0;
-    while ( ich < cch1 )
-    {
-        if ( szStr1[ich] == szStr2[ich] )
+        if ( lpCmp > 0 )
         {
-            ich++;
+            lCmp = +1;
         }
-        else if ( szStr1[ich] < szStr2[ich] )
+        else if ( lpCmp < 0 )
         {
-            return -1;
+            lCmp = -1;
         }
         else
         {
-            return +1;
+            lCmp = 0;
+        }
+    }
+    else if (~ULONG(0) == cchMax )
+    {
+        // Simple path when caller doesn't supply a character count limit.
+        // We don't have to get the string lengths.
+        lCmp = strcmp( szStr1, szStr2 );
+    }
+    else
+    {
+        ULONG cch1 = strlen( szStr1 );
+        ULONG cch2 = strlen( szStr2 );
+
+        ULONG cchToCompare = min( max( cch1, cch2 ), cchMax );
+
+        if ( cchToCompare < cchMax )
+        {
+            // Semi-simple path when the provided strings are both shorter than supplied max.
+            lCmp = strcmp( szStr1, szStr2 );
+        }
+        else
+        {
+            lCmp = strncmp( szStr1, szStr2, cchToCompare );
         }
     }
 
-    return 0;
+    return lCmp;
 }
 
 
-LONG LOSStrCompareW( __in PCWSTR const wszStr1, __in PCWSTR const wszStr2, __in const ULONG cchMax )
+//  Compare the strings (up to the given maximum length).  Does ordinal, not lexical compare.
+//  That means byte for byte equality.  If the first string is "less than" the second string, -1
+//  is returned.  If the strings are "equal", 0 is returned.  If the first string is "greater than"
+//  the second string, +1 is returned.
+LONG LOSStrCompareW( _In_ PCWSTR const wszStr1, _In_ PCWSTR const wszStr2, _In_ const ULONG cchMax )
 {
-    ULONG cch1 = ( NULL == wszStr1 ) ? 0 : wcslen( wszStr1 );
-    ULONG cch2 = ( NULL == wszStr2 ) ? 0 : wcslen( wszStr2 );
-    ULONG ich;
-
-    //  limit the lengths
-
-    if ( cch1 > cchMax )
+    LONG lCmp;
+    if ( 0 == cchMax )
     {
-        cch1 = cchMax;
-    }
-    if ( cch2 > cchMax )
-    {
-        cch2 = cchMax;
+        // Why are you doing this?
+        return 0;
     }
 
-    //  compare the lengths
-
-    if ( cch1 < cch2 )
+    if ( ( NULL == wszStr1 ) || ( NULL == wszStr2 ) )
     {
-        return -1;
-    }
-    else if ( cch1 > cch2 )
-    {
-        return +1;
-    }
+        // wcscmp, wcslen, and wcsncmp don't play well with NULLs.
+        // NULLs are treated as 0 length strings, and we're sure that
+        // cchmax is greater than 0, so a non-NULL string is longer.
+        LONG_PTR lpCmp = (LONG_PTR)wszStr1 - (LONG_PTR)wszStr2;
 
-    //  compare the strings
-
-    ich = 0;
-    while ( ich < cch1 )
-    {
-        if ( wszStr1[ich] == wszStr2[ich] )
+        if ( lpCmp > 0 )
         {
-            ich++;
+            lCmp = 1;
         }
-        else if ( wszStr1[ich] < wszStr2[ich] )
+        else if ( lpCmp < 0 )
         {
-            return -1;
+            lCmp = -1;
         }
         else
         {
-            return +1;
+            lCmp = 0;
+        }
+    }
+    else if (~ULONG(0) == cchMax )
+    {
+        // Simple path when caller doesn't supply a character count limit.
+        // We don't have to get the string lengths.
+        lCmp = wcscmp( wszStr1, wszStr2 );
+    }
+    else
+    {
+        ULONG cch1 = wcslen( wszStr1 );
+        ULONG cch2 = wcslen( wszStr2 );
+
+        ULONG cchToCompare = min( max( cch1, cch2 ), cchMax );
+
+        if ( cchToCompare < cchMax )
+        {
+            // Semi-simple path when the provided strings are both shorter than supplied max.
+            lCmp = wcscmp( wszStr1, wszStr2 );
+        }
+        else
+        {
+            lCmp = wcsncmp( wszStr1, wszStr2, cchToCompare );
         }
     }
 
-    return 0;
+    return lCmp;
 }
 
 
@@ -306,7 +354,7 @@ VOID OSStrCharFindReverseW( _In_ PCWSTR const wszStr, const wchar_t wch, _Outptr
 
 //  check for a trailing path-delimeter
 
-BOOL FOSSTRTrailingPathDelimiterA( __in PCSTR const pszPath )
+BOOL FOSSTRTrailingPathDelimiterA( _In_ PCSTR const pszPath )
 {
     const DWORD cchPath = ( NULL == pszPath ) ? 0 : strlen( pszPath );
 
@@ -316,7 +364,7 @@ BOOL FOSSTRTrailingPathDelimiterA( __in PCSTR const pszPath )
     }
     return fFalse;
 }
-BOOL FOSSTRTrailingPathDelimiterW( __in PCWSTR const pwszPath )
+BOOL FOSSTRTrailingPathDelimiterW( _In_ PCWSTR const pwszPath )
 {
     const DWORD cchPath = ( NULL == pwszPath ) ? 0 : wcslen( pwszPath );
 
@@ -421,7 +469,7 @@ ERR ErrOSSTRAsciiToUnicode( _In_ PCSTR const    pszIn,
     {
         pwszOut[0] = L'\0';
     }
-    
+
     if ( ERROR_INVALID_PARAMETER == dwError )
     {
         return ErrERRCheck( JET_errInvalidParameter );
@@ -458,7 +506,7 @@ ERR ErrOSSTRAsciiToUnicode( _In_ PCSTR const    pszIn,
 
 //  convert a wide-char string to a byte string
 
-ERR ErrOSSTRUnicodeToAscii( __in PCWSTR const       pwszIn,
+ERR ErrOSSTRUnicodeToAscii( _In_ PCWSTR const       pwszIn,
                             _Out_opt_z_cap_post_count_(cchOut, *pcchRequired) PSTR const                pszOut,
                             const size_t                cchOut,     //  pass in 0 to only return output buffer size in pcchRequired, JET_errBufferTooSmall will be returned.
                             size_t * const              pcchRequired,
@@ -612,7 +660,7 @@ ERR ErrOSSTRUnicodeToTchar( const wchar_t *const    pwszIn,
 // if there is no buffer, we will return the needed size
 // if there is a buffer but not enough space, we will return error and NOT the actual size
 //
-ERR ErrOSSTRAsciiToUnicodeM( __in PCSTR const szzMultiIn,
+ERR ErrOSSTRAsciiToUnicodeM( _In_ PCSTR const szzMultiIn,
     // UNDONE: Exchange prefix continued to complain, to make this right I might need like __success on the return value?
     //                          __out_ecount_part_z(cchMax, *pcchActual) PSTR const             pszOut,
     __out_ecount_z(cchMax) WCHAR * wszNew,
@@ -700,7 +748,7 @@ ERR ErrOSSTRAsciiToUnicodeM( __in PCSTR const szzMultiIn,
 // if there is no buffer, we will return the needed size
 // if there is a buffer but not enough space, we will return error and NOT the actual size
 //
-ERR ErrOSSTRUnicodeToAsciiM( __in PCWSTR const wszzMultiIn,
+ERR ErrOSSTRUnicodeToAsciiM( _In_ PCWSTR const wszzMultiIn,
     // UNDONE: Exchange prefix continued to complain, to make this right I might need like __success on the return value?
     //                          __out_ecount_part_z(cchMax, *pcchActual) PSTR const             pszOut,
     __out_ecount_z(cchMax) char * szNew,

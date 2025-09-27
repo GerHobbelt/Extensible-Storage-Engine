@@ -99,7 +99,7 @@ static_assert( qosIODispatchUrgentBackgroundMin == ( qosIODispatchUrgentBackgrou
 static_assert( qosIODispatchUrgentBackgroundMax == ( qosIODispatchUrgentBackgroundLevelMax << qosIODispatchUrgentBackgroundShft ), "Inconsistent qosIODispatchUrgentBackgroundMax/qosIODispatchUrgentBackgroundLevelMax." );
 
 //  This function allows the client to translate from 127 levels to the UrgentBackground QOS
-OSFILEQOS QosOSFileFromUrgentLevel( __in const ULONG iUrgentLevel );
+OSFILEQOS QosOSFileFromUrgentLevel( _In_ const ULONG iUrgentLevel );
 //  This function only provided for performance counter support, not advised for use by components other than IO manager.
 LONG CioOSDiskPerfCounterIOMaxFromUrgentQOS( _In_ const OSFILEQOS grbitQOS );
 
@@ -258,7 +258,7 @@ class IFilePerfAPI
 //  The "shared interface" for the reasons is this simple list of predefined
 //  "integer" types that must be defined by the client library linking to the
 //  OS File IO APIs.
-enum IOFLUSHREASON;
+enum IOFLUSHREASON : ULONG;
 
 //  This is logged with the begin FFB trace call to indicate we would have
 //  begun a flush at this point if the file was opened in WriteBack mode.

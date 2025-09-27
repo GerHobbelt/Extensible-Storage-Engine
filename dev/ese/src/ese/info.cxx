@@ -226,7 +226,7 @@ Parameters: pfucb               pointer to FUCB for table containing columns
             szColumnName        column name or NULL for next column
             pcolumndef          output buffer containing column info
 
-Return Value: Column id of column found ( fidTaggedMost if none )
+Return Value: Column id of column found ( FID( fidtypTaggeed, fidlimMost ) if none )
 
 Errors/Warnings:
 
@@ -922,7 +922,7 @@ LOCAL ERR ErrInfoGetObjectInfoList(
                     tableid,
                     rgcolumnid[iContainerName],
                     fUnicodeNames ? (VOID *)wszTcObject : (VOID *)szTcObject,
-                    (ULONG)( fUnicodeNames ? ( wcslen(wszTcObject) * sizeof( WCHAR ) ) : strlen(szTcObject) ),
+                    (ULONG)( fUnicodeNames ? ( LOSStrLengthW(wszTcObject) * sizeof( WCHAR ) ) : strlen(szTcObject) ),
                     NO_GRBIT,
                     NULL ) );
                     
@@ -947,7 +947,7 @@ LOCAL ERR ErrInfoGetObjectInfoList(
                         tableid,
                         rgcolumnid[iObjectName],
                         wszObjectName,
-                        (ULONG) ( sizeof(WCHAR) * wcslen(wszObjectName) ),
+                        (ULONG) ( sizeof(WCHAR) * LOSStrLengthW(wszObjectName) ),
                         NO_GRBIT,
                         NULL ) );
         }
@@ -1091,7 +1091,14 @@ LOCAL ERR ErrInfoGetTableAvailSpace(
 
     //  first, the table
     //
-    Call( ErrSPGetInfo( ppib, pfucb->ifmp, pfucb, (BYTE *)&cpgT, sizeof( cpgT ), fSPAvailExtent ) );
+    Call( ErrSPGetInfo(
+              ppib, pfucb->ifmp,
+              pfucb,
+              (BYTE *)&cpgT,
+              sizeof( cpgT ),
+              fSPAvailExtent,
+              gci::Allow ) );
+              
     *pcpg += cpgT;
     
     //  then, the secondary indices of the table
@@ -1126,7 +1133,14 @@ LOCAL ERR ErrInfoGetTableAvailSpace(
             //  open the index and get its space info
             //
             Call( ErrDIROpen( ppib, pfcbT, &pfucbT ) );
-            Call( ErrSPGetInfo( ppib, pfucbT->ifmp, pfucbT, (BYTE *)&cpgT, sizeof( cpgT ), fSPAvailExtent ) );
+            Call( ErrSPGetInfo(
+                      ppib,
+                      pfucbT->ifmp,
+                      pfucbT,
+                      (BYTE *)&cpgT,
+                      sizeof( cpgT ),
+                      fSPAvailExtent,
+                      gci::Allow ) );
             *pcpg += cpgT;
             DIRClose( pfucbT );
             pfucbT = pfucbNil;
@@ -1152,7 +1166,14 @@ LOCAL ERR ErrInfoGetTableAvailSpace(
     {
         //  the LV tree exists
         //
-        Call( ErrSPGetInfo( ppib, pfucbT->ifmp, pfucbT, (BYTE *)&cpgT, sizeof( cpgT ), fSPAvailExtent ) );
+        Call( ErrSPGetInfo(
+                  ppib,
+                  pfucbT->ifmp,
+                  pfucbT,
+                  (BYTE *)&cpgT,
+                  sizeof( cpgT ),
+                  fSPAvailExtent,
+                  gci::Allow ) );
         *pcpg += cpgT;
         DIRClose( pfucbT );
         pfucbT = pfucbNil;
@@ -1293,7 +1314,8 @@ ERR VTAPI ErrIsamGetTableInfo(
                         pfucb,
                         static_cast<BYTE *>( pvResult ),
                         cbMax,
-                        fSPExtents );
+                        fSPExtents,
+                        gci::Allow );
             return err;
         }
 
@@ -1304,7 +1326,8 @@ ERR VTAPI ErrIsamGetTableInfo(
                         pfucb,
                         static_cast<BYTE *>( pvResult ),
                         cbMax,
-                        fSPOwnedExtent );
+                        fSPOwnedExtent,
+                        gci::Allow );
             return err;
 
         case JET_TblInfoSpaceAvailable:
@@ -1777,7 +1800,7 @@ LOCAL ERR ErrINFOSetTableColumnInfoList(
                     tableid,
                     rgcolumnid[iColumnName],
                     wszName,
-                    (ULONG)( sizeof( WCHAR ) * wcslen( wszName ) ),
+                    (ULONG)( sizeof( WCHAR ) * LOSStrLengthW( wszName ) ),
                     NO_GRBIT,
                     NULL ) );
 
@@ -1884,7 +1907,7 @@ LOCAL ERR ErrINFOSetTableColumnInfoList(
                         tableid,
                         rgcolumnid[iColumnTableName],
                         wszName,
-                        (ULONG)( sizeof( WCHAR ) * ( wcslen( wszName ) ) ),
+                        (ULONG)( sizeof( WCHAR ) * ( LOSStrLengthW( wszName ) ) ),
                         NO_GRBIT,
                         NULL ) );
 
@@ -1895,7 +1918,7 @@ LOCAL ERR ErrINFOSetTableColumnInfoList(
                         tableid,
                         rgcolumnid[iColumnColumnName],
                         wszName,
-                        (ULONG)( sizeof( WCHAR ) * ( wcslen( wszName ) ) ),
+                        (ULONG)( sizeof( WCHAR ) * ( LOSStrLengthW( wszName ) ) ),
                         NO_GRBIT,
                         NULL ) );
 
@@ -2031,9 +2054,9 @@ LOCAL ERR ErrInfoGetTableColumnInfoList(
         ptdb->AssertValidDerivedTable();
         Assert( !fTemplateTable );
 
-        const FID   fidTemplateFixedFirst   = FID( fidtypFixed, fidlimMin );
-        const FID   fidTemplateVarFirst     = FID( fidtypVar, fidlimMin );
-        const FID   fidTemplateTaggedFirst  = FID( fidtypTagged, fidlimMin );
+        const FID   fidTemplateFixedFirst   = FID( fidtypFixed, fidlimLeast );
+        const FID   fidTemplateVarFirst     = FID( fidtypVar, fidlimLeast );
+        const FID   fidTemplateTaggedFirst  = FID( fidtypTagged, fidlimLeast );
         
         const FID   fidTemplateFixedLast    = ptdb->PfcbTemplateTable()->Ptdb()->FidFixedLast();
         const FID   fidTemplateVarLast      = ptdb->PfcbTemplateTable()->Ptdb()->FidVarLast();
@@ -2736,7 +2759,7 @@ LOCAL ERR ErrINFOGetTableIndexInfo(
                             tableid,
                             rgcolumnid[iIndexName],
                             wszName,
-                            (ULONG)( sizeof(WCHAR) * wcslen( wszName ) ),
+                            (ULONG)( sizeof(WCHAR) * LOSStrLengthW( wszName ) ),
                             NO_GRBIT,
                             NULL ) );
             }
@@ -2951,7 +2974,7 @@ LOCAL ERR ErrINFOGetTableIndexInfo(
                             tableid,
                             rgcolumnid[iIndexColName],
                             wszName,
-                            (ULONG)( sizeof(WCHAR) * wcslen( wszName ) ),
+                            (ULONG)( sizeof(WCHAR) * LOSStrLengthW( wszName ) ),
                             NO_GRBIT,
                             NULL ) );
             }
@@ -3164,14 +3187,14 @@ LOCAL ERR ErrINFOICopyAsciiName(
 }
 
 INLINE VOID INFOISetKeySegmentDescendingFlag(
-    __in WCHAR * const      pwch,
+    _In_ WCHAR * const      pwch,
     const BOOL          fDescending )
 {
     Assert( NULL != pwch );
     *pwch = ( fDescending ? L'-' : L'+' );
 }
 INLINE VOID INFOISetKeySegmentDescendingFlag(
-    __in CHAR * const       pch,
+    _In_ CHAR * const       pch,
     const BOOL          fDescending )
 {
     Assert( NULL != pch );
@@ -3441,7 +3464,7 @@ ERR ErrINFOIBuildIndexCreateVX(
 
         Assert( NULL != *pszLocaleName );
 
-        const ULONG_PTR cbLocaleName = ( wcslen( *pszLocaleName ) + 1 ) * sizeof(WCHAR);
+        const ULONG_PTR cbLocaleName = ( LOSStrLengthW( *pszLocaleName ) + 1 ) * sizeof(WCHAR);
 
         //  advance buffer pointer to tuple limits
         //
@@ -3766,7 +3789,7 @@ LOCAL ERR ErrINFOGetTableIndexInfoForCreateIndex(
 
 
             Assert( szLocaleName > pvResult );
-            const ULONG_PTR cbLocaleName = ( wcslen( szLocaleName ) + 1 ) * sizeof(WCHAR);
+            const ULONG_PTR cbLocaleName = ( LOSStrLengthW( szLocaleName ) + 1 ) * sizeof(WCHAR);
             Assert( ((BYTE*)szLocaleName) + cbLocaleName <= ((BYTE*)pvResult) + cbMax );
             ((JET_INDEXCREATE3_W*)pvResult)->pidxunicode->szLocaleName = szLocaleName;
             
@@ -3981,23 +4004,25 @@ ERR VDBAPI ErrIsamGetDatabaseInfo(
             if ( cbMax != sizeof(ULONG) )
                 return ErrERRCheck( JET_errInvalidBufferSize );
 
-            err = ErrSPGetDatabaseInfo(
+            err = ErrSPGetInfo(
                         ppib,
                         ifmp,
+                        pfucbNil,
                         static_cast<BYTE *>( pvResult ),
                         cbMax,
                         fSPOwnedExtent,
-                        fUseCachedResult );
+                        fUseCachedResult ? gci::Require : gci::Forbid );
             return err;
 
         case JET_DbInfoSpaceAvailable:
-            err = ErrSPGetDatabaseInfo(
+            err = ErrSPGetInfo(
                         ppib,
                         ifmp,
+                        pfucbNil,
                         static_cast<BYTE *>( pvResult ),
                         cbMax,
                         fSPAvailExtent,
-                        fUseCachedResult );
+                        fUseCachedResult ? gci::Require : gci::Forbid );
             return err;
 
         case dbInfoSpaceShelved:
@@ -4011,13 +4036,14 @@ ERR VDBAPI ErrIsamGetDatabaseInfo(
                 return ErrERRCheck( JET_errInvalidBufferSize );
             }
 
-            err = ErrSPGetDatabaseInfo(
+            err = ErrSPGetInfo(
                         ppib,
                         ifmp,
+                        pfucbNil,
                         (BYTE*)rgcpg,
                         sizeof(rgcpg),
-                        fSPAvailExtent | fSPShelvedExtent,  // need fSPAvailExtent to retrive fSPShelvedExtent
-                        fFalse );
+                        fSPAvailExtent | fSPShelvedExtent,  
+                        fUseCachedResult ? gci::Require : gci::Forbid );
             *( (ULONG*)pvResult ) = rgcpg[1];
             return err;
         }

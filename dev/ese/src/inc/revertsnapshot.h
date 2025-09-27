@@ -186,7 +186,7 @@ INLINE ULONG IbRBSSegmentOffsetFromFullOffset( DWORD ib )   { return ib & cbRBSS
 #include "revertsnapshotrecords.h"
 
 const ULONG ulRBSVersionMajor         = 1;
-const ULONG ulRBSVersionMinor         = 2;
+const ULONG ulRBSVersionMinor         = 3;
 
 class CRevertSnapshot;
 
@@ -559,7 +559,7 @@ namespace RBSCleanerFactory
 {
     // create a new scan configured to do multiple passes of the
     // database, using the system parameters
-    ERR ErrRBSCleanerCreate( INST*  pinst, __out RBSCleaner ** prbscleaner);
+    ERR ErrRBSCleanerCreate( INST*  pinst, _Out_ RBSCleaner ** prbscleaner);
 }
 
 //  ================================================================
@@ -633,13 +633,13 @@ const TICK dtickRBSFlushInterval = 30 * 1000;   // Time interval before force fl
 class CRevertSnapshot : public CZeroInit
 {
  public:
-    CRevertSnapshot( __in INST* const pinst );
+    CRevertSnapshot( _In_ INST* const pinst );
 
     ~CRevertSnapshot();
 
     ERR ErrRBSInit( BOOL fRBSCreateIfMissing );
-    ERR ErrRBSRecordDbAttach( __in FMP* const pfmp );
-    ERR ErrRBSInitDBFromRstmap( __in const RSTMAP* const prstmap, LONG lgenLow, LONG lgenHigh );
+    ERR ErrRBSRecordDbAttach( _In_ FMP* const pfmp );
+    ERR ErrRBSInitDBFromRstmap( _In_ const RSTMAP* const prstmap, LONG lgenLow, LONG lgenHigh );
 
     DBTIME GetDbtimeForFmp( FMP *pfmp );
     ERR ErrSetDbtimeForFmp( FMP *pfmp, DBTIME dbtime );
@@ -657,6 +657,11 @@ class CRevertSnapshot : public CZeroInit
             DBID dbid,
             PGNO pgno,
             RBS_POS *prbsposRecord );
+
+    ERR ErrCaptureEmptyPages(
+            DBID dbid,
+            PGNO pgnoFirst,
+            CPG  cpg );
 
     RBS_POS RbsposFlushPoint() const
     {
@@ -678,7 +683,7 @@ class CRevertSnapshot : public CZeroInit
     BOOL FRollSnapshot();
     ERR ErrRollSnapshot( BOOL fPrevRBSValid, BOOL fInferFromRstmap );
     
-    ERR ErrSetRBSFileApi( __in IFileAPI *pfapirbs );
+    ERR ErrSetRBSFileApi( _In_ IFileAPI *pfapirbs );
 
     RBSFILEHDR*      RBSFileHdr() const          { return m_prbsfilehdrCurrent; }
 
@@ -697,7 +702,7 @@ class CRevertSnapshot : public CZeroInit
         return fFalse;
     }
 
-    static VOID EnterDbHeaderFlush( CRevertSnapshot* prbs, __out SIGNATURE* const psignRBSHdrFlush );
+    static VOID EnterDbHeaderFlush( CRevertSnapshot* prbs, _Out_ SIGNATURE* const psignRBSHdrFlush );
     static ERR  ErrRBSInitFromRstmap( INST* pinst );
 
  private:
@@ -967,7 +972,7 @@ public:
     // Member manipulation.
 public:
 
-    VOID SetDBIDCurrent( __in DBID dbid )                   { m_dbidCurrent = dbid; }
+    VOID SetDBIDCurrent( _In_ DBID dbid )                   { m_dbidCurrent = dbid; }
     VOID SetDbTimePrevDirtied( DBTIME dbTimePrevDirtied )   { m_dbTimePrevDirtied = dbTimePrevDirtied; }
     VOID SetPrintfTrace( CPRINTF* pcprintfRevertTrace )     { Assert( pcprintfRevertTrace ); m_pcprintfRevertTrace = pcprintfRevertTrace; }
 };
@@ -1011,6 +1016,8 @@ private:
     ERR ErrComputeRBSRangeToApply( LOGTIME ltRevertExpected, LOGTIME* pltRevertActual );
     ERR ErrRBSGenApply( LONG lRBSGen, BOOL fDbHeaderOnly );
     ERR ErrApplyRBSRecord( RBSRecord* prbsrec, BOOL fCaptureDBHdrFromRBS, BOOL fDbHeaderOnly, BOOL* pfGivenDbfilehdrCaptured );
+    ERR ErrCheckApplyRBSContinuation();
+    ERR ErrAddRevertedNewPage( DBID dbid, PGNO pgnoRevertNew );
 
     ERR ErrRevertCheckpointInit();
     ERR ErrRevertCheckpointCleanup();
@@ -1028,7 +1035,7 @@ private:
     ERR ErrBeginRevertTracing( bool fDeleteOldTraceFile );
 
     ERR ErrMakeRevertTracingNames(
-        __in IFileSystemAPI* pfsapi,
+        _In_ IFileSystemAPI* pfsapi,
         __in_range( cbOSFSAPI_MAX_PATHW, cbOSFSAPI_MAX_PATHW ) ULONG cbRBSRCRawPath,
         __out_bcount_z( cbRBSRCRawPath ) WCHAR* wszRBSRCRawPath,
         __in_range( cbOSFSAPI_MAX_PATHW, cbOSFSAPI_MAX_PATHW ) ULONG cbRBSRCRawBackupPath,
@@ -1045,9 +1052,9 @@ public:
 
     static ERR ErrRBSRevertContextInit(
         INST* pinst,
-        __in    LOGTIME     ltRevertExpected,
-        __in    CPG         cpgCache,
-        __in    JET_GRBIT   grbit,
+        _In_    LOGTIME     ltRevertExpected,
+        _In_    CPG         cpgCache,
+        _In_    JET_GRBIT   grbit,
         _Out_   LOGTIME*    pltRevertActual,
         _Out_   CRBSRevertContext**    pprbsrc );
 };

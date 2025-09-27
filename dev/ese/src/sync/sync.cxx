@@ -3173,11 +3173,11 @@ BOOL FOSSyncIClsRegister( _CLS* pcls )
         if ( dwClsInvalid == g_dwClsProcIndex )
         {
             const BOOL  fTLSFreed   = TlsFree( g_dwClsSyncIndex );
-#if !defined(_AMD64_)
+#if !defined(_M_AMD64)
             OSSYNCAssert( fTLSFreed );      //  leak the TLS entries if we fail
-#else // !_AMD64_
+#else // !_M_AMD64
             Unused( fTLSFreed );
-#endif // _AMD64_
+#endif // _M_AMD64
             g_dwClsSyncIndex = dwClsInvalid;
 
             LeaveCriticalSection( &g_csClsSyncGlobal );
@@ -3202,13 +3202,13 @@ BOOL FOSSyncIClsRegister( _CLS* pcls )
             const BOOL  fTLSFreed1  = TlsFree( g_dwClsSyncIndex );
             const BOOL  fTLSFreed2  = TlsFree( g_dwClsProcIndex );
 
-#if !defined(_AMD64_)
+#if !defined(_M_AMD64)
             OSSYNCAssert( fTLSFreed1 );     //  leak the TLS entries if we fail
             OSSYNCAssert( fTLSFreed2 );
-#else // !_AMD64_
+#else // !_M_AMD64
             Unused( fTLSFreed1 );
             Unused( fTLSFreed2 );
-#endif // _AMD64_
+#endif // _M_AMD64
 
             g_dwClsSyncIndex = dwClsInvalid;
             g_dwClsProcIndex = dwClsInvalid;
@@ -3300,13 +3300,13 @@ void OSSyncIClsUnregister( _CLS* pcls )
         const BOOL  fTLSFreed1  = TlsFree( g_dwClsSyncIndex );
         const BOOL  fTLSFreed2  = TlsFree( g_dwClsProcIndex );
 
-#if !defined(_AMD64_)
+#if !defined(_M_AMD64)
         OSSYNCAssert( fTLSFreed1 );     //  leak the TLS entries if we fail
         OSSYNCAssert( fTLSFreed2 );
-#else // !_AMD64_
+#else // !_M_AMD64
         Unused( fTLSFreed1 );
         Unused( fTLSFreed2 );
-#endif // _AMD64_
+#endif // _M_AMD64
 
         g_dwClsSyncIndex = dwClsInvalid;
         g_dwClsProcIndex = dwClsInvalid;
@@ -3612,7 +3612,7 @@ BOOL IsRDTSCAvailable()
         return fRDTSCAvailable;
     }
 
-    typedef WINBASEAPI BOOL WINAPI PFNIsProcessorFeaturePresent( IN DWORD ProcessorFeature );
+    typedef WINBASEAPI BOOL WINAPI PFNIsProcessorFeaturePresent( _In_ DWORD ProcessorFeature );
 
     HMODULE                         hmodProcessThreads                  = NULL;
     PFNIsProcessorFeaturePresent*   pfnIsProcessorFeaturePresent    = NULL;
@@ -4576,7 +4576,7 @@ HandleError:
 //  ================================================================
 HRESULT
 EDBGPrintf(
-    __in PCSTR szFormat,
+    _In_ PCSTR szFormat,
     ...
 )
 //  ================================================================
@@ -4601,7 +4601,7 @@ EDBGPrintf(
 //  ================================================================
 HRESULT
 EDBGPrintfDml(
-    __in PCSTR szFormat,
+    _In_ PCSTR szFormat,
     ...
 )
 //  ================================================================
@@ -4643,7 +4643,7 @@ EDBGPrintfDml(
 //  ================================================================
 ULONG64
 GetExpression(
-    __in PCSTR  szExpression
+    _In_ PCSTR  szExpression
 )
 //  ================================================================
 {
@@ -4668,8 +4668,8 @@ BOOL
 FEDBGMemoryRead(
     ULONG64                         ulAddressInDebuggee,
     __out_bcount(cbBuffer) PVOID    pbBuffer,
-    __in ULONG                      cbBuffer,
-    __out PULONG                    pcbRead
+    _In_ ULONG                      cbBuffer,
+    _Out_ PULONG                    pcbRead
 )
 //  ================================================================
 {

@@ -170,29 +170,29 @@ class OLD2_STATUS
         static const CHAR * SzTableName();
 
         static ERR ErrOpenTable(
-            __in PIB * const        ppib,
+            _In_ PIB * const        ppib,
             const IFMP              ifmp,
-            __out FUCB ** const     ppfucb );
+            _Out_ FUCB ** const     ppfucb );
 
         static ERR ErrOpenOrCreateTable(
-            __in PIB * const        ppib,
+            _In_ PIB * const        ppib,
             const IFMP              ifmp,
-            __out FUCB ** const     ppfucb );
+            _Out_ FUCB ** const     ppfucb );
 
         static ERR ErrGetObjids(
-            __in PIB * const        ppib,
-            __in FUCB * const       pfucb,
-            __out OBJID * const     pobjidTable,
-            __out OBJID * const     pobjidFDP );
+            _In_ PIB * const        ppib,
+            _In_ FUCB * const       pfucb,
+            _Out_ OBJID * const     pobjidTable,
+            _Out_ OBJID * const     pobjidFDP );
 
         static ERR ErrDumpTable(
-            __in PIB * const        ppib,
+            _In_ PIB * const        ppib,
             const IFMP              ifmp );
         
         static ERR ErrSave(
-            __in PIB * const        ppib,
-            __in FUCB * const       pfucbDefrag,
-            __in const OLD2_STATUS& old2status );
+            _In_ PIB * const        ppib,
+            _In_ FUCB * const       pfucbDefrag,
+            _In_ const OLD2_STATUS& old2status );
 
         static ERR ErrInsertNewRecord(
             _In_ PIB * const        ppib,
@@ -200,14 +200,14 @@ class OLD2_STATUS
             _In_ const OLD2_STATUS& old2status );
 
         static ERR ErrLoad(
-            __in PIB * const        ppib,
-            __in FUCB * const       pfucbDefrag,
-            __in OLD2_STATUS&       old2status );
+            _In_ PIB * const        ppib,
+            _In_ FUCB * const       pfucbDefrag,
+            _In_ OLD2_STATUS&       old2status );
 
         static ERR ErrDelete(
-            __in PIB * const        ppib,
-            __in FUCB * const       pfucbDefrag,
-            __in const OLD2_STATUS& old2status );
+            _In_ PIB * const        ppib,
+            _In_ FUCB * const       pfucbDefrag,
+            _In_ const OLD2_STATUS& old2status );
 
     public:
         CPG CpgVisited() const      { return m_cpgVisited; }
@@ -269,34 +269,34 @@ class OLD2_STATUS
         
     private:
         static ERR ErrDumpOneRecord_(
-            __in PIB * const ppib,
-            __in FUCB * const pfucb );
+            _In_ PIB * const ppib,
+            _In_ FUCB * const pfucb );
         
         static ERR ErrCreateTable_(
-            __in PIB * const ppib,
+            _In_ PIB * const ppib,
             const IFMP ifmp );
         
         static ERR ErrSetLongLong_(
-            __in PIB * const ppib,
-            __in FUCB * const pfucb,
+            _In_ PIB * const ppib,
+            _In_ FUCB * const pfucb,
             const FID fid,
             const __int64 qwValue );
         static ERR ErrGetLongLong_(
-            __in PIB * const ppib,
-            __in FUCB * const pfucb,
+            _In_ PIB * const ppib,
+            _In_ FUCB * const pfucb,
             const FID fid,
-            __out __int64 * const pqwValue );
+            _Out_ __int64 * const pqwValue );
         
         static ERR ErrSetLong_(
-            __in PIB * const ppib,
-            __in FUCB * const pfucb,
+            _In_ PIB * const ppib,
+            _In_ FUCB * const pfucb,
             const FID fid,
             const LONG lValue );
         static ERR ErrGetLong_(
-            __in PIB * const ppib,
-            __in FUCB * const pfucb,
+            _In_ PIB * const ppib,
+            _In_ FUCB * const pfucb,
             const FID fid,
-            __out LONG * const plValue );
+            _Out_ LONG * const plValue );
         
         static ERR ErrSeek_(
             _In_ PIB * const        ppib,
@@ -304,15 +304,15 @@ class OLD2_STATUS
             _In_ const OLD2_STATUS& old2status );
 
         static ERR ErrCheckCurrency_(
-            __in PIB * const        ppib,
-            __in FUCB * const       pfucbDefrag,
-            __in const OLD2_STATUS& old2status );
+            _In_ PIB * const        ppib,
+            _In_ FUCB * const       pfucbDefrag,
+            _In_ const OLD2_STATUS& old2status );
 
 #ifndef RTM
     private:
         static VOID Test();
-        static ERR ErrLoadAndCheck( __in PIB * const ppib, __in FUCB * const pfucb, const OLD2_STATUS& old2status );
-        static ERR ErrTestTable( __in PIB * const ppib, __in FUCB * const pfucb );
+        static ERR ErrLoadAndCheck( _In_ PIB * const ppib, _In_ FUCB * const pfucb, const OLD2_STATUS& old2status );
+        static ERR ErrTestTable( _In_ PIB * const ppib, _In_ FUCB * const pfucb );
 #endif
 };
 
@@ -466,8 +466,9 @@ class CDefragManager
         static CDefragManager& Instance();
         // the maximum number of tasks to run concurrently
         // this is also the size of the m_rgtasks array
-        static const INT s_ctasksMax = 2;
-        static const char * const szCriticalSectionName;
+        static const INT s_ctasksMaxDefault = 2;
+        static const char * const szDefragManagerCriticalSectionName;
+        static const char * const szDefragPauseManagerCriticalSectionName;
         
     public:
         // start/stop the defrag manager
@@ -507,6 +508,14 @@ class CDefragManager
             _In_opt_z_ const CHAR * const szIndex,
             _In_ DEFRAGTYPE defragtype ) const;
 
+        VOID Pause();
+        VOID Unpause();
+
+        INT CTasksMax()
+        {
+            return m_ctasksMax;
+        }
+
     private:
         // add a scheduled task that runs FOsTimerTask_()
         VOID EnsureTimerScheduled_();
@@ -537,6 +546,9 @@ class CDefragManager
     private:
         // critical section for state changes
         CCriticalSection m_crit;
+
+        // critical section for pausing
+        CCriticalSection m_critPauseManager;
 
         // timer task handle
         POSTIMERTASK m_posttDispatchOsTimerTask;
@@ -575,6 +587,8 @@ class CDefragManager
         INT m_ctasksToIssue;
         INT m_ctasksToIssueNext;
         
+        INT m_ctasksMax;
+        
     private:
         CDefragManager();
         ~CDefragManager();
@@ -590,23 +604,23 @@ LOCAL const CHAR        szOLD[]                         = "MSysDefrag2";
 
 LOCAL __int64 zero = 0;
 
-LOCAL const FID         fidOLDObjidFDP                  = fidFixedLeast;
-LOCAL const FID         fidOLDStatus                    = fidFixedLeast+1;
-LOCAL const FID         fidOLDPassStartDateTime         = fidFixedLeast+2;
-LOCAL const FID         fidOLDPassElapsedSeconds        = fidFixedLeast+3;
-LOCAL const FID         fidOLDPassInvocations           = fidFixedLeast+4;
-LOCAL const FID         fidOLDPassPagesVisited          = fidFixedLeast+5;
-LOCAL const FID         fidOLDPassPagesFreed            = fidFixedLeast+6;
-LOCAL const FID         fidOLDPassPartialMerges         = fidFixedLeast+7;
-LOCAL const FID         fidOLDTotalPasses               = fidFixedLeast+8;
-LOCAL const FID         fidOLDTotalElapsedSeconds       = fidFixedLeast+9;
-LOCAL const FID         fidOLDTotalInvocations          = fidFixedLeast+10;
-LOCAL const FID         fidOLDTotalDefragDays           = fidFixedLeast+11;
-LOCAL const FID         fidOLDTotalPagesVisited         = fidFixedLeast+12;
-LOCAL const FID         fidOLDTotalPagesFreed           = fidFixedLeast+13;
-LOCAL const FID         fidOLDTotalPartialMerges        = fidFixedLeast+14;
+LOCAL const FID         fidOLDObjidFDP                  = FID( fidtypFixed, 0 );
+LOCAL const FID         fidOLDStatus                    = FID( fidtypFixed, 1 );
+LOCAL const FID         fidOLDPassStartDateTime         = FID( fidtypFixed, 2 );
+LOCAL const FID         fidOLDPassElapsedSeconds        = FID( fidtypFixed, 3 );
+LOCAL const FID         fidOLDPassInvocations           = FID( fidtypFixed, 4 );
+LOCAL const FID         fidOLDPassPagesVisited          = FID( fidtypFixed, 5 );
+LOCAL const FID         fidOLDPassPagesFreed            = FID( fidtypFixed, 6 );
+LOCAL const FID         fidOLDPassPartialMerges         = FID( fidtypFixed, 7 );
+LOCAL const FID         fidOLDTotalPasses               = FID( fidtypFixed, 8 );
+LOCAL const FID         fidOLDTotalElapsedSeconds       = FID( fidtypFixed, 9 );
+LOCAL const FID         fidOLDTotalInvocations          = FID( fidtypFixed, 10 );
+LOCAL const FID         fidOLDTotalDefragDays           = FID( fidtypFixed, 11 );
+LOCAL const FID         fidOLDTotalPagesVisited         = FID( fidtypFixed, 12 );
+LOCAL const FID         fidOLDTotalPagesFreed           = FID( fidtypFixed, 13 );
+LOCAL const FID         fidOLDTotalPartialMerges        = FID( fidtypFixed, 14 );
 
-LOCAL const FID         fidOLDCurrentKey                = fidTaggedLeast;
+LOCAL const FID         fidOLDCurrentKey                = FID( fidtypTagged, 0 );
 
 LOCAL const CPG         cpgOLDUpdateBookmarkThreshold   = 500;      // number of pages to clean before updating catalog
 
@@ -631,10 +645,10 @@ LOCAL VOID OLDAssertLongLongColumn( const FID fid )
 
 //  ================================================================
 LOCAL ERR ErrOLDRetrieveLongLongColumn(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
-    __out __int64 * const pValue)
+    _Out_ __int64 * const pValue)
 //  ================================================================
 {
     OLDAssertLongLongColumn( fid );
@@ -662,10 +676,10 @@ HandleError:
 
 //  ================================================================
 LOCAL ERR ErrOLDSetLongLongColumn(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
-    __in __int64 value)
+    _In_ __int64 value)
 //  ================================================================
 //
 // NOTE: this function does NOT call IsamPrepareUpdate. The cursor
@@ -694,8 +708,8 @@ HandleError:
 
 //  ================================================================
 LOCAL ERR ErrOLDIncrementLongLongColumn(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
     const __int64 delta)
 //  ================================================================
@@ -733,8 +747,8 @@ const INT cchColumnNameOLDDump = 20;
 
 //  ================================================================
 ERR ErrOLDDumpLongColumn(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
     const WCHAR * const szColumn)
 //  ================================================================
@@ -761,8 +775,8 @@ HandleError:
 
 //  ================================================================
 ERR ErrOLDDumpLongLongColumn(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
     const WCHAR * const szColumn)
 //  ================================================================
@@ -783,8 +797,8 @@ HandleError:
 
 //  ================================================================
 ERR ErrOLDDumpFileTimeColumn(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
     const WCHAR * const szColumn)
 //  ================================================================
@@ -846,7 +860,7 @@ HandleError:
 }
 
 //  ================================================================
-ERR ErrOLDDumpMSysDefrag( __in PIB * const ppib, const IFMP ifmp )
+ERR ErrOLDDumpMSysDefrag( _In_ PIB * const ppib, const IFMP ifmp )
 //  ================================================================
 {
     ERR err;
@@ -1007,7 +1021,7 @@ RECCHECKFINALIZE<TDelta>::RECCHECKFINALIZE(
     m_fCallback( !!fCallback ),
     m_fDelete( !!fDelete )
 {
-    Assert( FFixedFid( m_fid ) );
+    Assert( m_fid.FFixed() );
 
     //
     //  UNDONE: issue callback if m_fCallback and delete record if m_fDelete
@@ -1029,7 +1043,7 @@ ERR RECCHECKFINALIZE<TDelta>::operator()( const KEYDATAFLAGS& kdf, const PGNO pg
     }
 
     //  NULL bit is not set: column is NULL
-    const UINT  ifid            = m_fid - fidFixedLeast;
+    const UINT  ifid            = m_fid.IndexOf( fidtypFixed );
     const BYTE  *prgbitNullity  = prec->PbFixedNullBitMap() + ifid/8;
     if ( FFixedNullBit( prgbitNullity, ifid ) )
     {
@@ -1144,7 +1158,7 @@ ERR RECCHECKDELETELV::operator()( const KEYDATAFLAGS& kdf, const PGNO pgno )
 //  restart OLD2 for the tree with the given objidFDP
 
 ERR ErrOLD2ResumeOneTree(
-    __in PIB * const ppib,
+    _In_ PIB * const ppib,
     const IFMP ifmp,
     const OBJID objidTable,
     const OBJID objidFDP,
@@ -1194,7 +1208,7 @@ HandleError:
 
 //  look through MSysOLD2 and restart OLD2 for any tables found in there
 
-ERR ErrOLD2Resume( __in PIB * const ppib, const IFMP ifmp )
+ERR ErrOLD2Resume( _In_ PIB * const ppib, const IFMP ifmp )
 {
     ERR err;
     FUCB * pfucb = pfucbNil;
@@ -1221,6 +1235,7 @@ ERR ErrOLD2Resume( __in PIB * const ppib, const IFMP ifmp )
 
     err = ErrIsamMove( ppib, pfucb, JET_MoveFirst, NO_GRBIT );
     size_t cResumesAttempted = 0;
+    INT cTasksInTable = 0, cTasksNotStarted = 0;
 
     while( JET_errSuccess == err )
     {
@@ -1229,6 +1244,23 @@ ERR ErrOLD2Resume( __in PIB * const ppib, const IFMP ifmp )
         Call( OLD2_STATUS::ErrGetObjids( ppib, pfucb, &objidTable, &objidFDP ) );
         Assert( objidNil != objidTable );
         Assert( objidNil != objidFDP );
+
+        // Load the rest of the status fields
+        OLD2_STATUS oldStatus = OLD2_STATUS( objidTable, objidFDP );
+        err = OLD2_STATUS::ErrLoad( ppib, pfucb, oldStatus );
+
+        // JET_errRecordNotFound means there was no bookmark,
+        // i.e. it hadn't started this task
+        if ( JET_errRecordNotFound == err  )
+        {
+            cTasksNotStarted++;
+        }
+        else
+        {
+            Call( err );
+        }
+
+        cTasksInTable++;
 
         // First try as a 'dry run', to flush out potential errors.
         err = ErrOLD2ResumeOneTree( ppib, ifmp, objidTable, objidFDP, fTrue );
@@ -1243,7 +1275,7 @@ ERR ErrOLD2Resume( __in PIB * const ppib, const IFMP ifmp )
         else
         {
             // Seems to be a valid table. Let's schedule it for defrag resume.
-            if ( cResumesAttempted <= CDefragManager::s_ctasksMax )
+            if ( cResumesAttempted <= CDefragManager::Instance().CTasksMax() )
             {
                 const ERR errNonfatal = ErrOLD2ResumeOneTree( ppib, ifmp, objidTable, objidFDP, fFalse );
 
@@ -1257,6 +1289,30 @@ ERR ErrOLD2Resume( __in PIB * const ppib, const IFMP ifmp )
         Call( err );
         err = ErrIsamMove( ppib, pfucb, JET_MoveNext, NO_GRBIT );
     }
+
+    // Report on the number of outstanding tasks
+    const INT  cszArgs = 3;
+    const WCHAR* rgszT[cszArgs];
+
+    WCHAR szTasksInTable[16];
+    OSStrCbFormatW( szTasksInTable, sizeof(szTasksInTable), L"%d", cTasksInTable );
+    rgszT[0] = szTasksInTable;
+
+    rgszT[1] = g_rgfmp[ifmp].WszDatabaseName();
+
+    WCHAR szTasksNotStarted[16];
+    OSStrCbFormatW( szTasksNotStarted, sizeof( szTasksNotStarted ), L"%d", cTasksNotStarted );
+    rgszT[2] = szTasksNotStarted;
+
+    UtilReportEvent(
+        eventInformation,
+        ONLINE_DEFRAG_CATEGORY,
+        OLD2_TABLE_STATUS,
+        cszArgs,
+        rgszT,
+        0,
+        NULL,
+        PinstFromIfmp( ifmp ));
 
     // If the ErrIsamMove() reached the end of the MSysOld2 table, that's actually a success.
     if( JET_errNoCurrentRecord == err )
@@ -1283,6 +1339,21 @@ HandleError:
 VOID OLD2TermFmp( const IFMP ifmp )
 {
     CDefragManager::Instance().DeregisterIfmp( ifmp );
+}
+
+VOID OLD2PauseTasks()
+{
+    CDefragManager::Instance().Pause();
+}
+
+VOID OLD2UnpauseTasks()
+{
+    CDefragManager::Instance().Unpause();
+}
+
+BOOL COLD2Tasks()
+{
+    return CDefragManager::Instance().CTasksMax();
 }
 
 BOOL FOLDRunning( const IFMP ifmp )
@@ -1404,9 +1475,9 @@ INLINE BOOL FOLDContinueTree( const FUCB * pfucb )
 
 //  ================================================================
 LOCAL ERR ErrOLDStatusUpdate(
-    __in PIB * const                    ppib,
-    __in FUCB * const               pfucbDefrag,
-    __in DEFRAG_STATUS&             defragstat )
+    _In_ PIB * const                    ppib,
+    _In_ FUCB * const               pfucbDefrag,
+    _In_ DEFRAG_STATUS&             defragstat )
 //  ================================================================
 {
     ERR                         err;
@@ -1450,7 +1521,7 @@ LOCAL ERR ErrOLDStatusUpdate(
         dataT.SetPv( defragstat.RgbCurrentKey() );
         dataT.SetCb( defragstat.CbCurrentKey() );
 
-        Assert( FTaggedFid( fidOLDCurrentKey ) );
+        Assert( fidOLDCurrentKey.FTagged() );
         err = ErrRECSetLongField(
                     pfucbDefrag,
                     fidOLDCurrentKey,
@@ -1495,8 +1566,8 @@ HandleError:
 
 //  ================================================================
 LOCAL ERR ErrOLDLogResumeEvent(
-    __in PIB * const                ppib,
-    __in FUCB * const               pfucbDefrag)
+    _In_ PIB * const                ppib,
+    _In_ FUCB * const               pfucbDefrag)
 //  ================================================================
 {
     ERR err;
@@ -1562,9 +1633,9 @@ HandleError:
 
 //  ================================================================
 LOCAL ERR ErrOLDStatusResumePass(
-    __in PIB * const                ppib,
-    __in FUCB * const               pfucbDefrag,
-    __in DEFRAG_STATUS&             defragstat )
+    _In_ PIB * const                ppib,
+    _In_ FUCB * const               pfucbDefrag,
+    _In_ DEFRAG_STATUS&             defragstat )
 //  ================================================================
 {
     ERR                         err;
@@ -1608,9 +1679,9 @@ HandleError:
 
 //  ================================================================
 LOCAL ERR ErrOLDStatusNewPass(
-    __in PIB * const                ppib,
-    __in FUCB * const               pfucbDefrag,
-    __in DEFRAG_STATUS&             defragstat )
+    _In_ PIB * const                ppib,
+    _In_ FUCB * const               pfucbDefrag,
+    _In_ DEFRAG_STATUS&             defragstat )
 //  ================================================================
 {
     ERR                         err;
@@ -1669,8 +1740,8 @@ HandleError:
 
 //  ================================================================
 LOCAL ERR ErrOLDLogCompletionEvent(
-    __in PIB * const                    ppib,
-    __in FUCB * const               pfucbDefrag,
+    _In_ PIB * const                    ppib,
+    _In_ FUCB * const               pfucbDefrag,
     const MessageId             messageId)
 //  ================================================================
 {
@@ -1765,9 +1836,9 @@ HandleError:
 
 //  ================================================================
 LOCAL ERR ErrOLDStatusCompletedPass(
-    __in PIB * const                ppib,
-    __in FUCB * const               pfucbDefrag,
-    __in DEFRAG_STATUS&             defragstat )
+    _In_ PIB * const                ppib,
+    _In_ FUCB * const               pfucbDefrag,
+    _In_ DEFRAG_STATUS&             defragstat )
 //  ================================================================
 {
     ERR                         err;
@@ -2195,7 +2266,7 @@ LOCAL ERR ErrOLDCheckForFinalize(
         //  in a table, OLD will only look at the first one
         //
         const FID   fidLast = ptdb->FidFixedLast();
-        for( FID fid = fidFixedLeast; fid <= fidLast; ++fid )
+        for( FID fid = FID( fidtypFixed, fidlimLeast ); fid <= fidLast; ++fid )
         {
             const BOOL          fTemplateColumn = ptdb->FFixedTemplateColumn( fid );
             const FIELD * const pfield          = ptdb->PfieldFixed( ColumnidOfFid( fid, fTemplateColumn ) );
@@ -2300,7 +2371,7 @@ LOCAL ERR ErrOLDIExplicitDefragOneTable(
     fLatchedCatalog = fTrue;
 
     //  first record with this objidFDP should always be the Table object.
-    Assert( FFixedFid( fidMSO_Type ) );
+    Assert( fidMSO_Type.FFixed() );
     CallS( ErrRECIRetrieveFixedColumn(
                 pfcbNil,
                 pfucbCatalog->u.pfcb->Ptdb(),
@@ -2321,7 +2392,7 @@ LOCAL ERR ErrOLDIExplicitDefragOneTable(
         goto HandleError;
     }
 
-    Assert( FFixedFid( fidMSO_ObjidTable ) );
+    Assert( fidMSO_ObjidTable.FFixed() );
     Call( ErrRECIRetrieveFixedColumn(
                 pfcbNil,
                 pfucbCatalog->u.pfcb->Ptdb(),
@@ -2342,7 +2413,7 @@ LOCAL ERR ErrOLDIExplicitDefragOneTable(
         defragstat.SetTypeNull();
     }
 
-    Assert( FVarFid( fidMSO_Name ) );
+    Assert( fidMSO_Name.FVar() );
     Call( ErrRECIRetrieveVarColumn(
                 pfcbNil,
                 pfucbCatalog->u.pfcb->Ptdb(),
@@ -2366,7 +2437,7 @@ LOCAL ERR ErrOLDIExplicitDefragOneTable(
     CallS( ErrDIRRelease( pfucbCatalog ) );
     fLatchedCatalog = fFalse;
 
-    err = ErrFILEOpenTable( ppib, ifmp, &pfucb, szTable, JET_bitTableTryPurgeOnClose );
+    err = ErrFILEOpenTable( ppib, ifmp, &pfucb, szTable, ( JET_bitTableTryPurgeOnClose | JET_bitTableAllowSensitiveOperation ) );
     if ( err < 0 )
     {
         Assert( pfucbNil == pfucb );
@@ -2930,7 +3001,7 @@ DWORD OLDDefragDb( DWORD_PTR dw )
     Assert( !Pcsr( pfucb )->FLatched() );
     Call( ErrDIRGet( pfucb ) );
 
-    Assert( FFixedFid( fidOLDObjidFDP ) );
+    Assert( fidOLDObjidFDP.FFixed() );
     Call( ErrRECIRetrieveFixedColumn(
                 pfcbNil,
                 pfucb->u.pfcb->Ptdb(),
@@ -2941,7 +3012,7 @@ DWORD OLDDefragDb( DWORD_PTR dw )
     Assert( dataField.Cb() == sizeof(OBJID) );
     defragstat.SetObjidCurrentTable( *( (UnalignedLittleEndian< OBJID > *)dataField.Pv() ) );
 
-    Assert( FFixedFid( fidOLDStatus ) );
+    Assert( fidOLDStatus.FFixed() );
     Call( ErrRECIRetrieveFixedColumn(
                 pfcbNil,
                 pfucb->u.pfcb->Ptdb(),
@@ -2954,7 +3025,7 @@ DWORD OLDDefragDb( DWORD_PTR dw )
         defragstat.SetType( *( (UnalignedLittleEndian< DEFRAGTYPE > *)dataField.Pv() ) );
         Assert( defragstat.FTypeTable() || defragstat.FTypeLV() || defragstat.FTypeIndex() );
 
-        Assert( FTaggedFid( fidOLDCurrentKey ) );
+        Assert( fidOLDCurrentKey.FTagged() );
         Call( ErrRECIRetrieveTaggedColumn(
                     pfucb->u.pfcb,
                     ColumnidOfFid( fidOLDCurrentKey, fFalse ),
@@ -3685,8 +3756,8 @@ VOID OLD2_STATUS::SetBookmark( const BOOKMARK& bm )
 
 //  ================================================================
 ERR OLD2_STATUS::ErrSetLongLong_(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
     const __int64 qwValue )
 //  ================================================================
@@ -3715,10 +3786,10 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrGetLongLong_(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
-    __out __int64 * const pqwValue )
+    _Out_ __int64 * const pqwValue )
 //  ================================================================
 {
     ERR err;
@@ -3744,8 +3815,8 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrSetLong_(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
     const LONG lValue )
 //  ================================================================
@@ -3774,10 +3845,10 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrGetLong_(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const FID fid,
-    __out LONG * const plValue )
+    _Out_ LONG * const plValue )
 //  ================================================================
 {
     ERR err;
@@ -3803,9 +3874,9 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrSeek_(
-    __in PIB * const            ppib,
-    __in FUCB * const           pfucbDefrag,
-    __in const OLD2_STATUS&     old2status )
+    _In_ PIB * const            ppib,
+    _In_ FUCB * const           pfucbDefrag,
+    _In_ const OLD2_STATUS&     old2status )
 //  ================================================================
 //
 //  Find the appropriate record in MSysDefrag for the given old2status.
@@ -3839,9 +3910,9 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrCheckCurrency_(
-    __in PIB * const        ppib,
-    __in FUCB * const       pfucbDefrag,
-    __in const OLD2_STATUS& old2status )
+    _In_ PIB * const        ppib,
+    _In_ FUCB * const       pfucbDefrag,
+    _In_ const OLD2_STATUS& old2status )
 //  ================================================================
 //
 //  Make sure that pfucbDefrag is located on the record associated
@@ -3868,7 +3939,7 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrCreateTable_(
-    __in PIB * const ppib,
+    _In_ PIB * const ppib,
     const IFMP ifmp )
 //  ================================================================
 {
@@ -3958,7 +4029,7 @@ HandleError:
 }
 
 //  ================================================================
-ERR OLD2_STATUS::ErrDumpOneRecord_( __in PIB * const ppib, __in FUCB * const pfucb )
+ERR OLD2_STATUS::ErrDumpOneRecord_( _In_ PIB * const ppib, _In_ FUCB * const pfucb )
 //  ================================================================
 {
     ERR err;
@@ -3983,9 +4054,9 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrLoad(
-    __in PIB * const    ppib,
-    __in FUCB * const   pfucbDefrag,
-    __in OLD2_STATUS&   old2status )
+    _In_ PIB * const    ppib,
+    _In_ FUCB * const   pfucbDefrag,
+    _In_ OLD2_STATUS&   old2status )
 //  ================================================================
 //
 //  Load the OLD2_STATUS fields from the table.
@@ -4067,9 +4138,9 @@ const CHAR * OLD2_STATUS::SzTableName()
 
 //  ================================================================
 ERR OLD2_STATUS::ErrOpenTable(
-    __in PIB * const        ppib,
+    _In_ PIB * const        ppib,
     const IFMP              ifmp,
-    __out FUCB ** const     ppfucb )
+    _Out_ FUCB ** const     ppfucb )
 //  ================================================================
 {
     ERR err;
@@ -4082,9 +4153,9 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrOpenOrCreateTable(
-    __in PIB * const        ppib,
+    _In_ PIB * const        ppib,
     const IFMP              ifmp,
-    __out FUCB ** const     ppfucb )
+    _Out_ FUCB ** const     ppfucb )
 //  ================================================================
 {
     ERR err;
@@ -4112,10 +4183,10 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrGetObjids(
-    __in PIB * const        ppib,
-    __in FUCB * const       pfucb,
-    __out OBJID * const     pobjidTable,
-    __out OBJID * const     pobjidFDP )
+    _In_ PIB * const        ppib,
+    _In_ FUCB * const       pfucb,
+    _Out_ OBJID * const     pobjidTable,
+    _Out_ OBJID * const     pobjidFDP )
 //  ================================================================
 //
 //  Given an FUCB positioned on MSysOLD2 return the objids of the
@@ -4135,9 +4206,9 @@ HandleError:
     
 //  ================================================================
 ERR OLD2_STATUS::ErrSave(
-    __in PIB * const    ppib,
-    __in FUCB * const   pfucbDefrag,
-    __in const OLD2_STATUS& old2status )
+    _In_ PIB * const    ppib,
+    _In_ FUCB * const   pfucbDefrag,
+    _In_ const OLD2_STATUS& old2status )
 //  ================================================================
 //
 //  Store the OLD2_STATUS fields in the table.
@@ -4201,7 +4272,7 @@ ERR OLD2_STATUS::ErrSave(
     dataT.SetPv( bm.key.suffix.Pv() );
     dataT.SetCb( bm.key.suffix.Cb() );
 
-    Assert( FTaggedFid( s_fidOLD2BookmarkKey ) );
+    Assert( s_fidOLD2BookmarkKey.FTagged() );
     Call( ErrRECSetLongField(
                 pfucbDefrag,
                 s_fidOLD2BookmarkKey,
@@ -4212,7 +4283,7 @@ ERR OLD2_STATUS::ErrSave(
     dataT.SetPv( bm.data.Pv() );
     dataT.SetCb( bm.data.Cb() );
 
-    Assert( FTaggedFid( s_fidOLD2BookmarkData ) );
+    Assert( s_fidOLD2BookmarkData.FTagged() );
     Call( ErrRECSetLongField(
                 pfucbDefrag,
                 s_fidOLD2BookmarkData,
@@ -4287,9 +4358,9 @@ HandleError:
 
 //  ================================================================
 ERR OLD2_STATUS::ErrDelete(
-    __in PIB * const        ppib,
-    __in FUCB * const       pfucbDefrag,
-    __in const OLD2_STATUS& old2status )
+    _In_ PIB * const        ppib,
+    _In_ FUCB * const       pfucbDefrag,
+    _In_ const OLD2_STATUS& old2status )
 //  ================================================================
 //
 //  Delete the record for the given OLD2_STATUS
@@ -4319,7 +4390,7 @@ HandleError:
 }
 
 //  ================================================================
-ERR OLD2_STATUS::ErrDumpTable( __in PIB * const ppib, const IFMP ifmp )
+ERR OLD2_STATUS::ErrDumpTable( _In_ PIB * const ppib, const IFMP ifmp )
 //  ================================================================
 {
     ERR err;
@@ -4361,17 +4432,17 @@ HandleError:
 
 const CHAR OLD2_STATUS::s_szOLD2[] = "MSysOLD2";
 
-const FID   OLD2_STATUS::s_fidOLD2ObjidTable    = fidFixedLeast;
-const FID   OLD2_STATUS::s_fidOLD2ObjidFDP      = fidFixedLeast+1;
-const FID   OLD2_STATUS::s_fidOLD2StartDateTime = fidFixedLeast+2;
-const FID   OLD2_STATUS::s_fidOLD2PagesVisited  = fidFixedLeast+3;
-const FID   OLD2_STATUS::s_fidOLD2PagesFreed    = fidFixedLeast+4;
-const FID   OLD2_STATUS::s_fidOLD2PartialMerges = fidFixedLeast+5;
-const FID   OLD2_STATUS::s_fidOLD2PageMoves     = fidFixedLeast+6;
-const FID   OLD2_STATUS::s_fidOLD2UpdateTime    = fidFixedLeast+7;
+const FID   OLD2_STATUS::s_fidOLD2ObjidTable    = FID( fidtypFixed, 0 );
+const FID   OLD2_STATUS::s_fidOLD2ObjidFDP      = FID( fidtypFixed, 1 );
+const FID   OLD2_STATUS::s_fidOLD2StartDateTime = FID( fidtypFixed, 2 );
+const FID   OLD2_STATUS::s_fidOLD2PagesVisited  = FID( fidtypFixed, 3 );
+const FID   OLD2_STATUS::s_fidOLD2PagesFreed    = FID( fidtypFixed, 4 );
+const FID   OLD2_STATUS::s_fidOLD2PartialMerges = FID( fidtypFixed, 5 );
+const FID   OLD2_STATUS::s_fidOLD2PageMoves     = FID( fidtypFixed, 6 );
+const FID   OLD2_STATUS::s_fidOLD2UpdateTime    = FID( fidtypFixed, 7 );
 
-const FID   OLD2_STATUS::s_fidOLD2BookmarkKey   = fidTaggedLeast;
-const FID   OLD2_STATUS::s_fidOLD2BookmarkData  = fidTaggedLeast+1;
+const FID   OLD2_STATUS::s_fidOLD2BookmarkKey   = FID( fidtypTagged, 0 );
+const FID   OLD2_STATUS::s_fidOLD2BookmarkData  = FID( fidtypTagged, 1 );
 
 #ifndef RTM
 //  ================================================================
@@ -4438,7 +4509,7 @@ VOID OLD2_STATUS::Test()
 }
 
 //  ================================================================
-ERR OLD2_STATUS::ErrLoadAndCheck( __in PIB * const ppib, __in FUCB * const pfucb, const OLD2_STATUS& old2status )
+ERR OLD2_STATUS::ErrLoadAndCheck( _In_ PIB * const ppib, _In_ FUCB * const pfucb, const OLD2_STATUS& old2status )
 //  ================================================================
 {
     ERR err;
@@ -4462,7 +4533,7 @@ HandleError:
 }
 
 //  ================================================================
-ERR OLD2_STATUS::ErrTestTable( __in PIB * const ppib, __in FUCB * const pfucb )
+ERR OLD2_STATUS::ErrTestTable( _In_ PIB * const ppib, _In_ FUCB * const pfucb )
 //  ================================================================
 {
     static bool fTested = false;
@@ -5381,6 +5452,17 @@ VOID CTableDefragment::LogCompletionEvent_() const
     rgszT[isz++] = szPagesMoved;
     Assert( isz == cszMax );
     
+#ifdef ENABLE_MICROSOFT_MANAGED_DATACENTER_LEVEL_OPTICS
+    UtilReportEvent(
+        eventInformation,
+        ONLINE_DEFRAG_CATEGORY,
+        OLD2_COMPLETE_PASS_ID,
+        isz,
+        rgszT,
+        0,
+        NULL,
+        pinst );
+#else
     UtilReportEvent(
         eventInformation,
         ONLINE_DEFRAG_CATEGORY,
@@ -5391,6 +5473,7 @@ VOID CTableDefragment::LogCompletionEvent_() const
         NULL,
         pinst,
         JET_EventLoggingLevelHigh );
+#endif
 
 HandleError:
     delete[] szPassStartDateTime;
@@ -5500,7 +5583,8 @@ VOID CDefragTask::SetPtabledefragment( CTableDefragment * const ptabledefragment
 }
 
 CDefragManager CDefragManager::s_instance;
-const char * const CDefragManager::szCriticalSectionName = "DefragManager";
+const char * const CDefragManager::szDefragManagerCriticalSectionName = "DefragManager";
+const char * const CDefragManager::szDefragPauseManagerCriticalSectionName = "DefragPauseManager";
 
 //  ================================================================
 CDefragManager& CDefragManager::Instance()
@@ -5512,7 +5596,8 @@ CDefragManager& CDefragManager::Instance()
 //  ================================================================
 CDefragManager::CDefragManager() :
 //  ================================================================
-    m_crit( CLockBasicInfo( CSyncBasicInfo( szCriticalSectionName ), rankDefragManager, 0 ) ),
+    m_crit( CLockBasicInfo( CSyncBasicInfo( szDefragManagerCriticalSectionName ), rankDefragManager, 0 ) ),
+    m_critPauseManager( CLockBasicInfo( CSyncBasicInfo( szDefragPauseManagerCriticalSectionName ), rankDefragPauseManager, 0 ) ),
     m_posttDispatchOsTimerTask( NULL ),
     m_fTimerScheduled( false ),
     m_cmsecPeriod( 0 /* real value set in ErrInit() */ ),
@@ -5521,7 +5606,8 @@ CDefragManager::CDefragManager() :
     m_ctasksIssued( 1 ),
     m_ctasksToIssueNext( 1 ),
     m_rgtasks( NULL ),
-    m_itaskLastIssued( 0 )
+    m_itaskLastIssued( 0 ),
+    m_ctasksMax( s_ctasksMaxDefault )
 {
     for( INT il = 0; il < m_clCompleted; ++il )
     {
@@ -5570,7 +5656,7 @@ VOID CDefragManager::Term()
 
     if( m_rgtasks )
     {
-        for( INT itask = 0; itask < s_ctasksMax; ++itask )
+        for( INT itask = 0; itask < s_ctasksMaxDefault; ++itask )
         {
             if( NULL != m_rgtasks[itask].Ptabledefragment() )
             {
@@ -5581,6 +5667,24 @@ VOID CDefragManager::Term()
 
     delete [] m_rgtasks;
     m_rgtasks = NULL;
+}
+
+//  ================================================================
+VOID CDefragManager::Pause()
+//  ================================================================
+{
+    ENTERCRITICALSECTION enterCrit( &m_critPauseManager );
+
+    m_ctasksMax = 0;
+}
+
+//  ================================================================
+VOID CDefragManager::Unpause()
+//  ================================================================
+{
+    ENTERCRITICALSECTION enterCrit( &m_critPauseManager );
+    
+    m_ctasksMax = s_ctasksMaxDefault;
 }
 
 typedef struct
@@ -5644,7 +5748,9 @@ ERR CDefragManager::ErrRegisterOneTreeOnly(
         {
             if( NULL == m_rgtasks )
             {
-                Alloc( m_rgtasks = new CDefragTask[s_ctasksMax] );
+                // Need to allocate enough for the maximum number of tasks instead
+                // of the dynamic m_ctasksMax
+                Alloc( m_rgtasks = new CDefragTask[s_ctasksMaxDefault] );
             }
             
             if( !FTableIsRegistered( ifmp, szTable, szIndex, defragtype ) )
@@ -5696,7 +5802,9 @@ ERR CDefragManager::ErrExplicitRegisterTableAndChildren(
         {
             if( NULL == m_rgtasks )
             {
-                Alloc( m_rgtasks = new CDefragTask[ s_ctasksMax ] );
+                // Need to allocate enough for the maximum number of tasks instead
+                // of the dynamic m_ctasksMax
+                Alloc( m_rgtasks = new CDefragTask[s_ctasksMaxDefault] );
             }
 
             if( !FTableIsRegistered( ifmp, szTable, NULL, defragtypeTable ) )
@@ -5731,7 +5839,7 @@ VOID CDefragManager::DeregisterInst( const INST * const pinst )
 
     if( m_rgtasks )
     {
-        for( INT itask = 0; itask < s_ctasksMax; ++itask )
+        for( INT itask = 0; itask < s_ctasksMaxDefault; ++itask )
         {
             if( NULL != m_rgtasks[itask].Ptabledefragment()
                 && pinst == PinstFromIfmp( m_rgtasks[itask].Ptabledefragment()->Ifmp() ) )
@@ -5751,7 +5859,7 @@ VOID CDefragManager::DeregisterIfmp( const IFMP ifmp )
 
     if( m_rgtasks )
     {
-        for( INT itask = 0; itask < s_ctasksMax; ++itask )
+        for( INT itask = 0; itask < s_ctasksMaxDefault; ++itask )
         {
             if( NULL != m_rgtasks[itask].Ptabledefragment()
                 && ifmp == m_rgtasks[itask].Ptabledefragment()->Ifmp() )
@@ -5795,17 +5903,29 @@ ERR CDefragManager::ErrTryAddTaskAtFreeSlot(
 
     Assert( defragtype != defragtypeLV );
 
-    for( INT itask = 0; itask < s_ctasksMax; ++itask )
+    m_critPauseManager.Enter();
+    
+    for( INT itask = 0; itask < m_ctasksMax; ++itask )
     {
         if( NULL == m_rgtasks[itask].Ptabledefragment() )
         {
             Assert( !fAdded );
-            Call( ErrAddTask_( ifmp, szTable, szIndex, defragtype, itask ) );
+            err = ErrAddTask_( ifmp, szTable, szIndex, defragtype, itask );
+
+            if ( err != JET_errSuccess )
+            {
+                break;
+            }
+
             EnsureTimerScheduled_();
             fAdded = fTrue;
             break;
         }
     }
+
+    m_critPauseManager.Leave();
+
+    Call( err );
 
     if( !fAdded )
     {
@@ -5814,7 +5934,7 @@ ERR CDefragManager::ErrTryAddTaskAtFreeSlot(
         Call( ErrPIBBeginSession( pinst, &ppib, procidNil, fFalse ) );
         Call( ErrDBOpenDatabaseByIfmp( ppib, ifmp ) );
         Call( OLD2_STATUS::ErrOpenOrCreateTable( ppib, ifmp, &pfucbDefragStatusState ) );
-        Call( ErrFILEOpenTable( ppib, ifmp, &pfucbTable, szTable ) );
+        Call( ErrFILEOpenTable(ppib, ifmp, &pfucbTable, szTable) );
 
         if ( szIndex == NULL )
         {
@@ -5852,6 +5972,8 @@ ERR CDefragManager::ErrTryAddTaskAtFreeSlot(
         err = ErrERRCheck( wrnOLD2TaskSlotFull );
     }
 HandleError:
+    Assert( !m_critPauseManager.FOwner() );
+
     if ( pfucbNil != pfucbDefragStatusState )
     {
         CallS( ErrFILECloseTable( ppib, pfucbDefragStatusState ) );
@@ -5937,7 +6059,9 @@ bool CDefragManager::FTableIsRegistered(
     _In_ DEFRAGTYPE defragtype ) const
 //  ================================================================
 {
-    for( INT itask = 0; itask < s_ctasksMax; ++itask )
+    // Check all tasks, even ones that aren't currently running due
+    // to the pause, as they will resume once it is unpaused
+    for( INT itask = 0; itask < s_ctasksMaxDefault; ++itask )
     {
         if( NULL != m_rgtasks[itask].Ptabledefragment() )
         {
@@ -6022,7 +6146,6 @@ BOOL CDefragManager::FIssueTasks_( const INT ctasksToIssue )
     // the loop is structured this way so that all tasks will be run in a round-robin fashion
     // this is important because table deletion can be blocked until the task running against
     // that table executes
-    Assert( s_ctasksMax > 0 );
     const INT itaskStart = m_itaskLastIssued;
     INT itask = itaskStart;
     do
@@ -6062,7 +6185,7 @@ BOOL CDefragManager::FIssueTasks_( const INT ctasksToIssue )
                 }
             }
         }
-        itask = ( itask + 1 ) % s_ctasksMax;
+        itask = ( itask + 1 ) % s_ctasksMaxDefault;
     } while( itask != itaskStart );
 
     if ( !fInitTaskFound )
@@ -6133,14 +6256,18 @@ BOOL CDefragManager::FOsTimerTask_()
         m_ctasksToIssueNext = ctasksCompleted;
     }
 
-    // sanitize the variables   
-    ctasksToIssue = min( ctasksToIssue, s_ctasksMax );
+    m_critPauseManager.Enter();
+
+    // sanitize the variables
+    ctasksToIssue = min( ctasksToIssue, m_ctasksMax );
     ctasksToIssue = max( ctasksToIssue, 0 );
-    m_ctasksToIssueNext = min( m_ctasksToIssueNext, s_ctasksMax );
+    m_ctasksToIssueNext = min( m_ctasksToIssueNext, m_ctasksMax );
     m_ctasksToIssueNext = max( m_ctasksToIssueNext, 0 );
 
+    m_critPauseManager.Leave();
+
     const BOOL fRescheduleTask = FIssueTasks_( ctasksToIssue );
-    
+
     m_crit.Leave();
 
     return fRescheduleTask;

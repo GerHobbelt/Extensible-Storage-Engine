@@ -154,14 +154,14 @@ void DBMLogStartFailure( const IFMP ifmp, const ERR err )
 }
 
 JET_ERR JET_API NullCallback(
-    __in JET_SESID,
-    __in JET_DBID,
-    __in JET_TABLEID,
-    __in JET_CBTYP,
+    _In_ JET_SESID,
+    _In_ JET_DBID,
+    _In_ JET_TABLEID,
+    _In_ JET_CBTYP,
     __inout_opt void *,
     __inout_opt void *,
     __in_opt void *,
-    __in JET_API_PTR)
+    _In_ JET_API_PTR)
 {
     return JET_errSuccess;
 }
@@ -249,18 +249,18 @@ LOCAL COLUMNID ColumnidFromMSysScanColumnName( const CHAR * const szColumn )
         if( szColumn == rgszMSysScanColumns[iColumn] ||
             0 == UtilCmpName( szColumn, rgszMSysScanColumns[iColumn] ) )
         {
-            return fidFixedLeast+iColumn;
+            return FID( fidtypFixed, (WORD)iColumn );
         }
     }
     AssertSz( fFalse, "Didn't find MSysScanColumn" );
-    return fidTaggedMost;
+    return FID( fidtypTagged, fidlimMost );
 }
 
 
 //  ================================================================
 LOCAL ERR ErrSCANDumpOneMSysDefragColumn(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb,
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb,
     const CHAR * const szColumn)
 //  ================================================================
 {
@@ -335,8 +335,8 @@ HandleError:
 
 //  ================================================================
 LOCAL ERR ErrSCANDumpMSysDefragColumns(
-    __in PIB * const ppib,
-    __in FUCB * const pfucb )
+    _In_ PIB * const ppib,
+    _In_ FUCB * const pfucb )
 //  ================================================================
 {
     ERR err = JET_errSuccess;
@@ -352,7 +352,7 @@ HandleError:
 
 
 //  ================================================================
-ERR ErrSCANDumpMSysScan( __in PIB * const ppib, const IFMP ifmp )
+ERR ErrSCANDumpMSysScan( _In_ PIB * const ppib, const IFMP ifmp )
 //  ================================================================
 {
     ERR err;
@@ -390,7 +390,7 @@ HandleError:
 
 
 //  ================================================================
-LOCAL_BROKEN ERR ErrSCANCreateMSysScan( __in PIB * const ppib, const IFMP ifmp )
+LOCAL_BROKEN ERR ErrSCANCreateMSysScan( _In_ PIB * const ppib, const IFMP ifmp )
 //  ================================================================
 {
     C_ASSERT( ccolMsysScan == clinesMSysScanColumnNames );
@@ -447,7 +447,7 @@ LOCAL_BROKEN ERR ErrSCANCreateMSysScan( __in PIB * const ppib, const IFMP ifmp )
     // make sure the columnids were assigned correctly
     for( INT iColumn = 0; iColumn < ccolMsysScan; ++iColumn )
     {
-        const COLUMNID columnid = fidFixedLeast+iColumn;
+        const COLUMNID columnid = FID( fidtypFixed, (WORD)iColumn );
         Assert( columnid == rgjccMSysScan[iColumn].columnid );
         Assert( columnid == ColumnidFromMSysScanColumnName( rgszMSysScanColumns[iColumn] ) );
     }
@@ -1123,7 +1123,7 @@ LOCAL ERR ErrSCRUBGetObjidsFromCatalog(
         
         Call( ErrDIRGet( pfucbCatalog ) );
 
-        Assert( FFixedFid( fidMSO_Type ) );
+        Assert( fidMSO_Type.FFixed() );
         Call( ErrRECIRetrieveFixedColumn(
                     pfcbNil,
                     pfucbCatalog->u.pfcb->Ptdb(),
@@ -1148,7 +1148,7 @@ LOCAL ERR ErrSCRUBGetObjidsFromCatalog(
                 //  Obtain their objids and pgnoFDPs
                 fBtree = fTrue;
                 
-                Assert( FFixedFid( fidMSO_Id ) );
+                Assert( fidMSO_Id.FFixed() );
                 Call( ErrRECIRetrieveFixedColumn(
                             pfcbNil,
                             pfucbCatalog->u.pfcb->Ptdb(),
@@ -1159,7 +1159,7 @@ LOCAL ERR ErrSCRUBGetObjidsFromCatalog(
 
                 objidFDP = (OBJID)(*( reinterpret_cast<UnalignedLittleEndian< OBJID > *>( data.Pv() ) ));
 
-                Assert( FFixedFid( fidMSO_PgnoFDP ) );
+                Assert( fidMSO_PgnoFDP.FFixed() );
                 Call( ErrRECIRetrieveFixedColumn(
                             pfcbNil,
                             pfucbCatalog->u.pfcb->Ptdb(),
@@ -1183,7 +1183,7 @@ LOCAL ERR ErrSCRUBGetObjidsFromCatalog(
         if( sysobjIndex == sysobj )
         {
             IDBFLAG idbflag;
-            Assert( FFixedFid( fidMSO_Flags ) );
+            Assert( fidMSO_Flags.FFixed() );
             Call( ErrRECIRetrieveFixedColumn(
                         pfcbNil,
                         pfucbCatalog->u.pfcb->Ptdb(),

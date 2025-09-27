@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-#ifdef _MSC_VER
 #pragma once
-#endif // _MSC_VER
 
 #ifndef _CC_HXX
 #define _CC_HXX 1
@@ -56,8 +54,17 @@
 
 #include <sal.h>
 
-#define IN
-#define OUT
+// These conflict with definitions in headers such as <algorithm> on non-Windows platforms.
+// _In_ and _Out_ should be used instead anyway, according to Microsoft's SAL documentation.
+//
+// Unfortunately, can't easily redefine __in and __out because these old-style annotations
+// crept back into the Windows headers ntsecapi.h and dbgeng.h, which we include
+//
+// #undef __in
+// #undef __out
+//
+// #define __in Use_In_instead_of__in
+// #define __out Use_Out_instead_of__out
 
 #endif // !_MSC_VER
 
@@ -112,25 +119,30 @@ typedef char                CHAR;
 //  Basic integer types
 //
 
-typedef short               SHORT;
-typedef unsigned short      USHORT;
-
 #ifdef _MSC_VER
+    typedef short               SHORT;
+    typedef unsigned short      USHORT;
     typedef int                 INT;
     typedef unsigned int        UINT;
     typedef long                LONG;
     typedef unsigned long       ULONG;
+    typedef long long           LONGLONG;
+    typedef unsigned long long  ULONGLONG;
 #else
     // On most other platforms, int and long are 64-bit on 64-bit platforms, but the ESE format
     // is dependent upon LONG being 32-bits.
+    typedef int16_t             SHORT;
+    typedef uint16_t            USHORT;
     typedef int32_t             INT;
     typedef uint32_t            UINT;
     typedef int32_t             LONG;
     typedef uint32_t            ULONG;
+    typedef int64_t             LONGLONG;
+    typedef uint64_t            ULONGLONG;
 #endif
 
-typedef long long           LONG64;
-typedef unsigned long long  ULONG64;
+typedef LONGLONG            LONG64;
+typedef ULONGLONG           ULONG64;
 
 //  Machine word types
 //
@@ -138,7 +150,7 @@ typedef unsigned long long  ULONG64;
 typedef unsigned char       BYTE;
 typedef USHORT              WORD;
 typedef ULONG               DWORD;
-typedef ULONG64             QWORD;
+typedef ULONGLONG           QWORD;
 
 //  Pointer types
 //
@@ -261,7 +273,12 @@ const QWORD     qwMax   = 0xFFFFFFFFFFFFFFFF;
 //      Basic "C operators"
 //
 
+#ifdef _MSC_VER
 #define OffsetOf(s,m)   (SIZE_T)&(((s *)0)->m)
+#else
+#define OffsetOf(s,m)    __builtin_offsetof( s, m )
+#endif
+
 #define CONTAINING_RECORD(address, type, field) ((type *)( \
                                                   (PCHAR)(address) - \
                                                   (ULONG_PTR)(&((type *)0)->field)))

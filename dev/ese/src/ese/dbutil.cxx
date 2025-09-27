@@ -143,7 +143,7 @@ VOID DBUTLDumpRec( const LONG cbPage, const FUCB * const pfucbTable, const VOID 
 
     FID fid;
     
-    const FID fidFixedFirst = fidFixedLeast;
+    const FID fidFixedFirst = FID( fidtypFixed, fidlimLeast );
     const FID fidFixedLast  = prec->FidFixedLastInRec();
     const INT cColumnsFixed = max( 0, fidFixedLast - fidFixedFirst + 1 );
     
@@ -151,7 +151,7 @@ VOID DBUTLDumpRec( const LONG cbPage, const FUCB * const pfucbTable, const VOID 
     (*pcprintf)( "=================\n" );
     for( fid = fidFixedFirst; fid <= fidFixedLast; ++fid )
     {
-        const UINT  ifid                    = fid - fidFixedLeast;
+        const UINT  ifid                    = fid.IndexOf( fidtypFixed );
         const BYTE  * const prgbitNullity   = prec->PbFixedNullBitMap() + ifid/8;
 
         // Get the COLUMNID from FID.
@@ -213,7 +213,7 @@ VOID DBUTLDumpRec( const LONG cbPage, const FUCB * const pfucbTable, const VOID 
 
     (*pcprintf)( "\n" );
     
-    const FID fidVariableFirst = fidVarLeast ;
+    const FID fidVariableFirst = FID( fidtypVar, fidlimLeast );
     const FID fidVariableLast  = prec->FidVarLastInRec();
     const INT cColumnsVariable = max( 0, fidVariableLast - fidVariableFirst + 1 );
     (*pcprintf)( "Variable Columns:  %d\n", cColumnsVariable );
@@ -222,7 +222,7 @@ VOID DBUTLDumpRec( const LONG cbPage, const FUCB * const pfucbTable, const VOID 
     const UnalignedLittleEndian<REC::VAROFFSET> * const pibVarOffs      = ( const UnalignedLittleEndian<REC::VAROFFSET> * const )prec->PibVarOffsets();
     for( fid = fidVariableFirst; fid <= fidVariableLast; ++fid )
     {
-        const UINT              ifid            = fid - fidVarLeast;
+        const UINT              ifid            = fid.IndexOf( fidtypVar );
         const REC::VAROFFSET    ibStartOfColumn = prec->IbVarOffsetStart( fid );
         const REC::VAROFFSET    ibEndOfColumn   = IbVarOffset( pibVarOffs[ifid] );
 
@@ -1285,9 +1285,9 @@ LOCAL ERR ErrDBUTLDumpOneColumn( PIB * ppib, FUCB * pfucbCatalog, VOID * pfnCall
     columndef.cbDefaultValue    = rgretrievecolumn[iretrievecolumn-1].cbActual;
     columndef.cbCallbackData    = rgretrievecolumn[iretrievecolumn-2].cbActual;
 
-    columndef.fFixed            = !!FFixedFid( FidOfColumnid( columndef.columnid ) );
-    columndef.fVariable         = !!FVarFid( FidOfColumnid( columndef.columnid ) );
-    columndef.fTagged           = !!FTaggedFid( FidOfColumnid( columndef.columnid ) );
+    columndef.fFixed            = !!FidOfColumnid( columndef.columnid ).FFixed();
+    columndef.fVariable         = !!FidOfColumnid( columndef.columnid ).FVar();
+    columndef.fTagged           = !!FidOfColumnid( columndef.columnid ).FTagged();
 
     const FIELDFLAG ffield      = FIELDFLAG( columndef.fFlags );
     columndef.fVersion          = !!FFIELDVersion( ffield );
@@ -1463,9 +1463,9 @@ LOCAL INT PrintCallback( const CALLBACKDEF * pcallbackdef, void * )
 
 //  ================================================================
 LOCAL VOID PrintSpaceHintMetaData(
-    __in const CHAR * const szIndent,
-    __in const CHAR * const szObjectType,
-    __in const JET_SPACEHINTS * const pSpaceHints )
+    _In_ const CHAR * const szIndent,
+    _In_ const CHAR * const szObjectType,
+    _In_ const JET_SPACEHINTS * const pSpaceHints )
 //  ================================================================
 {
     printf( "%s%s Space Hints:       cbStruct: %d, grbit=0x%x\n", szIndent, szObjectType,
@@ -1976,7 +1976,7 @@ ERR ErrDBUTLGetIfmpFucbOfPage( _Inout_ JET_SESID sesid, PCWSTR wszDatabase, _In_
 
         if ( wszObjName )
         {
-            Assert( ( cbDbutlObjNameMost - JET_cbNameMost ) > ( wcslen( L"::LV::[Space Tree]" /* worst case from below */ ) * 2 /* sizeof(WCHAR) */ ) );
+            Assert( ( cbDbutlObjNameMost - JET_cbNameMost ) > ( LOSStrLengthW( L"::LV::[Space Tree]" /* worst case from below */ ) * 2 /* sizeof(WCHAR) */ ) );
 
             OSStrCbFormatW( wszObjName, cbObjName, L"%hs", szObjName );
             if ( (*ppfucbObj)->u.pfcb->FTypeLV() )
@@ -3162,6 +3162,7 @@ LOCAL ERR ErrDBUTLGetSpaceTreeInfo(
                 (BYTE *)rgcpgExtent,
                 sizeof(rgcpgExtent),
                 fSPOwnedExtent | fSPAvailExtent | fSPReservedExtent | fSPShelvedExtent,
+                gci::Allow,
                 pcprintf ) );
 
     pbtsSpaceTree->cpgOwned = rgcpgExtent[0];
@@ -3322,9 +3323,9 @@ ERR EvalInternalPageNodes(
 
 
 ERR ErrDBUTLGetParentOfLeaf(
-    __in  const IFMP                    ifmp,
-    __in  const PGNO                    pgnoFDP,
-    __out BTREE_STATS_PARENT_OF_LEAF *  pParentOfLeaf
+    _In_  const IFMP                    ifmp,
+    _In_  const PGNO                    pgnoFDP,
+    _Out_ BTREE_STATS_PARENT_OF_LEAF *  pParentOfLeaf
     )
 {
     ERR err = JET_errSuccess;
@@ -3912,7 +3913,7 @@ LOCAL INT PrintTableBareMetaData( const TABLEDEF * ptabledef, void * pv )
 }
 
 //  ================================================================
-LOCAL VOID DBUTLDumpDefaultSpaceHints( __inout JET_SPACEHINTS * const pSpacehints, __in const CPG cpgInitial, __in const BOOL fTable )
+LOCAL VOID DBUTLDumpDefaultSpaceHints( __inout JET_SPACEHINTS * const pSpacehints, _In_ const CPG cpgInitial, _In_ const BOOL fTable )
 //  ================================================================
 {
     if ( 0 == pSpacehints->cbInitial )
@@ -3962,13 +3963,13 @@ LOCAL VOID DBUTLDumpDefaultSpaceHints( __inout JET_SPACEHINTS * const pSpacehint
 }
 
 ERR ErrCATIUnmarshallExtendedSpaceHints(
-    __in INST * const           pinst,
-    __in const SYSOBJ           sysobj,
-    __in const BOOL             fDeferredLongValueHints,
-    __in const BYTE * const     pBuffer,
-    __in const ULONG            cbBuffer,
-    __in const LONG             cbPageSize,
-    __out JET_SPACEHINTS *      pSpacehints
+    _In_ INST * const           pinst,
+    _In_ const SYSOBJ           sysobj,
+    _In_ const BOOL             fDeferredLongValueHints,
+    _In_ const BYTE * const     pBuffer,
+    _In_ const ULONG            cbBuffer,
+    _In_ const LONG             cbPageSize,
+    _Out_ JET_SPACEHINTS *      pSpacehints
     );
 
 
@@ -4500,7 +4501,7 @@ HandleError:
 }
 
 //  ================================================================
-LOCAL ERR ErrDBUTLDumpTables( PIB * ppib, IFMP ifmp, __in PCWSTR wszTableName, PFNTABLE pfntable, VOID * pvCallback )
+LOCAL ERR ErrDBUTLDumpTables( PIB * ppib, IFMP ifmp, _In_ PCWSTR wszTableName, PFNTABLE pfntable, VOID * pvCallback )
 //  ================================================================
 {
     ERR     err;

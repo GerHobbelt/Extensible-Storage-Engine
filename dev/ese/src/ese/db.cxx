@@ -12,7 +12,7 @@
 //      JET_errDatabaseCorrupted
 //
 
-LOCAL ERR ErrDBICheck200And400( INST *const pinst, IFileSystemAPI *const pfsapi, __in PCWSTR wszDatabaseName )
+LOCAL ERR ErrDBICheck200And400( INST *const pinst, IFileSystemAPI *const pfsapi, _In_ PCWSTR wszDatabaseName )
 {
     /* persistent database data, in database root node
     /**/
@@ -269,6 +269,8 @@ LOCAL ERR ErrDBInitDatabase( PIB *ppib, IFMP ifmp, CPG cpgPrimary )
 {
     ERR             err;
     OBJID           objidFDP;
+    CPG             cpgOEFDP;
+    CPG             cpgAEFDP;
 
     CallR( ErrDIRBeginTransaction( ppib, 40229, NO_GRBIT ) );
 
@@ -282,8 +284,18 @@ LOCAL ERR ErrDBInitDatabase( PIB *ppib, IFMP ifmp, CPG cpgPrimary )
                 cpgPrimary,
                 fSPMultipleExtent,
                 (ULONG)CPAGE::fPagePrimary,
-                &objidFDP ) );
+                &objidFDP,
+                &cpgOEFDP,
+                &cpgAEFDP ) );
+
     Assert( objidSystemRoot == objidFDP );
+
+    CATSetExtentPageCounts(
+        ppib,
+        ifmp,
+        objidSystemRoot,
+        cpgOEFDP,
+        cpgAEFDP );
 
     Call( ErrDIRCommitTransaction( ppib, 0 ) );
 
@@ -399,9 +411,9 @@ VOID DBReportTachmentEvent( const INST * const pinst, const IFMP ifmp, const Mes
 
     if ( msgidTachment == CREATE_DATABASE_DONE_ID || msgidTachment == ATTACH_DATABASE_DONE_ID )
     {
-        INT ich = wcslen( wszAddlFixedData );
+        INT ich = LOSStrLengthW( wszAddlFixedData );
         OSStrCbFormatW( wszAddlFixedData + ich, _cbrg( wszAddlFixedData ) - ich * sizeof(WCHAR), L",\ndbv = " );
-        ich = wcslen( wszAddlFixedData );
+        ich = LOSStrLengthW( wszAddlFixedData );
         FormatDbvEfvMapping( ifmp, wszAddlFixedData + ich, _cbrg( wszAddlFixedData ) - ich * sizeof(WCHAR) );
     }
 
@@ -1368,8 +1380,13 @@ ERR ErrDBParseDbParams(
     _Out_opt_ LONG* const                                       pdtickShrinkDatabaseTimeQuota,  // JET_dbparamShrinkDatabaseTimeQuota
     _Out_opt_ CPG* const                                        pcpgShrinkDatabaseSizeLimit,    // JET_dbparamShrinkDatabaseSizeLimit
     _Out_opt_ BOOL* const                                       pfLeakReclaimerEnabled,         // JET_dbparamLeakReclaimerEnabled
-    _Out_opt_ LONG* const                                       pdtickLeakReclaimerTimeQuota )  // JET_dbparamLeakReclaimerTimeQuota
+    _Out_opt_ LONG* const                                       pdtickLeakReclaimerTimeQuota,   // JET_dbparamLeakReclaimerTimeQuota
+    _Out_opt_ FEATURECONTROL* const                             pfcMaintainExtentPageCountCache // JET_dbparamMaintainExtentPageCountCache
+    )
 {
+    ULONG ulRawMaintainExtentPageCountCache = 0;
+    BOOL fFoundMaintainExtentPageCountCache = fFalse;
+
     if ( ( rgsetdbparam == NULL ) && ( csetdbparam > 0 ) )
     {
         return ErrERRCheck( JET_errInvalidParameter );
@@ -1420,6 +1437,11 @@ ERR ErrDBParseDbParams(
         *pdtickLeakReclaimerTimeQuota = -1;
     }
 
+    if ( pfcMaintainExtentPageCountCache )
+    {
+        *pfcMaintainExtentPageCountCache = fc::NotSpecified;
+    }
+
     //
     // Go through the array of DB parameters and collect all user inputs.
     //
@@ -1468,6 +1490,12 @@ ERR ErrDBParseDbParams(
             case JET_dbparamLeakReclaimerTimeQuota:
                 cbParamDest = sizeof( *pdtickLeakReclaimerTimeQuota );
                 pvParamDest = pdtickLeakReclaimerTimeQuota;
+                break;
+
+            case JET_dbparamMaintainExtentPageCountCache:
+                fFoundMaintainExtentPageCountCache = fTrue;
+                cbParamDest = sizeof( ulRawMaintainExtentPageCountCache );
+                pvParamDest = &ulRawMaintainExtentPageCountCache;
                 break;
 
             default:
@@ -1557,6 +1585,23 @@ ERR ErrDBParseDbParams(
         return ErrERRCheck( JET_errInvalidParameter );
     }
 
+    // JET_dbparamMaintainExtentPageCountCache
+    if ( pfcMaintainExtentPageCountCache )
+    {
+        if ( fFoundMaintainExtentPageCountCache )
+        {
+            if ( ulRawMaintainExtentPageCountCache )
+            {
+                // Non-zero raw value means enable.
+                *pfcMaintainExtentPageCountCache = fc::Enable;
+            }
+            else
+            {
+                *pfcMaintainExtentPageCountCache = fc::Disable;
+            }
+        }
+    }
+
     return JET_errSuccess;
 }
 
@@ -1582,16 +1627,18 @@ ERR ErrDBCreateDatabase(
     BOOL            fNewDBCreated           = fFalse;
     BOOL            fLogged                 = fFalse;
     LGPOS           lgposLogRec;
+    FEATURECONTROL  fcMaintainExtentPageCountCache;
 
     CallR( ErrDBParseDbParams( rgsetdbparam,
-                                csetdbparam,
-                                &cpgDatabaseSizeMax,
-                                &pctCachePriority,
-                                NULL,       // JET_dbparamShrinkDatabaseOptions (not used here).
-                                NULL,       // JET_dbparamShrinkDatabaseTimeQuota (not used here).
-                                NULL,       // JET_dbparamShrinkDatabaseSizeLimit (not used here).
-                                NULL,       // JET_dbparamLeakReclaimerEnabled (not used here).
-                                NULL ) );   // JET_dbparamLeakReclaimerTimeQuota (not used here).
+                               csetdbparam,
+                               &cpgDatabaseSizeMax,
+                               &pctCachePriority,
+                               NULL,                 // JET_dbparamShrinkDatabaseOptions (not used here).
+                               NULL,                 // JET_dbparamShrinkDatabaseTimeQuota (not used here).
+                               NULL,                 // JET_dbparamShrinkDatabaseSizeLimit (not used here).
+                               NULL,                 // JET_dbparamLeakReclaimerEnabled (not used here).
+                               NULL,                 // JET_dbparamLeakReclaimerTimeQuota (not used here).
+                               &fcMaintainExtentPageCountCache ) );
 
     Assert( !( grbit & bitCreateDbImplicitly ) || PinstFromPpib( ppib )->m_plog->FRecovering() );
 
@@ -2066,6 +2113,86 @@ ERR ErrDBCreateDatabase(
         Assert( pfmp->Pdbfilehdr()->le_qwSortVersion == g_qwUpgradedLocalesTable );
     }
 
+    // Turn off the switch saying we don't expect to extend the DB during create.  We might extend the DB
+    // if we need to create the ExtentPageCountCache.
+    OnDebug( Ptls()->fNoExtendingDuringCreateDB = fFalse );
+
+    // Create the MSysExtentPageCountCache table, if necessary.  We do this after MSysLocales so that
+    // MSysLocales has it's historic objid, which makes a number of existing tests continue to work.
+    if( dbidGiven != dbidTemp && !pinst->FRecovering() )
+    {
+        PGNO  pgnoFDP;
+        OBJID objidFDP;
+        const WCHAR * rgwsz[] = { pfmp->WszDatabaseName(), NULL };
+
+        MessageId evtId = PLAIN_TEXT_ID;                   // No-logging marker value.
+        FEATURECONTROL fcT = fc::NotSpecified; // Assume nothing to do.
+
+        pgnoFDP = pgnoNull;
+        objidFDP = objidNil;
+
+        switch ( fcMaintainExtentPageCountCache )
+        {
+            case fc::NotSpecified:
+                // On DB create, since you didn't specify you wanted the table, we just won't make it.
+                // We also don't log that.
+                break;
+
+            case fc::Disable:
+                evtId = EXTENT_PAGE_COUNT_CACHE_NOT_IN_USE_ID;
+                rgwsz[1] = L"REQUEST_PARAM";
+                break;
+
+            case fc::Enable:
+                if ( pfmp->FEfvSupported( JET_efvExtentPageCountCache ) )
+                {
+                    // Go ahead, turn the feature on.
+                    evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
+                    fcT = fc::Enable;
+                    rgwsz[1] = L"REQUEST_PARAM";
+                }
+                else
+                {
+                    // Ignore the request if the efv doesn't support it.
+                    evtId = EXTENT_PAGE_COUNT_CACHE_NOT_IN_USE_ID;
+                    rgwsz[1] = L"UNSUPPORTED_REQUEST_PARAM";
+                }
+                break;
+
+            default:
+                AssertSz( fFalse, "Unexpected case in switch.");
+                Error( ErrERRCheck( JET_errInvalidParameter ) );
+        }
+
+        if ( evtId != PLAIN_TEXT_ID )
+        {
+            UtilReportEvent(
+                eventInformation,
+                SPACE_MANAGER_CATEGORY,
+                evtId,
+                _countof( rgwsz ),
+                rgwsz,
+                0,
+                NULL,
+                pinst );
+        }
+        
+        switch ( fcT )
+        {
+            case fc::Enable:
+                Assert( objidNil == objidFDP );
+                Call( ErrCATCreateMSExtentPageCountCache( ppib, ifmp, &pgnoFDP, &objidFDP ) );
+                Assert( objidNil != objidFDP );
+                break;
+
+            default:
+                Assert( fc::NotSpecified == fcT );
+                break;
+        }
+
+        g_rgfmp[ ifmp ].SetExtentPageCountCacheTableInfo( pgnoFDP, objidFDP );
+    }
+
     pfmp->m_isdlCreate.Trigger( eCreateLatentUpgradesDone );
 
     if ( 0 != ( grbit & JET_bitDbEnableBackgroundMaintenance ) )
@@ -2082,7 +2209,7 @@ ERR ErrDBCreateDatabase(
                     Assert( g_rgfmp[ifmp].Pfapi()->CioNonFlushed() == 0 );    // must hold - or leaking IOs.
                     IOCloseDatabase( ifmp );
                 }
-                
+
                 //  best effort.
                 //
                 (VOID)ErrIODeleteDatabase( pfsapi, ifmp );
@@ -2100,8 +2227,6 @@ ERR ErrDBCreateDatabase(
     {
         CallS( ErrSPTrimDBTaskInit( ifmp ) );
     }
-
-    OnDebug( Ptls()->fNoExtendingDuringCreateDB = fFalse );
 
     pfmp->m_isdlCreate.Trigger( eCreateDone );
 
@@ -2962,11 +3087,13 @@ VOID DBISetHeaderAfterAttach(
 
 //  ================================================================
 ERR ErrDBTryCreateSystemTable(
-    __in PIB * const ppib,
+    _In_ PIB * const ppib,
     const IFMP ifmp,
     const CHAR * const szTableName,
-    ERR (*pfnCreate)(PIB * const, const IFMP),
-    const JET_GRBIT grbit )
+    ERR (*pfnCreate)(PIB * const, const IFMP, PGNO *, OBJID *),
+    const JET_GRBIT grbit,
+    PGNO *ppgnoFDP = NULL,
+    OBJID *pobjidFDP = NULL )
 //  ================================================================
 //
 //  Used to add dynamically created system tables at attach time.
@@ -2978,7 +3105,6 @@ ERR ErrDBTryCreateSystemTable(
     Assert( ppib );
     Assert( ifmpNil != ifmp );
     Assert( szTableName );
-    Assert( pfnCreate );
 
     ERR         err             = JET_errSuccess;
     WCHAR * const wszDatabaseName   = g_rgfmp[ifmp].WszDatabaseName();
@@ -2999,6 +3125,14 @@ ERR ErrDBTryCreateSystemTable(
         //  we have attached to a read-only file, but JET_bitDbReadOnly was not specified
         //  no-one will be modifying the database so it doesn't matter if the table exists or not
         err = JET_errSuccess;
+        if ( NULL != ppgnoFDP )
+        {
+            *ppgnoFDP  = pgnoNull;
+        }
+        if (NULL != pobjidFDP )
+        {
+            *pobjidFDP = objidNil;
+        }
     }
     else
     {
@@ -3006,20 +3140,42 @@ ERR ErrDBTryCreateSystemTable(
         //  JET_errTableDuplicate but that led to nullified RCE's filling the
         //  version store when a process did a lot of attaches
 
-        err = ErrCATSeekTable( ppib, ifmpT, szTableName, NULL, NULL );
+        err = ErrCATSeekTable( ppib, ifmpT, szTableName, ppgnoFDP, pobjidFDP );
         if( err < JET_errSuccess )
         {
             if( JET_errObjectNotFound == err )
             {
-                err = (*pfnCreate)( ppib, ifmp );
+                if ( NULL != pfnCreate )
+                {
+                    err = (*pfnCreate)( ppib, ifmp, ppgnoFDP, pobjidFDP );
 
 #ifdef DEBUG
-                if ( JET_errSuccess == err )
-                {
-                    const ERR errT = ErrCATSeekTable( ppib, ifmpT, szTableName, NULL, NULL );
-                    AssertSz( JET_errSuccess == errT, "ErrDBTryCreateSystemTable didn't create the specified table" );
-                }
+                    if ( JET_errSuccess == err )
+                    {
+                        PGNO  pgno;
+                        OBJID objid;
+                        const ERR errT = ErrCATSeekTable( ppib, ifmpT, szTableName, &pgno, &objid );
+                        AssertSz( JET_errSuccess == errT, "ErrDBTryCreateSystemTable didn't create the specified table" );
+                        Assert( NULL == ppgnoFDP || pgno == *ppgnoFDP );
+                        Assert( NULL == pobjidFDP || objid == *pobjidFDP );
+                    }
 #endif
+                }
+                else
+                {
+                    // No creation function, so caller was only checking if the table existed.
+                    // It doesn't, so we signify that by returning success and setting the out params
+                    // to appropriate NULLs.
+                    err = JET_errSuccess;
+                    if ( NULL != ppgnoFDP )
+                    {
+                        *ppgnoFDP  = pgnoNull;
+                    }
+                    if (NULL != pobjidFDP )
+                    {
+                        *pobjidFDP = objidNil;
+                    }
+                }
             }
         }
     }
@@ -3824,7 +3980,7 @@ HandleError:
 
 ERR ISAMAPI ErrIsamAttachDatabase(
     JET_SESID                   sesid,
-    __in PCWSTR                 wszDatabaseName,
+    _In_ PCWSTR                 wszDatabaseName,
     const BOOL                  fAllowTrimDBTask,
     const JET_SETDBPARAM* const rgsetdbparam,
     const ULONG                 csetdbparam,
@@ -3850,19 +4006,21 @@ ERR ISAMAPI ErrIsamAttachDatabase(
     BOOL                fDirtyCacheAlive                = fFalse;
     FMP                 *pfmp                           = NULL;
     IFileSystemAPI      *pfsapi;
+    FEATURECONTROL      fcMaintainExtentPageCountCache;
     enum { ATTACH_NONE, ATTACH_LOGGED, ATTACH_DB_UPDATED, ATTACH_DB_OPENED, ATTACH_END }
         attachState;
     attachState = ATTACH_NONE;
 
     CallR( ErrDBParseDbParams( rgsetdbparam,
-                                csetdbparam,
-                                &cpgDatabaseSizeMax,
-                                &pctCachePriority,
-                                &grbitShrinkDatabaseOptions,
-                                &dtickShrinkDatabaseTimeQuota,
-                                &cpgShrinkDatabaseSizeLimit,
-                                &fLeakReclaimerEnabled,
-                                &dtickLeakReclaimerTimeQuota ) );
+                               csetdbparam,
+                               &cpgDatabaseSizeMax,
+                               &pctCachePriority,
+                               &grbitShrinkDatabaseOptions,
+                               &dtickShrinkDatabaseTimeQuota,
+                               &cpgShrinkDatabaseSizeLimit,
+                               &fLeakReclaimerEnabled,
+                               &dtickLeakReclaimerTimeQuota,
+                               &fcMaintainExtentPageCountCache ) );
 
     memset( &logtimeOfGenWithAttach, 0, sizeof( logtimeOfGenWithAttach ) );
 
@@ -4109,7 +4267,7 @@ ERR ISAMAPI ErrIsamAttachDatabase(
             pfmp->Pfapi()->UpdateIFilePerfAPIEngineFileTypeId( iofileDbAttached, pfmp->Ifmp() );
             IOResetFmpIoLatencyStats( pfmp->Ifmp() );
 
-#if DEBUG
+#ifdef DEBUG
             BYTE rgbSigZeroes[ sizeof( SIGNATURE ) ] = { 0 };
             Assert( 0 == memcmp( rgbSigZeroes, pfmp->Pdbfilehdr()->rgbReservedSignSLV, sizeof( rgbSigZeroes ) ) );
 #endif
@@ -4151,6 +4309,28 @@ ERR ISAMAPI ErrIsamAttachDatabase(
             {
             AssertTrack( cbNtfsSize >= cbLogicalSize, "ReattachFileSizeTooSmall" );
             }
+            }
+
+            {
+                PGNO pgnoFDP;
+                OBJID objidFDP;
+
+                // Look up the ExtentPageCountCache table before we do anything that might affect
+                // ExtentPageCountCache values. This sets up bookkeeping so any changes to space
+                // made by Update and Shrink are correctly tracked.  Since we're not providing a
+                // creation function to this call, it only looks up the table if it's there; it
+                // doesn't create it and doesn't error if it's not there, just sets pgnoFDP and
+                // objidFDP to nulls.
+                CallJ( ErrDBTryCreateSystemTable(
+                           ppib,
+                           ifmp,
+                           szMSExtentPageCountCache,
+                           NULL,
+                           NO_GRBIT,
+                           &pgnoFDP,
+                           &objidFDP ),
+                       MoreAttachedThanDetached );
+                g_rgfmp[ ifmp ].SetExtentPageCountCacheTableInfo( pgnoFDP, objidFDP );
             }
 
             // Trigger leak reclaimer.
@@ -4195,7 +4375,7 @@ ERR ISAMAPI ErrIsamAttachDatabase(
             OSTrace( JET_tracetagDatabases, "Attach JET_wrnDatabaseAttached / KeepDirtyDbAttachAlive fast path; Skip to PostAttachTasks." );
 
             pfmp->m_isdlAttach.Trigger( eAttachFastBaseReAttachDone );
-            
+
             #pragma pop_macro( "Call" )
             goto PostAttachTasks;
         }
@@ -4489,6 +4669,25 @@ ERR ISAMAPI ErrIsamAttachDatabase(
 
     if ( !pfmp->FReadOnlyAttach() && !g_fRepair )
     {
+        PGNO pgnoFDP;
+        OBJID objidFDP;
+
+        // Look up the ExtentPageCountCache table before we do anything that might affect ExtentPageCountCache values.
+        // This sets up bookkeeping so any changes to space made by Update and Shrink are
+        // correctly tracked.  Since we're not providing a creation function to this call,
+        // it only looks up the table if it's there; it doesn't create it and doesn't error
+        // if it's not there, just sets pgnoFDP and objidFDP to nulls.
+        CallJ( ErrDBTryCreateSystemTable(
+                   ppib,
+                   ifmp,
+                   szMSExtentPageCountCache,
+                   NULL,
+                   NO_GRBIT,
+                   &pgnoFDP,
+                   &objidFDP ),
+               MoreAttachedThanDetached );
+        g_rgfmp[ ifmp ].SetExtentPageCountCacheTableInfo( pgnoFDP, objidFDP );
+
         //  Upgrade the DB Version if necessary
         CallJ( ErrDBUpdateAndFlushVersion(
                     pinst,
@@ -4563,8 +4762,12 @@ PostAttachTasks:
 
     err = JET_errSuccess;
 
+    Expected( !pinst->FRecovering() ); // assert'ing this, b/c I can't find any evidence it can happen
+    Expected( !FFMPIsTempDB( ifmp ) ); // same
+
     if ( !g_fRepair )
     {
+
         // Create this *before* creating the other system tables (such as
         // MSysLocales) so that MSObjids contains entries for those tables.
         CallJ( ErrDBTryCreateSystemTable( ppib, ifmp, szMSObjids, ErrCATCreateMSObjids, grbit ), Detach );
@@ -4574,11 +4777,9 @@ PostAttachTasks:
 
     pfmp->m_isdlAttach.Trigger( eAttachCreateMSysObjids );
 
-    Expected( !pinst->FRecovering() );          // assert'ing this, b/c I can't find any evidence it can happen
-    Expected( !FFMPIsTempDB( ifmp ) ); // same
-    if( !FFMPIsTempDB( ifmp) &&   // just in case
-        !pinst->FRecovering() &&            // just in case
-        !g_fRepair &&
+    if( !FFMPIsTempDB( ifmp)     && // just in case
+        !pinst->FRecovering()    && // just in case
+        !g_fRepair               &&
         !pfmp->FReadOnlyAttach()
         )
     {
@@ -4599,6 +4800,141 @@ PostAttachTasks:
     }
 
     pfmp->m_isdlAttach.Trigger( eAttachCreateMSysLocales );
+
+    if( !FFMPIsTempDB( ifmp)     && // just in case
+        !pinst->FRecovering()    && // just in case
+        !g_fRepair               &&
+        !pfmp->FReadOnlyAttach()
+        )
+    {
+        PGNO  pgnoFDP;
+        OBJID objidFDP;
+        const WCHAR * rgwsz[] = { pfmp->WszDatabaseName(), NULL };
+
+        // See if the table is there or not.
+        CallJ( ErrDBTryCreateSystemTable(
+                   ppib,
+                   ifmp,
+                   szMSExtentPageCountCache,
+                   NULL,
+                   NO_GRBIT,
+                   &pgnoFDP,
+                   &objidFDP ),
+               Detach );
+
+        // If one is NULL, both are NULL.
+        Assert( ( pgnoFDP == pgnoNull ) == ( objidFDP == objidNil ) );
+
+        MessageId evtId = PLAIN_TEXT_ID;                   // No-logging marker value.
+        FEATURECONTROL fcT = fc::NotSpecified; // Assume nothing to do.
+        switch ( fcMaintainExtentPageCountCache )
+        {
+            case fc::NotSpecified:
+                // Caller didn't say anything about the cache, so we're going to look it up and use it if
+                // it's there, but do nothing if it's not.
+                if ( objidFDP != objidNil )
+                {
+                    evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
+                    rgwsz[1] = L"EXISTING_STATE";
+                }
+                break;
+                
+            case fc::Disable:
+                evtId = EXTENT_PAGE_COUNT_CACHE_NOT_IN_USE_ID;
+                if ( objidFDP != objidNil )
+                {
+                    fcT = fc::Disable;
+                    rgwsz[1] = L"REQUEST_PARAM";
+                }
+                else
+                {
+                    rgwsz[1] = L"REQUEST_PARAM_MATCHES_STATE";
+                }
+                break;
+ 
+            case fc::Enable:
+                if ( !pfmp->FEfvSupported( JET_efvExtentPageCountCache ) )
+                {
+                    // The feature is not supported, so we don't need to do
+                    // anything.
+                    Assert( objidFDP == objidNil );
+                    evtId = EXTENT_PAGE_COUNT_CACHE_NOT_IN_USE_ID;
+                    fcT = fc::NotSpecified;
+                    rgwsz[1] = L"UNSUPPORTED_REQUEST_PARAM";
+                }
+                else if ( objidFDP != objidNil )
+                {
+                    evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
+                    fcT = fc::NotSpecified;
+                    rgwsz[1] = L"REQUEST_PARAM_MATCHES_STATE";
+                }
+                else 
+                {
+                    evtId = EXTENT_PAGE_COUNT_CACHE_IN_USE_ID;
+                    fcT = fc::Enable;
+                    rgwsz[1] = L"REQUEST_PARAM";
+                }
+                break;
+                
+            default:
+                AssertSz( fFalse, "Unexpected case in switch.");
+                CallJ( ErrERRCheck( JET_errInvalidParameter ), Detach );
+        }
+
+        if ( evtId != PLAIN_TEXT_ID )
+        {
+            UtilReportEvent(
+                eventInformation,
+                SPACE_MANAGER_CATEGORY,
+                evtId,
+                _countof( rgwsz ),
+                rgwsz,
+                0,
+                NULL,
+                pinst );
+        }
+
+        switch ( fcT )
+        {
+            case fc::Enable:
+                Assert( objidNil == objidFDP );
+                CallJ(
+                    ErrDBTryCreateSystemTable(
+                        ppib,
+                        ifmp,
+                        szMSExtentPageCountCache,
+                        ErrCATCreateMSExtentPageCountCache,
+                        grbit,
+                        &pgnoFDP,
+                        &objidFDP
+                        ),
+                    Detach );
+                Assert( objidNil != objidFDP );
+                break;
+
+            case fc::Disable:
+                Assert( objidNil != objidFDP );
+                CallJ(
+                    ErrCATDeleteMSExtentPageCountCache(
+                        ppib,
+                        ifmp,
+                        EXTENT_CACHE_DELETE_REASON::FeatureOff
+                        ),
+                    Detach );
+                pgnoFDP = pgnoNull;
+                objidFDP = objidNil;
+                break;
+
+            default:
+                Assert( fc::NotSpecified == fcT );
+                // Nothing.
+                break;
+        }
+
+        g_rgfmp[ ifmp ].SetExtentPageCountCacheTableInfo( pgnoFDP, objidFDP );
+    }
+
+    //pfmp->m_isdlAttach.Trigger( eAttachProcessMSysExtentPageCountCache );
 
     {
     PdbfilehdrReadOnly pdbfilehdr = pfmp->Pdbfilehdr();
@@ -5621,7 +5957,7 @@ ERR ISAMAPI ErrIsamOpenDatabase(
 
 ERR ErrDBOpenDatabase(
     PIB *ppib,
-    __in PCWSTR wszDatabaseName,
+    _In_ PCWSTR wszDatabaseName,
     IFMP *pifmp,
     ULONG grbit )
 {
@@ -5710,7 +6046,7 @@ ERR ErrDBOpenDatabase(
         }
         pfmp->SetExclusiveOpen( ppib );
 
-    }   //  if excluive open
+    }   //  if exclusive open
 
     Assert( pfmp->Pfapi() );
     DBSetOpenDatabaseFlag( ppib, ifmp );
@@ -5874,11 +6210,11 @@ HandleError:
 }
 
 ERR ISAMAPI ErrIsamResizeDatabase(
-    __in JET_SESID      vsesid,
-    __in JET_DBID       vdbid,
-    __in ULONG  cpgTarget,
+    _In_ JET_SESID      vsesid,
+    _In_ JET_DBID       vdbid,
+    _In_ ULONG  cpgTarget,
     _Out_opt_ ULONG *pcpgActual,
-    __in JET_GRBIT      grbit )
+    _In_ JET_GRBIT      grbit )
 {
     ERR     err                     = JET_errSuccess;
     PIB*    ppib                    = (PIB *)vsesid;
